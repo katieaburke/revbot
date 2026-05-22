@@ -1,5 +1,5 @@
 import type { SfdcOpportunity } from '../services/salesforce'
-import { AlertType } from '@prisma/client'
+import { AlertType } from '../types'
 
 export interface PastDueAlert {
   alertType: AlertType

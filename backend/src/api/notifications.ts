@@ -4,7 +4,7 @@ import { requireAdmin } from '../middleware/adminAuth'
 import { triggerAlertJobNow } from '../jobs/scheduler'
 import { sendDm } from '../slack/bot'
 import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
-import { AlertType } from '@prisma/client'
+import { AlertType } from '../types'
 import { z } from 'zod'
 
 const router = Router()
@@ -105,7 +105,7 @@ router.post('/nudge', async (req, res) => {
       } as never)
     }
 
-    const ts = await sendDm(targetUserSlackId, blocks, `RevOps follow-up: ${alertData.opportunityName}`)
+    const ts = await sendDm(targetUserSlackId, blocks, `RevOps follow-up: ${alertData.opportunityName as string}`)
 
     // Log the nudge
     // Get sender from token (simplified — full impl would decode JWT)

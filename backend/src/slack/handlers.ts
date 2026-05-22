@@ -201,7 +201,7 @@ export function registerHandlers(app: App) {
 
     // Fetch available stages from config
     const stageConfig = await db.meddpiccStageRequirement.findMany({ select: { stageName: true } })
-    const stageOptions = stageConfig.map((s) => ({
+    const stageOptions = stageConfig.map((s: { stageName: string }) => ({
       text: { type: 'plain_text' as const, text: s.stageName },
       value: s.stageName,
     }))

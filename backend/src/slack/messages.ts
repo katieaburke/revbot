@@ -3,7 +3,7 @@ import type { PastDueAlert } from '../alerts/pastDue'
 import type { StalledAlert, StalledReason } from '../alerts/stalled'
 import type { MeddpiccAlert } from '../alerts/meddpicc'
 import { MEDDPICC_LABELS } from '../alerts/meddpicc'
-import { AlertType } from '@prisma/client'
+import { AlertType } from '../types'
 
 const SFDC_BASE = process.env.SFDC_INSTANCE_URL ?? 'https://your-instance.lightning.force.com'
 

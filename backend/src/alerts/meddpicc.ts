@@ -1,5 +1,5 @@
 import type { SfdcOpportunity } from '../services/salesforce'
-import { AlertType } from '@prisma/client'
+import { AlertType } from '../types'
 
 export type MeddpiccField =
   | 'metrics'
@@ -51,7 +51,7 @@ interface StageRequirement {
 }
 
 function getOppFieldValue(opp: SfdcOpportunity, sfdcField: string): string | undefined {
-  return (opp as Record<string, unknown>)[sfdcField] as string | undefined
+  return (opp as unknown as Record<string, unknown>)[sfdcField] as string | undefined
 }
 
 function isMissing(value: string | undefined): boolean {

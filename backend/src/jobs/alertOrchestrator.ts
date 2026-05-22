@@ -6,7 +6,7 @@ import { evaluateStalled } from '../alerts/stalled'
 import { evaluateMeddpicc } from '../alerts/meddpicc'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
-import { AlertType, NotificationStatus } from '@prisma/client'
+import { AlertType, NotificationStatus } from '../types'
 
 const COOLDOWN_HOURS = 24 // don't re-notify for same opp+type within this window
 
