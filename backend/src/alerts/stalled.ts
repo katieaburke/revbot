@@ -1,6 +1,6 @@
 import type { SfdcOpportunity } from '../services/salesforce'
-import type { GongActivity, GongWarning } from '../services/gong'
-import { isSingleThreaded, hasRedFlags, daysSinceLastGongActivity } from '../services/gong'
+import type { GongOpportunityActivity } from '../services/gong'
+import { isSingleThreaded, hasRedFlags, daysSinceLastGongCall } from '../services/gong'
 import { AlertType } from '../types'
 
 export interface StalledAlert {
@@ -21,7 +21,7 @@ export type StalledReason =
   | { type: 'stage_duration'; days: number; threshold: number }
   | { type: 'gong_inactivity'; days: number; threshold: number }
   | { type: 'single_threaded' }
-  | { type: 'red_flag'; descriptions: string[] }
+  | { type: 'red_flag'; phrases: string[] }
 
 interface StallRule {
   id: string
@@ -49,19 +49,14 @@ function stageDurationDays(opp: SfdcOpportunity): number | null {
 function matchesFilters(opp: SfdcOpportunity, rule: StallRule): boolean {
   if (rule.filterStages.length > 0 && !rule.filterStages.includes(opp.StageName)) return false
   if (rule.filterOppTypes.length > 0 && !rule.filterOppTypes.includes(opp.Type ?? '')) return false
-  if (
-    rule.filterSegments.length > 0 &&
-    !rule.filterSegments.includes(opp.Account?.Segment__c ?? '')
-  )
-    return false
+  if (rule.filterSegments.length > 0 && !rule.filterSegments.includes(opp.Account?.Segment__c ?? '')) return false
   return true
 }
 
 export function evaluateStalled(
   opps: SfdcOpportunity[],
   rules: StallRule[],
-  gongActivity: Map<string, GongActivity>,
-  gongWarnings: Map<string, GongWarning[]>
+  gongActivity: Map<string, GongOpportunityActivity>
 ): StalledAlert[] {
   const alerts: StalledAlert[] = []
 
@@ -75,7 +70,6 @@ export function evaluateStalled(
       const age = dealAgeDays(opp)
       const stageDays = stageDurationDays(opp)
       const activity = gongActivity.get(opp.Id)
-      const warnings = gongWarnings.get(opp.Id) ?? []
 
       if (rule.dealAgeThresholdDays && age >= rule.dealAgeThresholdDays) {
         reasons.push({ type: 'deal_age', days: age, threshold: rule.dealAgeThresholdDays })
@@ -86,7 +80,7 @@ export function evaluateStalled(
       }
 
       if (rule.gongInactivityDays && activity) {
-        const inactive = daysSinceLastGongActivity(activity)
+        const inactive = daysSinceLastGongCall(activity)
         if (inactive !== null && inactive >= rule.gongInactivityDays) {
           reasons.push({ type: 'gong_inactivity', days: inactive, threshold: rule.gongInactivityDays })
         }
@@ -96,11 +90,8 @@ export function evaluateStalled(
         reasons.push({ type: 'single_threaded' })
       }
 
-      if (rule.flagGongRedFlags && hasRedFlags(warnings)) {
-        reasons.push({
-          type: 'red_flag',
-          descriptions: warnings.filter((w) => w.severity === 'high').map((w) => w.description),
-        })
+      if (rule.flagGongRedFlags && activity && hasRedFlags(activity)) {
+        reasons.push({ type: 'red_flag', phrases: activity.riskPhrasesFound })
       }
 
       if (reasons.length > 0) {
@@ -116,7 +107,7 @@ export function evaluateStalled(
           triggeredBy: reasons,
           ruleId: rule.id,
         })
-        break // one alert per opp (first matching rule wins)
+        break // first matching rule wins per opp
       }
     }
   }

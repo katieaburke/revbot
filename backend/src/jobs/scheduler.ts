@@ -19,7 +19,7 @@ export function startWorker() {
     QUEUE_NAME,
     async (job) => {
       if (job.name === 'run-alerts') {
-        return runAlertJob()
+        return runAlertJob({ bustGongCache: job.data?.bustGongCache === true })
       }
     },
     { connection: redis, concurrency: 1 }
@@ -51,9 +51,9 @@ export async function scheduleAlertJob(cronExpression = '0 8 * * 1-5') {
   console.log(`[Scheduler] Alert job scheduled: ${cronExpression}`)
 }
 
-// Trigger an immediate one-off run (e.g. from admin UI)
+// Trigger an immediate one-off run (e.g. from admin UI) — always busts Gong cache
 export async function triggerAlertJobNow() {
-  const job = await alertQueue.add('run-alerts', { triggeredAt: new Date().toISOString() })
+  const job = await alertQueue.add('run-alerts', { triggeredAt: new Date().toISOString(), bustGongCache: true })
   console.log(`[Scheduler] Manual alert job triggered: ${job.id}`)
   return job.id
 }

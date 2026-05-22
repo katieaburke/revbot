@@ -22,7 +22,7 @@ function stalledReasonText(reason: StalledReason): string {
     case 'single_threaded':
       return `⚠️ Single-threaded — only one contact on Gong calls`
     case 'red_flag':
-      return `🚩 Gong red flags: ${reason.descriptions.join(', ')}`
+      return `🚩 Gong risk phrases detected: _${reason.phrases.join(', ')}_`
   }
 }
 

@@ -1,6 +1,6 @@
 import { db } from '../db'
 import { fetchOpenOpportunities } from '../services/salesforce'
-import { fetchGongActivityBySfdcId, fetchGongWarningsBySfdcId } from '../services/gong'
+import { buildOpportunityActivityIndex, invalidateGongCache } from '../services/gong'
 import { evaluatePastDue } from '../alerts/pastDue'
 import { evaluateStalled } from '../alerts/stalled'
 import { evaluateMeddpicc } from '../alerts/meddpicc'
@@ -30,8 +30,9 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType): Pro
   return false
 }
 
-export async function runAlertJob(): Promise<{ sent: number; skipped: number; errors: number }> {
+export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promise<{ sent: number; skipped: number; errors: number }> {
   console.log('[AlertJob] Starting alert evaluation...')
+  if (opts.bustGongCache) await invalidateGongCache()
 
   let sent = 0
   let skipped = 0
@@ -43,11 +44,8 @@ export async function runAlertJob(): Promise<{ sent: number; skipped: number; er
 
   const sfdcIds = opps.map((o) => o.Id)
 
-  // 2. Fetch Gong data in parallel
-  const [gongActivity, gongWarnings] = await Promise.all([
-    fetchGongActivityBySfdcId(sfdcIds),
-    fetchGongWarningsBySfdcId(sfdcIds),
-  ])
+  // 2. Build Gong activity index (cached in Redis for 1h)
+  const gongActivity = await buildOpportunityActivityIndex(sfdcIds)
 
   // 3. Load config from DB
   const [stallRules, meddpiccRequirements] = await Promise.all([
@@ -57,7 +55,7 @@ export async function runAlertJob(): Promise<{ sent: number; skipped: number; er
 
   // 4. Evaluate all alert types
   const pastDueAlerts = evaluatePastDue(opps)
-  const stalledAlerts = evaluateStalled(opps, stallRules, gongActivity, gongWarnings)
+  const stalledAlerts = evaluateStalled(opps, stallRules, gongActivity)
   const meddpiccAlerts = evaluateMeddpicc(opps, meddpiccRequirements)
 
   console.log(`[AlertJob] Found: ${pastDueAlerts.length} past due, ${stalledAlerts.length} stalled, ${meddpiccAlerts.length} MEDDPICC`)
