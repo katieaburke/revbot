@@ -1,0 +1,205 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users ─────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slackUserId    String  @unique
+  slackEmail     String  @unique
+  slackName      String?
+  slackAvatarUrl String?
+
+  // SFDC per-user OAuth (tokens AES-256-GCM encrypted at rest)
+  sfdcUserId       String?
+  sfdcInstanceUrl  String?
+  sfdcAccessToken  String?
+  sfdcRefreshToken String?
+  sfdcTokenExpiresAt DateTime?
+  sfdcConnectedAt  DateTime?
+
+  isRevOps Boolean @default(false)
+
+  notifications Notification[]
+  nudgesReceived NudgeLog[]     @relation("NudgeTarget")
+  nudgesSent     NudgeLog[]     @relation("NudgeSender")
+
+  @@map("users")
+}
+
+// ─── Admin Config ────────────────────────────────────────────────────────────
+
+// Key/value store for global settings (stored as JSON strings)
+model AppSetting {
+  key       String   @id
+  value     String   // JSON-encoded
+  updatedAt DateTime @updatedAt
+  updatedBy String?  // RevOps user email
+
+  @@map("app_settings")
+}
+
+// ─── Stall Rules ─────────────────────────────────────────────────────────────
+
+model StallRule {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name    String
+  enabled Boolean @default(true)
+
+  // Thresholds (either or both can be set)
+  dealAgeThresholdDays      Int? // total opp age in days
+  stageDurationThresholdDays Int? // days in current stage
+
+  // Filters (null = applies to all)
+  filterStages      String[] // SFDC stage names
+  filterOppTypes    String[] // e.g. ["New Business", "Renewal", "Amendment"]
+  filterSegments    String[] // e.g. ["Enterprise", "Mid-Market", "SMB"]
+  filterOwnerIds    String[] // SFDC user IDs (empty = all)
+
+  // Also flag if no Gong activity in this many days
+  gongInactivityDays Int?
+
+  // Also flag if single-threaded (only 1 contact on Gong calls)
+  flagSingleThreaded Boolean @default(false)
+
+  // Also flag on Gong red flags
+  flagGongRedFlags Boolean @default(false)
+
+  notifications Notification[]
+
+  @@map("stall_rules")
+}
+
+// ─── MEDDPICC Config ─────────────────────────────────────────────────────────
+
+// Maps each SFDC stage to which MEDDPICC fields are required
+model MeddpiccStageRequirement {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stageName String  @unique
+  enabled   Boolean @default(true)
+
+  // Which MEDDPICC components are required at this stage
+  requireMetrics           Boolean @default(false)
+  requireEconomicBuyer     Boolean @default(false)
+  requireDecisionCriteria  Boolean @default(false)
+  requireDecisionProcess   Boolean @default(false)
+  requireIdentifyPain      Boolean @default(false)
+  requireChampion          Boolean @default(false)
+  requireCompetition       Boolean @default(false)
+
+  // SFDC field API names for each component (configurable per org)
+  sfdcFieldMetrics          String @default("MEDDPICC_Metrics__c")
+  sfdcFieldEconomicBuyer    String @default("MEDDPICC_Economic_Buyer__c")
+  sfdcFieldDecisionCriteria String @default("MEDDPICC_Decision_Criteria__c")
+  sfdcFieldDecisionProcess  String @default("MEDDPICC_Decision_Process__c")
+  sfdcFieldIdentifyPain     String @default("MEDDPICC_Identify_Pain__c")
+  sfdcFieldChampion         String @default("MEDDPICC_Champion__c")
+  sfdcFieldCompetition      String @default("MEDDPICC_Competition__c")
+
+  @@map("meddpicc_stage_requirements")
+}
+
+// ─── Notifications ───────────────────────────────────────────────────────────
+
+enum AlertType {
+  PAST_DUE_INITIAL
+  PAST_DUE_AMENDMENT
+  PAST_DUE_RENEWAL
+  STALLED
+  MEDDPICC_MISSING
+}
+
+enum NotificationStatus {
+  SENT
+  SNOOZED
+  RESOLVED
+  DISMISSED
+  FAILED
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  opportunityId   String // SFDC Opportunity ID
+  opportunityName String
+  ownerId         String
+  owner           User   @relation(fields: [ownerId], references: [id])
+
+  alertType    AlertType
+  alertDetails Json    // type-specific payload (missing fields, days stalled, etc.)
+
+  // Slack message tracking
+  slackMessageTs  String?
+  slackChannelId  String?
+
+  status       NotificationStatus @default(SENT)
+  snoozedUntil DateTime?
+  resolvedAt   DateTime?
+  sentAt       DateTime           @default(now())
+
+  // If triggered by a stall rule
+  stallRuleId String?
+  stallRule   StallRule? @relation(fields: [stallRuleId], references: [id])
+
+  // SFDC update tracking (when user updates from Slack)
+  sfdcUpdatedAt    DateTime?
+  sfdcUpdateFields Json?     // what was updated
+
+  @@index([opportunityId])
+  @@index([ownerId])
+  @@index([alertType])
+  @@index([status])
+  @@map("notifications")
+}
+
+// ─── Nudge Log ───────────────────────────────────────────────────────────────
+
+model NudgeLog {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  opportunityId   String
+  opportunityName String
+
+  nudgedById String
+  nudgedBy   User   @relation("NudgeSender", fields: [nudgedById], references: [id])
+
+  targetUserId String
+  targetUser   User   @relation("NudgeTarget", fields: [targetUserId], references: [id])
+
+  alertType      AlertType
+  customMessage  String?
+  slackMessageTs String?
+
+  @@map("nudge_logs")
+}
+
+// ─── Admin Sessions ──────────────────────────────────────────────────────────
+
+model AdminSession {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  email     String
+  tokenHash String @unique
+
+  @@map("admin_sessions")
+}
