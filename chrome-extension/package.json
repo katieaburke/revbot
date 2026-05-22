@@ -1,0 +1,19 @@
+{
+  "name": "pipeline-nudge-extension",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build",
+    "build:zip": "vite build && cd dist && zip -r ../pipeline-nudge-extension.zip ."
+  },
+  "dependencies": {
+    "clsx": "^2.1.1"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.28",
+    "@types/chrome": "^0.0.268",
+    "typescript": "^5.4.5",
+    "vite": "^5.3.1"
+  }
+}

@@ -8,6 +8,7 @@ import { startWorker, scheduleAlertJob } from './jobs/scheduler'
 import authRouter from './api/auth'
 import configRouter from './api/config'
 import notificationsRouter from './api/notifications'
+import extensionRouter from './api/extension'
 
 async function main() {
   // Init Slack
@@ -37,6 +38,7 @@ async function main() {
   app.use('/auth', authRouter)
   app.use('/api/config', configRouter)
   app.use('/api/notifications', notificationsRouter)
+  app.use('/api/extension', extensionRouter)
 
   app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
 

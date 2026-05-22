@@ -1,13 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useForm } from 'react-hook-form'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { RefreshCw, Copy } from 'lucide-react'
 
 interface AppSettings {
   alertCron: string
   cooldownHours: number
   snoozeDays: number
   sfdcInstanceUrl: string
+  extensionApiKey?: string
 }
 
 export function Settings() {
@@ -17,6 +19,7 @@ export function Settings() {
     queryFn: () => api.get('/config/settings').then((r) => r.data),
   })
 
+  const [copied, setCopied] = useState(false)
   const { register, handleSubmit, reset } = useForm<AppSettings>()
 
   useEffect(() => {
@@ -73,6 +76,43 @@ export function Settings() {
           {save.isPending ? 'Saving...' : 'Save settings'}
         </button>
       </form>
+
+      {/* Chrome Extension API Key */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-6">
+        <h3 className="font-medium text-gray-900 text-sm">Chrome Extension</h3>
+        <p className="text-xs text-gray-500">
+          Generate an API key and paste it into the Pipeline Nudge Chrome extension settings.
+        </p>
+        {data?.extensionApiKey ? (
+          <div className="flex items-center gap-2">
+            <code className="flex-1 bg-gray-50 border border-gray-200 rounded px-3 py-2 text-xs font-mono truncate">
+              {data.extensionApiKey}
+            </code>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(data.extensionApiKey!)
+                setCopied(true)
+                setTimeout(() => setCopied(false), 2000)
+              }}
+              className="p-2 text-gray-400 hover:text-gray-700 rounded-lg border border-gray-200"
+              title="Copy"
+            >
+              <Copy size={14} />
+            </button>
+            {copied && <span className="text-xs text-green-600">Copied!</span>}
+          </div>
+        ) : null}
+        <button
+          onClick={async () => {
+            await api.post('/config/settings/generate-extension-key')
+            qc.invalidateQueries({ queryKey: ['settings'] })
+          }}
+          className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50"
+        >
+          <RefreshCw size={13} />
+          {data?.extensionApiKey ? 'Regenerate key' : 'Generate key'}
+        </button>
+      </div>
     </div>
   )
 }

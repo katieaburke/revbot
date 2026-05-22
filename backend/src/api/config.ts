@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { randomBytes } from 'crypto'
 import { db } from '../db'
 import { requireAdmin } from '../middleware/adminAuth'
 import { z } from 'zod'
@@ -133,6 +134,17 @@ router.put('/settings', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: String(err) })
   }
+})
+
+// Generate (or rotate) the Chrome extension API key
+router.post('/settings/generate-extension-key', async (req, res) => {
+  const key = randomBytes(24).toString('hex')
+  await db.appSetting.upsert({
+    where: { key: 'extensionApiKey' },
+    create: { key: 'extensionApiKey', value: JSON.stringify(key) },
+    update: { value: JSON.stringify(key) },
+  })
+  res.json({ extensionApiKey: key })
 })
 
 export default router
