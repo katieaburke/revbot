@@ -11,16 +11,20 @@ import notificationsRouter from './api/notifications'
 import extensionRouter from './api/extension'
 
 async function main() {
-  // Init Slack
+  // Init Slack (optional — skipped if tokens not set)
   const slackApp = initSlack()
 
   // Start BullMQ worker
   startWorker()
 
   // Schedule default alert job (Mon-Fri 8am, overridden by DB setting)
-  const cronSetting = await db.appSetting.findUnique({ where: { key: 'alertCron' } })
-  const cron = cronSetting ? JSON.parse(cronSetting.value) : '0 8 * * 1-5'
-  await scheduleAlertJob(cron)
+  try {
+    const cronSetting = await db.appSetting.findUnique({ where: { key: 'alertCron' } })
+    const cron = cronSetting ? JSON.parse(cronSetting.value) : '0 8 * * 1-5'
+    await scheduleAlertJob(cron)
+  } catch (err) {
+    console.warn('⚠️  Could not schedule alert job (DB not ready?):', (err as Error).message)
+  }
 
   // Express app
   const app = express()
@@ -28,10 +32,10 @@ async function main() {
   app.use(cors({ origin: config.NODE_ENV === 'development' ? '*' : process.env.FRONTEND_URL }))
   app.use(express.json())
 
-  // Mount Slack Bolt as middleware (handles /slack/events and /slack/actions)
-  const slackReceiver = (slackApp as unknown as { receiver: { router: express.Router } }).receiver
-  if (slackReceiver?.router) {
-    app.use('/slack', slackReceiver.router)
+  // Mount Slack Bolt middleware if configured
+  if (slackApp) {
+    const slackReceiver = (slackApp as unknown as { receiver: { router: express.Router } }).receiver
+    if (slackReceiver?.router) app.use('/slack', slackReceiver.router)
   }
 
   // API routes
@@ -47,8 +51,8 @@ async function main() {
     console.log(`   Admin UI: http://localhost:5173`)
   })
 
-  // Start Slack socket mode if in dev
-  if (config.NODE_ENV === 'development' && config.SLACK_APP_TOKEN) {
+  // Start Slack socket mode if in dev and configured
+  if (slackApp && config.NODE_ENV === 'development' && config.SLACK_APP_TOKEN) {
     await slackApp.start()
     console.log('⚡ Slack socket mode connected')
   }

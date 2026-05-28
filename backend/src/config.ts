@@ -1,7 +1,10 @@
 import dotenv from 'dotenv'
 import { z } from 'zod'
+import { resolve } from 'path'
 
-dotenv.config()
+// Load .env from project root — try multiple paths for tsx vs compiled
+dotenv.config({ path: resolve(process.cwd(), '.env') })
+dotenv.config({ path: resolve(process.cwd(), '../.env') })
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -17,8 +20,8 @@ const schema = z.object({
   SFDC_REDIRECT_URI: z.string().url(),
   SFDC_LOGIN_URL: z.string().url().default('https://login.salesforce.com'),
 
-  SLACK_BOT_TOKEN: z.string(),
-  SLACK_SIGNING_SECRET: z.string(),
+  SLACK_BOT_TOKEN: z.string().optional(),
+  SLACK_SIGNING_SECRET: z.string().optional(),
   SLACK_APP_TOKEN: z.string().optional(),
 
   GONG_ACCESS_KEY: z.string(),

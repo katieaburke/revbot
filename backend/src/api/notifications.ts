@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { db } from '../db'
 import { requireAdmin } from '../middleware/adminAuth'
 import { triggerAlertJobNow } from '../jobs/scheduler'
+import { runDryRun } from '../jobs/alertOrchestrator'
 import { sendDm } from '../slack/bot'
 import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
 import { AlertType } from '../types'
@@ -53,6 +54,16 @@ router.post('/run-now', async (_req, res) => {
   try {
     const jobId = await triggerAlertJobNow()
     res.json({ jobId, message: 'Alert job queued' })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// Dry run — evaluates all alerts against live data, returns what would be sent, nothing is sent
+router.post('/dry-run', async (_req, res) => {
+  try {
+    const result = await runDryRun({ bustGongCache: true })
+    res.json(result)
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }

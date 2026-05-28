@@ -7,10 +7,37 @@ import { evaluateMeddpicc } from '../alerts/meddpicc'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
 import { AlertType, NotificationStatus } from '../types'
+import type { PastDueAlert } from '../alerts/pastDue'
+import type { StalledAlert } from '../alerts/stalled'
+import type { MeddpiccAlert } from '../alerts/meddpicc'
 
-const COOLDOWN_HOURS = 24 // don't re-notify for same opp+type within this window
+const COOLDOWN_HOURS = 24
 
-async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType): Promise<boolean> {
+// ─── Dry run result types ──────────────────────────────────────────────────
+
+export interface DryRunAlert {
+  alertType: AlertType
+  opportunityId: string
+  opportunityName: string
+  ownerEmail: string
+  ownerSlackId: string | null  // null = couldn't resolve in Slack
+  wouldSkip: boolean           // already snoozed or in cooldown
+  skipReason?: string
+  details: Record<string, unknown>
+}
+
+export interface DryRunResult {
+  totalOpportunities: number
+  wouldSend: DryRunAlert[]
+  wouldSkip: DryRunAlert[]
+  unreachable: DryRunAlert[]  // no Slack ID found for owner
+  stallRulesActive: number
+  meddpiccStagesActive: number
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType): Promise<{ skip: boolean; reason?: string }> {
   const recent = await db.notification.findFirst({
     where: {
       opportunityId: oppId,
@@ -20,53 +47,117 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType): Pro
     orderBy: { sentAt: 'desc' },
   })
 
-  if (!recent) return false
-  if (recent.status === NotificationStatus.SNOOZED && recent.snoozedUntil && recent.snoozedUntil > new Date()) return true
-  if (recent.status === NotificationStatus.SENT) {
-    const hoursSince = (Date.now() - recent.sentAt.getTime()) / (1000 * 60 * 60)
-    if (hoursSince < COOLDOWN_HOURS) return true
+  if (!recent) return { skip: false }
+
+  if (recent.status === NotificationStatus.SNOOZED && recent.snoozedUntil && recent.snoozedUntil > new Date()) {
+    return { skip: true, reason: `Snoozed until ${recent.snoozedUntil.toLocaleDateString()}` }
   }
 
-  return false
+  if (recent.status === NotificationStatus.SENT) {
+    const hoursSince = (Date.now() - recent.sentAt.getTime()) / (1000 * 60 * 60)
+    if (hoursSince < COOLDOWN_HOURS) {
+      return { skip: true, reason: `Already sent ${Math.round(hoursSince)}h ago (cooldown: ${COOLDOWN_HOURS}h)` }
+    }
+  }
+
+  return { skip: false }
 }
 
-export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promise<{ sent: number; skipped: number; errors: number }> {
-  console.log('[AlertJob] Starting alert evaluation...')
+// ─── Core evaluation (shared by live and dry run) ─────────────────────────
+
+async function evaluate(opts: { bustGongCache?: boolean } = {}) {
   if (opts.bustGongCache) await invalidateGongCache()
 
-  let sent = 0
-  let skipped = 0
-  let errors = 0
-
-  // 1. Fetch all open opps from SFDC
   const opps = await fetchOpenOpportunities()
-  console.log(`[AlertJob] Fetched ${opps.length} open opportunities`)
-
   const sfdcIds = opps.map((o) => o.Id)
-
-  // 2. Build Gong activity index (cached in Redis for 1h)
   const gongActivity = await buildOpportunityActivityIndex(sfdcIds)
 
-  // 3. Load config from DB
   const [stallRules, meddpiccRequirements] = await Promise.all([
     db.stallRule.findMany({ where: { enabled: true } }),
     db.meddpiccStageRequirement.findMany({ where: { enabled: true } }),
   ])
 
-  // 4. Evaluate all alert types
-  const pastDueAlerts = evaluatePastDue(opps)
-  const stalledAlerts = evaluateStalled(opps, stallRules, gongActivity)
-  const meddpiccAlerts = evaluateMeddpicc(opps, meddpiccRequirements)
+  return {
+    opps,
+    gongActivity,
+    stallRules,
+    meddpiccRequirements,
+    pastDueAlerts: evaluatePastDue(opps),
+    stalledAlerts: evaluateStalled(opps, stallRules, gongActivity),
+    meddpiccAlerts: evaluateMeddpicc(opps, meddpiccRequirements),
+  }
+}
+
+// ─── Dry run ───────────────────────────────────────────────────────────────
+
+export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise<DryRunResult> {
+  console.log('[DryRun] Starting dry run evaluation...')
+
+  const { opps, pastDueAlerts, stalledAlerts, meddpiccAlerts, stallRules, meddpiccRequirements } = await evaluate(opts)
+
+  const wouldSend: DryRunAlert[] = []
+  const wouldSkip: DryRunAlert[] = []
+  const unreachable: DryRunAlert[] = []
+
+  type AnyAlert = PastDueAlert | StalledAlert | MeddpiccAlert
+
+  async function processAlert(alert: AnyAlert, alertType: AlertType) {
+    const { skip, reason } = await isSnoozedOrRecentlySent(alert.opportunityId, alertType)
+    const ownerSlackId = await resolveSlackUserId(alert.ownerEmail)
+
+    const dryAlert: DryRunAlert = {
+      alertType,
+      opportunityId: alert.opportunityId,
+      opportunityName: alert.opportunityName,
+      ownerEmail: alert.ownerEmail,
+      ownerSlackId,
+      wouldSkip: skip,
+      skipReason: reason,
+      details: alert as unknown as Record<string, unknown>,
+    }
+
+    if (!ownerSlackId) {
+      unreachable.push(dryAlert)
+    } else if (skip) {
+      wouldSkip.push(dryAlert)
+    } else {
+      wouldSend.push(dryAlert)
+    }
+  }
+
+  for (const alert of pastDueAlerts) await processAlert(alert, alert.alertType)
+  for (const alert of stalledAlerts) await processAlert(alert, AlertType.STALLED)
+  for (const alert of meddpiccAlerts) await processAlert(alert, AlertType.MEDDPICC_MISSING)
+
+  console.log(`[DryRun] Would send: ${wouldSend.length}, Would skip: ${wouldSkip.length}, Unreachable: ${unreachable.length}`)
+
+  return {
+    totalOpportunities: opps.length,
+    wouldSend,
+    wouldSkip,
+    unreachable,
+    stallRulesActive: stallRules.length,
+    meddpiccStagesActive: meddpiccRequirements.length,
+  }
+}
+
+// ─── Live run ──────────────────────────────────────────────────────────────
+
+export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promise<{ sent: number; skipped: number; errors: number }> {
+  console.log('[AlertJob] Starting alert evaluation...')
+
+  let sent = 0
+  let skipped = 0
+  let errors = 0
+
+  const { pastDueAlerts, stalledAlerts, meddpiccAlerts } = await evaluate(opts)
 
   console.log(`[AlertJob] Found: ${pastDueAlerts.length} past due, ${stalledAlerts.length} stalled, ${meddpiccAlerts.length} MEDDPICC`)
 
-  // 5. Send notifications (with dedup/snooze checks)
   for (const alert of pastDueAlerts) {
     try {
-      if (await isSnoozedOrRecentlySent(alert.opportunityId, alert.alertType)) {
-        skipped++
-        continue
-      }
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, alert.alertType)
+      if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
       if (!slackUserId) { skipped++; continue }
@@ -83,7 +174,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
           opportunityName: alert.opportunityName,
           ownerId: dbUser.id,
           alertType: alert.alertType,
-          alertDetails: alert as unknown as Record<string, unknown>,
+          alertDetails: alert as unknown as import('@prisma/client').Prisma.InputJsonValue,
           slackMessageTs: ts,
           slackChannelId: slackUserId,
           status: NotificationStatus.SENT,
@@ -91,17 +182,15 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       })
       sent++
     } catch (err) {
-      console.error(`[AlertJob] Error processing past due alert for ${alert.opportunityId}:`, err)
+      console.error(`[AlertJob] Error on past due ${alert.opportunityId}:`, err)
       errors++
     }
   }
 
   for (const alert of stalledAlerts) {
     try {
-      if (await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.STALLED)) {
-        skipped++
-        continue
-      }
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.STALLED)
+      if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
       if (!slackUserId) { skipped++; continue }
@@ -118,7 +207,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
           opportunityName: alert.opportunityName,
           ownerId: dbUser.id,
           alertType: AlertType.STALLED,
-          alertDetails: alert as unknown as Record<string, unknown>,
+          alertDetails: alert as unknown as import('@prisma/client').Prisma.InputJsonValue,
           slackMessageTs: ts,
           slackChannelId: slackUserId,
           stallRuleId: alert.ruleId,
@@ -127,17 +216,15 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       })
       sent++
     } catch (err) {
-      console.error(`[AlertJob] Error processing stalled alert for ${alert.opportunityId}:`, err)
+      console.error(`[AlertJob] Error on stalled ${alert.opportunityId}:`, err)
       errors++
     }
   }
 
   for (const alert of meddpiccAlerts) {
     try {
-      if (await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.MEDDPICC_MISSING)) {
-        skipped++
-        continue
-      }
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.MEDDPICC_MISSING)
+      if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
       if (!slackUserId) { skipped++; continue }
@@ -154,7 +241,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
           opportunityName: alert.opportunityName,
           ownerId: dbUser.id,
           alertType: AlertType.MEDDPICC_MISSING,
-          alertDetails: alert as unknown as Record<string, unknown>,
+          alertDetails: alert as unknown as import('@prisma/client').Prisma.InputJsonValue,
           slackMessageTs: ts,
           slackChannelId: slackUserId,
           status: NotificationStatus.SENT,
@@ -162,7 +249,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       })
       sent++
     } catch (err) {
-      console.error(`[AlertJob] Error processing MEDDPICC alert for ${alert.opportunityId}:`, err)
+      console.error(`[AlertJob] Error on MEDDPICC ${alert.opportunityId}:`, err)
       errors++
     }
   }
