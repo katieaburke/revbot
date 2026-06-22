@@ -2,7 +2,7 @@ import { fetchDealHealth, nudgeOwner } from './api'
 import { isConfigured, getSettings } from './storage'
 import { ALERT_LABELS, ALERT_COLORS, type DealHealthResponse, type ActiveAlert } from './types'
 
-const PANEL_ID = 'pipeline-nudge-panel'
+const PANEL_ID = 'beacon-panel'
 
 // ─── Opportunity ID extraction ─────────────────────────────────────────────
 
@@ -52,7 +52,7 @@ function renderLoading(panel: HTMLElement) {
 function renderNotConfigured(panel: HTMLElement) {
   panel.innerHTML = `
     <div style="${cardStyle()}">
-      <div style="font-weight:600;margin-bottom:6px;">Pipeline Nudge</div>
+      <div style="font-weight:600;margin-bottom:6px;">Beacon</div>
       <div style="color:#6b7280;margin-bottom:10px;font-size:12px;">Set up your API connection to see deal health here.</div>
       <button id="pn-open-settings" style="${btnStyle('#4f5df7')}">Open Settings</button>
     </div>
@@ -80,7 +80,7 @@ function renderHealthPanel(panel: HTMLElement, data: DealHealthResponse, isRevOp
   panel.innerHTML = `
     <div style="${cardStyle()}">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <span style="font-weight:600;font-size:13px;">Pipeline Nudge</span>
+        <span style="font-weight:600;font-size:13px;">Beacon</span>
         <button id="pn-collapse" style="background:none;border:none;cursor:pointer;padding:0;color:#9ca3af;" title="Close">✕</button>
       </div>
       ${gongSection}
@@ -225,7 +225,7 @@ async function handleNudge(panel: HTMLElement, data: DealHealthResponse, alert: 
     setTimeout(() => initPanel(), 2000)
   } catch (err) {
     if (btn) { btn.textContent = 'Failed — retry'; btn.disabled = false }
-    console.error('[Pipeline Nudge] Nudge failed:', err)
+    console.error('[Beacon] Nudge failed:', err)
   }
 }
 
@@ -237,7 +237,7 @@ function collapsePanel(panel: HTMLElement) {
       background:#4f5df7;color:#fff;border:none;border-radius:8px;
       padding:6px 12px;cursor:pointer;font-size:12px;font-weight:600;
       box-shadow:0 2px 8px rgba(79,93,247,.4);
-    ">🔔 Pipeline Nudge</button>
+    ">🔔 Beacon</button>
   `
   panel.querySelector('#pn-expand')?.addEventListener('click', () => initPanel())
 }

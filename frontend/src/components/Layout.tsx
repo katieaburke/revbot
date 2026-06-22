@@ -1,16 +1,28 @@
-import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, AlertTriangle, Settings, BellRing, LogOut } from 'lucide-react'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import {
+  LayoutDashboard,
+  Settings,
+  BellRing,
+  LogOut,
+  Timer,
+  ClipboardList,
+  CalendarX,
+  BookOpen,
+  Building2,
+  ChevronDown,
+  ArrowRight,
+  AlertTriangle,
+} from 'lucide-react'
 import clsx from 'clsx'
+import { useState } from 'react'
 
-const nav = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/notifications', label: 'Notifications', icon: BellRing },
-  { to: '/stall-rules', label: 'Stall Rules', icon: AlertTriangle },
-  { to: '/meddpicc', label: 'MEDDPICC Config', icon: Settings },
-  { to: '/settings', label: 'Settings', icon: Settings },
-]
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts']
 
 export function Layout() {
+  const location = useLocation()
+  const isInPlaybook = PLAYBOOK_ROUTES.some((r) => location.pathname.startsWith(r))
+  const [playbookOpen, setPlaybookOpen] = useState(isInPlaybook)
+
   function logout() {
     localStorage.removeItem('admin_token')
     window.location.href = '/login'
@@ -21,29 +33,73 @@ export function Layout() {
       {/* Sidebar */}
       <aside className="w-60 bg-white border-r border-gray-200 flex flex-col">
         <div className="px-6 py-5 border-b border-gray-200">
-          <h1 className="text-lg font-semibold text-gray-900">Pipeline Nudge</h1>
+          <h1 className="text-lg font-semibold text-gray-900">Beacon</h1>
           <p className="text-xs text-gray-500 mt-0.5">RevOps Admin</p>
         </div>
-        <nav className="flex-1 px-3 py-4 space-y-0.5">
-          {nav.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) =>
-                clsx(
-                  'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-                  isActive
-                    ? 'bg-brand-50 text-brand-600'
-                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                )
-              }
-            >
-              <Icon size={16} />
-              {label}
-            </NavLink>
-          ))}
+
+        <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+
+          {/* Dashboard */}
+          <NavItem to="/" label="Dashboard" icon={LayoutDashboard} end />
+
+          {/* Notification History */}
+          <NavItem to="/notifications" label="Notification History" icon={BellRing} />
+
+          <div className="pt-2 pb-1">
+            <div className="h-px bg-gray-100 mx-1" />
+          </div>
+
+          {/* Playbook section */}
+          <button
+            onClick={() => setPlaybookOpen((o) => !o)}
+            className={clsx(
+              'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors w-full',
+              isInPlaybook
+                ? 'bg-brand-50 text-brand-600'
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+            )}
+          >
+            <BookOpen size={16} />
+            <span className="flex-1 text-left">Playbook</span>
+            <ChevronDown
+              size={14}
+              className={clsx('transition-transform', playbookOpen && 'rotate-180')}
+            />
+          </button>
+
+          {playbookOpen && (
+            <div className="ml-3 pl-3 border-l border-gray-200 space-y-0.5 mt-0.5">
+
+              {/* Opportunities sub-section */}
+              <p className="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                Opportunities
+              </p>
+              <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} />
+              <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} />
+              <NavItem to="/past-due" label="Past Due" icon={CalendarX} />
+              <NavItem to="/next-step" label="Next Step" icon={ArrowRight} />
+              <NavItem to="/close-date-risk" label="Close Date Risk" icon={AlertTriangle} />
+
+              {/* Accounts sub-section */}
+              <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                Accounts
+              </p>
+              <div className="px-3 py-1.5 text-xs text-gray-400 italic">
+                Coming soon
+              </div>
+
+            </div>
+          )}
+
+          <div className="pt-2 pb-1">
+            <div className="h-px bg-gray-100 mx-1" />
+          </div>
+
+          {/* Settings */}
+          <NavItem to="/settings" label="Settings" icon={Settings} />
+
         </nav>
+
         <div className="px-3 py-4 border-t border-gray-200">
           <button
             onClick={logout}
@@ -60,5 +116,35 @@ export function Layout() {
         <Outlet />
       </main>
     </div>
+  )
+}
+
+function NavItem({
+  to,
+  label,
+  icon: Icon,
+  end,
+}: {
+  to: string
+  label: string
+  icon: React.ElementType
+  end?: boolean
+}) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        clsx(
+          'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+          isActive
+            ? 'bg-brand-50 text-brand-600'
+            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+        )
+      }
+    >
+      <Icon size={16} />
+      {label}
+    </NavLink>
   )
 }

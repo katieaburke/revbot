@@ -26,7 +26,7 @@ export function Login() {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm w-full max-w-sm p-8">
-        <h1 className="text-xl font-semibold text-gray-900 mb-1">Pipeline Nudge</h1>
+        <h1 className="text-xl font-semibold text-gray-900 mb-1">Beacon</h1>
         <p className="text-sm text-gray-500 mb-6">RevOps Admin</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

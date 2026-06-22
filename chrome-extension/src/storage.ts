@@ -1,6 +1,6 @@
 import type { ExtensionSettings } from './types'
 
-const SETTINGS_KEY = 'pipeline_nudge_settings'
+const SETTINGS_KEY = 'beacon_settings'
 
 export async function getSettings(): Promise<ExtensionSettings | null> {
   return new Promise((resolve) => {

@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useForm } from 'react-hook-form'
 import { useEffect, useState } from 'react'
-import { RefreshCw, Copy } from 'lucide-react'
+import { RefreshCw, Copy, CheckCircle, FlaskConical, X } from 'lucide-react'
 
 interface AppSettings {
   alertCron: string
@@ -10,6 +10,7 @@ interface AppSettings {
   snoozeDays: number
   sfdcInstanceUrl: string
   extensionApiKey?: string
+  slackTestRecipient?: string
 }
 
 export function Settings() {
@@ -20,6 +21,23 @@ export function Settings() {
   })
 
   const [copied, setCopied] = useState(false)
+  const [sfdcConnected, setSfdcConnected] = useState(false)
+
+  function connectSalesforce() {
+    const popup = window.open(
+      'http://localhost:3001/auth/sfdc/admin-start',
+      'sfdc-connect',
+      'width=600,height=700'
+    )
+    const handler = (e: MessageEvent) => {
+      if (e.data === 'sfdc-connected') {
+        setSfdcConnected(true)
+        window.removeEventListener('message', handler)
+        popup?.close()
+      }
+    }
+    window.addEventListener('message', handler)
+  }
   const { register, handleSubmit, reset } = useForm<AppSettings>()
 
   useEffect(() => {
@@ -28,6 +46,19 @@ export function Settings() {
 
   const save = useMutation({
     mutationFn: (d: AppSettings) => api.put('/config/settings', d),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+  })
+
+  const [testEmail, setTestEmail] = useState('')
+  const isTestModeOn = !!data?.slackTestRecipient
+
+  const enableTestMode = useMutation({
+    mutationFn: (email: string) => api.put('/config/settings', { slackTestRecipient: email }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings'] }); setTestEmail('') },
+  })
+
+  const disableTestMode = useMutation({
+    mutationFn: () => api.put('/config/settings', { slackTestRecipient: '' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
   })
 
@@ -58,8 +89,80 @@ export function Settings() {
         <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
           <h3 className="font-medium text-gray-900 text-sm">Salesforce</h3>
           <Field label="Instance URL" hint="Used to generate deep links in Slack messages">
-            <input {...register('sfdcInstanceUrl')} className="input w-full" placeholder="https://yourorg.lightning.force.com" />
+            <input {...register('sfdcInstanceUrl')} className="input w-full" placeholder="https://yourorg.my.salesforce.com" />
           </Field>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-0.5">RevOps connection</label>
+            <p className="text-xs text-gray-400 mb-2">Connect your Salesforce account so the app can read pipeline data for dry runs and alert evaluation.</p>
+            {sfdcConnected ? (
+              <div className="flex items-center gap-2 text-sm text-green-600">
+                <CheckCircle size={15} /> Salesforce connected successfully!
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={connectSalesforce}
+                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+              >
+                Connect Salesforce
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ── Test Mode ───────────────────────────────────────────── */}
+        <div className={`rounded-xl border p-6 space-y-4 ${isTestModeOn ? 'bg-amber-50 border-amber-300' : 'bg-white border-gray-200'}`}>
+          <div className="flex items-center gap-2">
+            <FlaskConical size={16} className={isTestModeOn ? 'text-amber-600' : 'text-gray-400'} />
+            <h3 className="font-medium text-gray-900 text-sm">Test mode</h3>
+            {isTestModeOn && (
+              <span className="ml-auto text-xs font-medium px-2 py-0.5 rounded-full bg-amber-200 text-amber-800">
+                Active
+              </span>
+            )}
+          </div>
+
+          {isTestModeOn ? (
+            <div className="space-y-3">
+              <p className="text-sm text-amber-800">
+                All Slack alerts are being sent to <strong>{data.slackTestRecipient}</strong> instead of the actual rep.
+                Each message includes a banner so you can see who the real recipient would be.
+              </p>
+              <button
+                type="button"
+                onClick={() => disableTestMode.mutate()}
+                disabled={disableTestMode.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-amber-300 text-amber-800 text-sm font-medium rounded-lg hover:bg-amber-100 disabled:opacity-50"
+              >
+                <X size={13} />
+                {disableTestMode.isPending ? 'Disabling...' : 'Disable test mode — send to real reps'}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-xs text-gray-500">
+                Route all Slack alerts to one email address for testing. A banner will note who the real recipient would be.
+                Flip it off when you're ready to go live.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  value={testEmail}
+                  onChange={(e) => setTestEmail(e.target.value)}
+                  className="input flex-1"
+                  placeholder="e.g. katie.burke@uberall.com"
+                />
+                <button
+                  type="button"
+                  onClick={() => enableTestMode.mutate(testEmail)}
+                  disabled={!testEmail || enableTestMode.isPending}
+                  className="px-4 py-2 bg-amber-500 text-white text-sm font-medium rounded-lg hover:bg-amber-600 disabled:opacity-50"
+                >
+                  {enableTestMode.isPending ? 'Saving...' : 'Enable'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {save.isSuccess && (
@@ -81,7 +184,7 @@ export function Settings() {
       <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-6">
         <h3 className="font-medium text-gray-900 text-sm">Chrome Extension</h3>
         <p className="text-xs text-gray-500">
-          Generate an API key and paste it into the Pipeline Nudge Chrome extension settings.
+          Generate an API key and paste it into the Beacon Chrome extension settings.
         </p>
         {data?.extensionApiKey ? (
           <div className="flex items-center gap-2">

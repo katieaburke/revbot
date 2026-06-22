@@ -2,13 +2,43 @@ import type { KnownBlock } from '@slack/bolt'
 import type { PastDueAlert } from '../alerts/pastDue'
 import type { StalledAlert, StalledReason } from '../alerts/stalled'
 import type { MeddpiccAlert } from '../alerts/meddpicc'
+import type { NextStepAlert, NextStepIssue } from '../alerts/nextStep'
+import type { CloseDateRiskAlert } from '../alerts/closeDate'
 import { MEDDPICC_LABELS } from '../alerts/meddpicc'
 import { AlertType } from '../types'
+import { getSfdcInstanceUrl } from '../services/salesforce'
 
-const SFDC_BASE = process.env.SFDC_INSTANCE_URL ?? 'https://your-instance.lightning.force.com'
+// Lazily-resolved — fetched from the RevOps user record so no env var is needed.
+// Cached after first load; call invalidateSfdcBaseCache() when a new SFDC connection is made.
+let _sfdcBase: string | null = null
+async function getSfdcBase(): Promise<string> {
+  if (!_sfdcBase) _sfdcBase = await getSfdcInstanceUrl()
+  return _sfdcBase
+}
 
-function oppLink(oppId: string, oppName: string): string {
-  return `<${SFDC_BASE}/lightning/r/Opportunity/${oppId}/view|${oppName}>`
+export function invalidateSfdcBaseCache(): void {
+  _sfdcBase = null
+}
+
+function oppLink(base: string, oppId: string, oppName: string): string {
+  return `<${base}/lightning/r/Opportunity/${oppId}/view|${oppName}>`
+}
+
+function snoozeButton(oppId: string, alertType: string) {
+  return {
+    type: 'button' as const,
+    text: { type: 'plain_text' as const, text: 'Snooze' },
+    action_id: 'snooze_options',
+    value: JSON.stringify({ oppId, alertType }),
+  }
+}
+
+function needHelpButton() {
+  return {
+    type: 'button' as const,
+    text: { type: 'plain_text' as const, text: 'Need Help?' },
+    action_id: 'need_help',
+  }
 }
 
 function stalledReasonText(reason: StalledReason): string {
@@ -26,27 +56,56 @@ function stalledReasonText(reason: StalledReason): string {
   }
 }
 
-export function buildPastDueMessage(alert: PastDueAlert, isNudge = false): KnownBlock[] {
-  const prefix = isNudge ? '👋 *RevOps follow-up:* ' : ''
-  const link = oppLink(alert.opportunityId, alert.opportunityName)
-
-  let actionText: string
-  let updateAction: string
+export async function buildPastDueMessage(alert: PastDueAlert, isNudge = false): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
+  const prefix = isNudge ? '👋 *RevOps nudge:* ' : ''
+  const link = oppLink(base, alert.opportunityId, alert.opportunityName)
+  const daysText = `${alert.daysOverdue} day${alert.daysOverdue === 1 ? '' : 's'}`
 
   if (alert.alertType === AlertType.PAST_DUE_RENEWAL) {
-    actionText = `The renewal ${link} was due on *${alert.closeDate}* — that's *${alert.daysOverdue} days ago.*`
-    updateAction = 'Update Renewal'
-  } else {
-    actionText = `${link} had a close date of *${alert.closeDate}* — that's *${alert.daysOverdue} days ago.*`
-    updateAction = 'Update Close Date'
+    return [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: [
+            `${prefix}🔁 *Renewal past its booking date — ${link}*`,
+            `Booking date was *${alert.bookingDate}* — *${daysText} ago.*`,
+            '',
+            `Please close this renewal in Salesforce. If the account has already auto-renewed, close this opportunity at the flat renewal amount and open a separate amendment for any incremental growth you're still working to close.`,
+          ].join('\n'),
+        },
+      },
+      {
+        type: 'actions',
+        block_id: `past_due_${alert.opportunityId}`,
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Close Renewal' },
+            style: 'primary',
+            action_id: 'close_renewal',
+            value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName }),
+          },
+          snoozeButton(alert.opportunityId, alert.alertType),
+          needHelpButton(),
+        ],
+      },
+    ]
   }
 
+  // Initial or Amendment — rep can update close date
+  const typeLabel = alert.alertType === AlertType.PAST_DUE_AMENDMENT ? 'amendment' : 'opportunity'
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `${prefix}📅 *Past Due Opportunity*\n${actionText}`,
+        text: [
+          `${prefix}📅 *Past due ${typeLabel} — ${link}*`,
+          `Close date was *${alert.bookingDate}* — *${daysText} ago.*`,
+          `Please update the close date in Salesforce or mark this deal as closed.`,
+        ].join('\n'),
       },
     },
     {
@@ -55,25 +114,22 @@ export function buildPastDueMessage(alert: PastDueAlert, isNudge = false): Known
       elements: [
         {
           type: 'button',
-          text: { type: 'plain_text', text: updateAction },
+          text: { type: 'plain_text', text: 'Update Close Date' },
           style: 'primary',
           action_id: 'update_close_date',
           value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName, alertType: alert.alertType }),
         },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Snooze 7 days' },
-          action_id: 'snooze_notification',
-          value: JSON.stringify({ oppId: alert.opportunityId, days: 7, alertType: alert.alertType }),
-        },
+        snoozeButton(alert.opportunityId, alert.alertType),
+        needHelpButton(),
       ],
     },
   ]
 }
 
-export function buildStalledMessage(alert: StalledAlert, isNudge = false): KnownBlock[] {
+export async function buildStalledMessage(alert: StalledAlert, isNudge = false): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
   const prefix = isNudge ? '👋 *RevOps follow-up:* ' : ''
-  const link = oppLink(alert.opportunityId, alert.opportunityName)
+  const link = oppLink(base, alert.opportunityId, alert.opportunityName)
   const reasonLines = alert.triggeredBy.map((r) => `• ${stalledReasonText(r)}`).join('\n')
 
   return [
@@ -97,24 +153,27 @@ export function buildStalledMessage(alert: StalledAlert, isNudge = false): Known
         },
         {
           type: 'button',
+          text: { type: 'plain_text', text: 'Update Close Date' },
+          action_id: 'update_close_date',
+          value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName, alertType: alert.alertType }),
+        },
+        {
+          type: 'button',
           text: { type: 'plain_text', text: 'Log Activity' },
           action_id: 'log_activity',
           value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName }),
         },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Snooze 7 days' },
-          action_id: 'snooze_notification',
-          value: JSON.stringify({ oppId: alert.opportunityId, days: 7, alertType: alert.alertType }),
-        },
+        snoozeButton(alert.opportunityId, alert.alertType),
+        needHelpButton(),
       ],
     },
   ]
 }
 
-export function buildMeddpiccMessage(alert: MeddpiccAlert, isNudge = false): KnownBlock[] {
+export async function buildMeddpiccMessage(alert: MeddpiccAlert, isNudge = false): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
   const prefix = isNudge ? '👋 *RevOps follow-up:* ' : ''
-  const link = oppLink(alert.opportunityId, alert.opportunityName)
+  const link = oppLink(base, alert.opportunityId, alert.opportunityName)
   const fieldList = alert.missingFields.map((f) => MEDDPICC_LABELS[f]).join(', ')
 
   return [
@@ -141,15 +200,294 @@ export function buildMeddpiccMessage(alert: MeddpiccAlert, isNudge = false): Kno
             sfdcFieldMap: alert.sfdcFieldMap,
           }),
         },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Snooze 7 days' },
-          action_id: 'snooze_notification',
-          value: JSON.stringify({ oppId: alert.opportunityId, days: 7, alertType: alert.alertType }),
-        },
+        snoozeButton(alert.opportunityId, alert.alertType),
+        needHelpButton(),
       ],
     },
   ]
+}
+
+export async function buildNextStepMessage(alert: NextStepAlert, isNudge = false): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
+  const prefix = isNudge ? '👋 *RevOps nudge:* ' : ''
+  const link = oppLink(base, alert.opportunityId, alert.opportunityName)
+
+  const issueLines = alert.issues.map((i: NextStepIssue) => {
+    if (i === 'missing_text') return `• Next step description is blank`
+    if (i === 'missing_date') return `• Next step date is not set`
+    if (i === 'past_date') return `• Next step date (*${alert.nextStepDate}*) is in the past`
+    return `• Unknown issue`
+  }).join('\n')
+
+  const renewalNote = (alert.oppType ?? '').toLowerCase().includes('renewal') && alert.bookingDate
+    ? `\nBooking date: *${alert.bookingDate}*`
+    : ''
+
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: [
+          `${prefix}📌 *Missing or overdue next step — ${link}*`,
+          renewalNote,
+          '',
+          issueLines,
+          '',
+          `Please update your next step in Salesforce so the team knows what's happening on this deal.`,
+        ].filter((l) => l !== undefined).join('\n'),
+      },
+    },
+    {
+      type: 'actions',
+      block_id: `next_step_${alert.opportunityId}`,
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update Next Step' },
+          style: 'primary',
+          action_id: 'update_next_step',
+          value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName }),
+        },
+        snoozeButton(alert.opportunityId, alert.alertType),
+        needHelpButton(),
+      ],
+    },
+  ]
+}
+
+export async function buildCloseDateRiskMessage(alert: CloseDateRiskAlert, isNudge = false): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
+  const prefix = isNudge ? '👋 *RevOps nudge:* ' : ''
+  const link = oppLink(base, alert.opportunityId, alert.opportunityName)
+  const daysText = alert.daysUntilClose === 0
+    ? 'today'
+    : alert.daysUntilClose === 1
+    ? 'tomorrow'
+    : `in *${alert.daysUntilClose} days*`
+
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: [
+          `${prefix}⚠️ *Close date risk — ${link}*`,
+          `Close date is ${daysText} (*${alert.closeDate}*) but the deal is still in *${alert.stage}*.`,
+          ``,
+          `Is this deal on track? Please update the stage or push the close date so the forecast stays accurate.`,
+        ].join('\n'),
+      },
+    },
+    {
+      type: 'actions',
+      block_id: `close_date_risk_${alert.opportunityId}`,
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update Close Date' },
+          style: 'primary',
+          action_id: 'update_close_date',
+          value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName, alertType: AlertType.CLOSE_DATE_RISK }),
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update Stage' },
+          action_id: 'update_stage',
+          value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName, currentStage: alert.stage }),
+        },
+        snoozeButton(alert.opportunityId, alert.alertType),
+        needHelpButton(),
+      ],
+    },
+  ]
+}
+
+// Combined message for multiple alert types on one opp (used by the admin draft/send flow)
+export async function buildCombinedMessage(
+  oppId: string,
+  oppName: string,
+  alerts: { alertType: string; details: Record<string, unknown> }[]
+): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
+  const link = oppLink(base, oppId, oppName)
+  const blocks: KnownBlock[] = []
+  const summarySections: string[] = []
+
+  for (const a of alerts) {
+    if (a.alertType === AlertType.MEDDPICC_MISSING) {
+      const missing = (a.details.missingFields as string[] | undefined) ?? []
+      const labels = missing.map((f) => MEDDPICC_LABELS[f as keyof typeof MEDDPICC_LABELS] ?? f)
+      summarySections.push(`📋 *Missing MEDDPICC/BANT:* ${labels.join(', ')}`)
+    } else if (a.alertType === AlertType.STALLED) {
+      const reasons = (a.details.triggeredBy as Array<{ type: string; days?: number; threshold?: number; phrases?: string[] }> | undefined) ?? []
+      for (const r of reasons) summarySections.push(`🔴 ${stalledReasonText(r as StalledReason)}`)
+    } else if (a.alertType === AlertType.PAST_DUE_RENEWAL) {
+      const days = a.details.daysOverdue as number
+      const date = a.details.bookingDate as string
+      summarySections.push(`🔁 *Renewal past due:* Booking date was *${date}* — ${days} day${days === 1 ? '' : 's'} ago`)
+      summarySections.push(`_If this account has already auto-renewed, close at the flat renewal amount and open a separate amendment for any growth you're still working._`)
+    } else if (
+      a.alertType === AlertType.PAST_DUE_INITIAL ||
+      a.alertType === AlertType.PAST_DUE_AMENDMENT
+    ) {
+      const days = a.details.daysOverdue as number
+      const date = a.details.bookingDate as string
+      const typeLabel = a.alertType === AlertType.PAST_DUE_AMENDMENT ? 'Amendment' : 'Opportunity'
+      summarySections.push(`📅 *${typeLabel} past due:* Close date was *${date}* — ${days} day${days === 1 ? '' : 's'} ago`)
+    } else if (a.alertType === AlertType.CLOSE_DATE_RISK) {
+      const daysUntilClose = a.details.daysUntilClose as number
+      const closeDate = a.details.closeDate as string
+      const stage = a.details.stage as string
+      const daysText = daysUntilClose === 0 ? 'today' : daysUntilClose === 1 ? 'tomorrow' : `in ${daysUntilClose} days`
+      summarySections.push(`⚠️ *Close date risk:* Close date is ${daysText} (*${closeDate}*) but deal is still in *${stage}*`)
+    } else if (a.alertType === AlertType.NEXT_STEP_MISSING) {
+      const issues = (a.details.issues as string[] | undefined) ?? []
+      for (const issue of issues) {
+        if (issue === 'missing_text') summarySections.push(`📌 *Next step description is blank* — please add what's happening on this deal`)
+        if (issue === 'missing_date') summarySections.push(`📌 *Next step date is not set* — please add a target date`)
+        if (issue === 'past_date') {
+          const date = a.details.nextStepDate as string | null
+          summarySections.push(`⏰ *Next step date is in the past* (${date ?? 'unknown'}) — please update it`)
+        }
+      }
+    }
+  }
+
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `👋 *Action needed on ${link}*\n\n${summarySections.join('\n')}`,
+    },
+  })
+
+  // Add primary action button based on the highest-priority alert
+  for (const a of alerts) {
+    if (a.alertType === AlertType.PAST_DUE_INITIAL || a.alertType === AlertType.PAST_DUE_AMENDMENT) {
+      blocks.push({
+        type: 'actions',
+        block_id: `past_due_action_${oppId}`,
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update Close Date' },
+          style: 'primary',
+          action_id: 'update_close_date',
+          value: JSON.stringify({ oppId, oppName, alertType: a.alertType }),
+        }],
+      } as KnownBlock)
+      break
+    }
+    if (a.alertType === AlertType.PAST_DUE_RENEWAL) {
+      blocks.push({
+        type: 'actions',
+        block_id: `renewal_action_${oppId}`,
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: 'Close Renewal' },
+          style: 'primary',
+          action_id: 'close_renewal',
+          value: JSON.stringify({ oppId, oppName }),
+        }],
+      } as KnownBlock)
+      break
+    }
+    if (a.alertType === AlertType.STALLED) {
+      blocks.push({
+        type: 'actions',
+        block_id: `stalled_action_${oppId}`,
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Update Stage' },
+            style: 'primary',
+            action_id: 'update_stage',
+            value: JSON.stringify({ oppId, oppName, currentStage: (a.details.stage as string) ?? '' }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Log Activity' },
+            action_id: 'log_activity',
+            value: JSON.stringify({ oppId, oppName }),
+          },
+        ],
+      } as KnownBlock)
+      break
+    }
+    if (a.alertType === AlertType.MEDDPICC_MISSING) {
+      blocks.push({
+        type: 'actions',
+        block_id: `meddpicc_action_${oppId}`,
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update MEDDPICC/BANT' },
+          style: 'primary',
+          action_id: 'update_meddpicc',
+          value: JSON.stringify({
+            oppId,
+            oppName,
+            missingFields: (a.details.missingFields as string[]) ?? [],
+            sfdcFieldMap: (a.details.sfdcFieldMap as Record<string, string>) ?? {},
+          }),
+        }],
+      } as KnownBlock)
+      break
+    }
+    if (a.alertType === AlertType.NEXT_STEP_MISSING) {
+      blocks.push({
+        type: 'actions',
+        block_id: `next_step_action_${oppId}`,
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update Next Step' },
+          style: 'primary',
+          action_id: 'update_next_step',
+          value: JSON.stringify({ oppId, oppName }),
+        }],
+      } as KnownBlock)
+      break
+    }
+    if (a.alertType === AlertType.CLOSE_DATE_RISK) {
+      blocks.push({
+        type: 'actions',
+        block_id: `close_date_risk_action_${oppId}`,
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Update Close Date' },
+            style: 'primary',
+            action_id: 'update_close_date',
+            value: JSON.stringify({ oppId, oppName, alertType: AlertType.CLOSE_DATE_RISK }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Update Stage' },
+            action_id: 'update_stage',
+            value: JSON.stringify({ oppId, oppName, currentStage: (a.details.stage as string) ?? '' }),
+          },
+        ],
+      } as KnownBlock)
+      break
+    }
+  }
+
+  // Footer: open in SFDC + snooze + help
+  blocks.push({
+    type: 'actions',
+    block_id: `footer_${oppId}`,
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Open in Salesforce' },
+        url: `${base}/lightning/r/Opportunity/${oppId}/view`,
+        action_id: 'open_sfdc',
+      },
+      snoozeButton(oppId, alerts[0]?.alertType ?? ''),
+      needHelpButton(),
+    ],
+  })
+
+  return blocks
 }
 
 // Sent to a user who hasn't connected Salesforce yet

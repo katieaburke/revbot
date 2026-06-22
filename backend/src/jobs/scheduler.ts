@@ -33,12 +33,20 @@ export function startWorker() {
     console.error(`[Worker] Job ${job?.id} failed:`, err.message)
   })
 
+  worker.on('error', (err) => {
+    // Prevent unhandled worker errors (e.g. BullMQ repeatable job issues) from crashing the process
+    console.error('[Worker] Error (non-fatal):', err.message)
+  })
+
   return worker
 }
 
+const DEFAULT_CRON = '0 8 * * 1-5' // Mon–Fri 8am
+
 // Schedule the recurring alert check based on DB config
-// Default: daily at 8am — configurable via admin settings
-export async function scheduleAlertJob(cronExpression = '0 8 * * 1-5') {
+export async function scheduleAlertJob(cronExpression?: string | null) {
+  const cron = cronExpression?.trim() || DEFAULT_CRON
+
   // Remove existing repeatable jobs first
   const repeatableJobs = await alertQueue.getRepeatableJobs()
   for (const job of repeatableJobs) {
@@ -47,8 +55,8 @@ export async function scheduleAlertJob(cronExpression = '0 8 * * 1-5') {
     }
   }
 
-  await alertQueue.add('run-alerts', {}, { repeat: { pattern: cronExpression } })
-  console.log(`[Scheduler] Alert job scheduled: ${cronExpression}`)
+  await alertQueue.add('run-alerts', {}, { repeat: { pattern: cron } })
+  console.log(`[Scheduler] Alert job scheduled: ${cron}`)
 }
 
 // Trigger an immediate one-off run (e.g. from admin UI) — always busts Gong cache

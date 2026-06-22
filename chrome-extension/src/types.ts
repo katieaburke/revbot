@@ -1,5 +1,5 @@
 export interface ExtensionSettings {
-  apiUrl: string        // e.g. https://pipeline-nudge.yourcompany.com
+  apiUrl: string        // e.g. https://beacon.yourcompany.com
   apiKey: string        // extension API key from admin settings
   slackEmail: string    // user's Slack/work email for RevOps nudge auth
   isRevOps: boolean

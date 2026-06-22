@@ -4,8 +4,9 @@ import { requireAdmin } from '../middleware/adminAuth'
 import { triggerAlertJobNow } from '../jobs/scheduler'
 import { runDryRun } from '../jobs/alertOrchestrator'
 import { sendDm } from '../slack/bot'
-import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
+import { buildCombinedMessage, buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
 import { AlertType } from '../types'
+import { getServiceConnection } from '../services/salesforce'
 import { z } from 'zod'
 
 const router = Router()
@@ -49,6 +50,23 @@ router.get('/summary', async (_req, res) => {
   res.json({ total, sent, snoozed, resolved, byType })
 })
 
+// Sent notification counts per opportunity (for the dashboard badges)
+router.get('/opp-counts', async (req, res) => {
+  const { oppIds } = req.query as { oppIds?: string }
+  const ids = oppIds ? oppIds.split(',').filter(Boolean) : []
+  if (!ids.length) return res.json({})
+
+  const rows = await db.notification.groupBy({
+    by: ['opportunityId'],
+    _count: { id: true },
+    where: { opportunityId: { in: ids } },
+  })
+
+  const result: Record<string, number> = {}
+  for (const row of rows) result[row.opportunityId] = row._count.id
+  res.json(result)
+})
+
 // Trigger an immediate alert run
 router.post('/run-now', async (_req, res) => {
   try {
@@ -64,6 +82,57 @@ router.post('/dry-run', async (_req, res) => {
   try {
     const result = await runDryRun({ bustGongCache: true })
     res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// Send a drafted alert for a single opp to the rep
+router.post('/send-draft', async (req, res) => {
+  try {
+    const { opportunityId, opportunityName, ownerSlackId, ownerEmail, alerts } = req.body as {
+      opportunityId: string
+      opportunityName: string
+      ownerSlackId: string
+      ownerEmail: string
+      alerts: { alertType: string; details: Record<string, unknown> }[]
+    }
+
+    if (!ownerSlackId) return res.status(400).json({ error: 'No Slack ID for this owner' })
+
+    const blocks = await buildCombinedMessage(opportunityId, opportunityName, alerts)
+    const ts = await sendDm(ownerSlackId, blocks, `Action needed: ${opportunityName}`)
+
+    // Record each alert type as a notification
+    const owner = await db.user.findFirst({ where: { slackUserId: ownerSlackId } })
+    if (owner) {
+      for (const a of alerts) {
+        await db.notification.create({
+          data: {
+            opportunityId,
+            opportunityName,
+            ownerId: owner.id,
+            alertType: a.alertType as AlertType,
+            alertDetails: a.details as never,
+            slackMessageTs: ts ?? undefined,
+            status: 'SENT',
+          },
+        })
+      }
+    }
+
+    res.json({ ok: true, ts })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// Delete a Salesforce opportunity directly (for cleaning up test opps)
+router.delete('/sfdc-opportunity/:id', async (req, res) => {
+  try {
+    const conn = await getServiceConnection()
+    await conn.sobject('Opportunity').delete(req.params.id)
+    res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
@@ -101,11 +170,11 @@ router.post('/nudge', async (req, res) => {
     const isNudge = true
 
     if (alertType === AlertType.PAST_DUE_INITIAL || alertType === AlertType.PAST_DUE_AMENDMENT || alertType === AlertType.PAST_DUE_RENEWAL) {
-      blocks = buildPastDueMessage({ alertType, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', ...alertData } as never, isNudge)
+      blocks = await buildPastDueMessage({ alertType, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', ...alertData } as never, isNudge)
     } else if (alertType === AlertType.STALLED) {
-      blocks = buildStalledMessage({ alertType: AlertType.STALLED, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', triggeredBy: [], ruleId: '', stageDurationDays: null, ...alertData } as never, isNudge)
+      blocks = await buildStalledMessage({ alertType: AlertType.STALLED, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', triggeredBy: [], ruleId: '', stageDurationDays: null, ...alertData } as never, isNudge)
     } else {
-      blocks = buildMeddpiccMessage({ alertType: AlertType.MEDDPICC_MISSING, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', missingFields: (alertData.missingFields ?? []) as never, sfdcFieldMap: (alertData.sfdcFieldMap ?? {}) as never, ...alertData } as never, isNudge)
+      blocks = await buildMeddpiccMessage({ alertType: AlertType.MEDDPICC_MISSING, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', missingFields: (alertData.missingFields ?? []) as never, sfdcFieldMap: (alertData.sfdcFieldMap ?? {}) as never, ...alertData } as never, isNudge)
     }
 
     // Append custom message if provided

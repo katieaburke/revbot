@@ -2,7 +2,7 @@ import { defineManifest } from '@crxjs/vite-plugin'
 
 export default defineManifest({
   manifest_version: 3,
-  name: 'Pipeline Nudge',
+  name: 'Beacon',
   version: '1.0.0',
   description: 'Deal health alerts and MEDDPICC status directly in Salesforce',
 
@@ -34,7 +34,7 @@ export default defineManifest({
 
   action: {
     default_popup: 'src/popup.html',
-    default_title: 'Pipeline Nudge',
+    default_title: 'Beacon',
     default_icon: {
       '16': 'src/icons/icon16.png',
       '48': 'src/icons/icon48.png',

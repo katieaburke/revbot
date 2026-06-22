@@ -1,10 +1,19 @@
 import dotenv from 'dotenv'
 import { z } from 'zod'
 import { resolve } from 'path'
+import { readFileSync } from 'fs'
 
 // Load .env from project root — try multiple paths for tsx vs compiled
 dotenv.config({ path: resolve(process.cwd(), '.env') })
 dotenv.config({ path: resolve(process.cwd(), '../.env') })
+
+// Read admin password hash from file (avoids dotenv mangling $ signs in bcrypt hashes)
+for (const p of [resolve(process.cwd(), '.admin-hash'), resolve(process.cwd(), '../.admin-hash')]) {
+  try {
+    const hash = readFileSync(p, 'utf8').trim()
+    if (hash) { process.env.ADMIN_PASSWORD_HASH = hash; break }
+  } catch { /* file not found */ }
+}
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -30,6 +39,8 @@ const schema = z.object({
   JWT_SECRET: z.string().min(32),
   ADMIN_EMAIL: z.string().email(),
   ADMIN_PASSWORD_HASH: z.string().optional(),
+
+  ANTHROPIC_API_KEY: z.string().optional(),
 })
 
 const parsed = schema.safeParse(process.env)

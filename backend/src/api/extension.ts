@@ -102,11 +102,11 @@ router.post('/nudge', async (req, res) => {
     let blocks
 
     if (payload.alertType === AlertType.PAST_DUE_INITIAL || payload.alertType === AlertType.PAST_DUE_AMENDMENT || payload.alertType === AlertType.PAST_DUE_RENEWAL) {
-      blocks = buildPastDueMessage({ alertType: payload.alertType, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', ...alertDetails } as never, true)
+      blocks = await buildPastDueMessage({ alertType: payload.alertType, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', ...alertDetails } as never, true)
     } else if (payload.alertType === AlertType.STALLED) {
-      blocks = buildStalledMessage({ alertType: AlertType.STALLED, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', triggeredBy: [], ruleId: '', stageDurationDays: null, dealAgeDays: 0, stage: '', opportunityId: payload.opportunityId, opportunityName: payload.opportunityName, ...alertDetails } as never, true)
+      blocks = await buildStalledMessage({ alertType: AlertType.STALLED, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', triggeredBy: [], ruleId: '', stageDurationDays: null, dealAgeDays: 0, stage: '', opportunityId: payload.opportunityId, opportunityName: payload.opportunityName, ...alertDetails } as never, true)
     } else {
-      blocks = buildMeddpiccMessage({ alertType: AlertType.MEDDPICC_MISSING, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', missingFields: [], sfdcFieldMap: {}, opportunityId: payload.opportunityId, opportunityName: payload.opportunityName, stage: '', ...alertDetails } as never, true)
+      blocks = await buildMeddpiccMessage({ alertType: AlertType.MEDDPICC_MISSING, ownerEmail: targetUser.slackEmail, ownerSfdcId: targetUser.sfdcUserId ?? '', missingFields: [], sfdcFieldMap: {}, opportunityId: payload.opportunityId, opportunityName: payload.opportunityName, stage: '', ...alertDetails } as never, true)
     }
 
     if (payload.customMessage) {

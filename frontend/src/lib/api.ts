@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-export const api = axios.create({ baseURL: '/api' })
+export const api = axios.create({ baseURL: import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api' })
 
 // Attach JWT to every request
 api.interceptors.request.use((config) => {
@@ -22,6 +22,7 @@ api.interceptors.response.use(
 )
 
 export async function login(email: string, password: string) {
-  const res = await axios.post('/auth/admin/login', { email, password })
+  const base = import.meta.env.VITE_API_URL ?? ''
+  const res = await axios.post(`${base}/auth/admin/login`, { email, password })
   localStorage.setItem('admin_token', res.data.token)
 }

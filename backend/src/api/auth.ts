@@ -1,5 +1,6 @@
 import { Router } from 'express'
-import { getSfdcAuthUrl, handleSfdcCallback } from '../services/salesforce'
+import { getSfdcAuthUrl, handleSfdcCallback, generatePkce, invalidateSfdcCache } from '../services/salesforce'
+import { invalidateSfdcBaseCache } from '../slack/messages'
 import { db } from '../db'
 import { config } from '../config'
 import jwt from 'jsonwebtoken'
@@ -23,9 +24,43 @@ router.get('/sfdc/start', async (req, res) => {
 router.get('/sfdc/callback', async (req, res) => {
   try {
     const { code, state } = req.query as { code: string; state: string }
-    const payload = jwt.verify(state, config.JWT_SECRET) as { slackUserId: string }
+    const payload = jwt.verify(state, config.JWT_SECRET) as { type?: string; slackUserId?: string; adminEmail?: string; codeVerifier?: string }
 
-    const user = await db.user.findUnique({ where: { slackUserId: payload.slackUserId } })
+    // Admin flow — no Slack required
+    if (payload.type === 'admin' && payload.adminEmail) {
+      const existing = await db.user.findFirst({ where: { slackEmail: payload.adminEmail } })
+      let userId: string
+      if (existing) {
+        userId = existing.id
+        await db.user.update({ where: { id: existing.id }, data: { isRevOps: true } })
+      } else {
+        const created = await db.user.create({
+          data: {
+            slackUserId: `admin-${Date.now()}`,
+            slackEmail: payload.adminEmail,
+            slackName: 'Admin',
+            isRevOps: true,
+          },
+        })
+        userId = created.id
+      }
+      await handleSfdcCallback(code, userId, payload.codeVerifier)
+      invalidateSfdcCache()
+      invalidateSfdcBaseCache()
+      return res.send(`
+        <html><body>
+          <h2>✅ Salesforce connected!</h2>
+          <p>You can close this tab and return to the admin UI.</p>
+          <script>
+            if (window.opener) { window.opener.postMessage('sfdc-connected', '*'); window.close(); }
+            else { setTimeout(() => window.location.href = '/', 2000); }
+          </script>
+        </body></html>
+      `)
+    }
+
+    // Slack user flow
+    const user = await db.user.findUnique({ where: { slackUserId: payload.slackUserId! } })
     if (!user) return res.status(404).send('User not found')
 
     await handleSfdcCallback(code, user.id)
@@ -33,7 +68,7 @@ router.get('/sfdc/callback', async (req, res) => {
     // Send a Slack confirmation DM
     const { slackApp } = await import('../slack/bot')
     await slackApp.client.chat.postMessage({
-      channel: payload.slackUserId,
+      channel: payload.slackUserId!,
       text: '✅ Salesforce connected! You can now update deals directly from Slack.',
     })
 
@@ -41,6 +76,19 @@ router.get('/sfdc/callback', async (req, res) => {
   } catch (err) {
     console.error('SFDC callback error:', err)
     res.status(500).send('Authentication failed')
+  }
+})
+
+// ── Admin SFDC Connect (no Slack required) ───────────────────────────────────
+
+router.get('/sfdc/admin-start', async (req, res) => {
+  try {
+    const { verifier, challenge } = generatePkce()
+    const state = jwt.sign({ type: 'admin', adminEmail: config.ADMIN_EMAIL, codeVerifier: verifier }, config.JWT_SECRET, { expiresIn: '10m' })
+    const authUrl = getSfdcAuthUrl(state, challenge)
+    res.redirect(authUrl)
+  } catch (err) {
+    res.status(500).json({ error: 'Could not generate auth URL' })
   }
 })
 

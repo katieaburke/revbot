@@ -47,7 +47,7 @@ async function main() {
   app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
 
   app.listen(config.PORT, () => {
-    console.log(`🚀 Pipeline Nudge running on port ${config.PORT}`)
+    console.log(`🚀 Beacon running on port ${config.PORT}`)
     console.log(`   Admin UI: http://localhost:5173`)
   })
 

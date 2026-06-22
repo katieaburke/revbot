@@ -9,7 +9,7 @@ export interface StalledAlert {
   opportunityName: string
   ownerSfdcId: string
   ownerEmail: string
-  dealAgeDays: number
+  dealAgeDays: number | null
   stageDurationDays: number | null
   stage: string
   triggeredBy: StalledReason[]
@@ -23,6 +23,17 @@ export type StalledReason =
   | { type: 'single_threaded' }
   | { type: 'red_flag'; phrases: string[] }
 
+// StallThresholdByStage — per-stage rule with optional opp type override
+interface StallThreshold {
+  id: string
+  stageName: string
+  opportunityType: string
+  enabled: boolean
+  stageDurationThresholdDays: number | null
+  dealAgeThresholdDays: number | null
+}
+
+// Legacy StallRule — complex rule with Gong checks and filters
 interface StallRule {
   id: string
   dealAgeThresholdDays: number | null
@@ -35,80 +46,106 @@ interface StallRule {
   filterSegments: string[]
 }
 
-function dealAgeDays(opp: SfdcOpportunity): number {
-  return Math.floor((Date.now() - new Date(opp.CreatedDate).getTime()) / (1000 * 60 * 60 * 24))
-}
-
-function stageDurationDays(opp: SfdcOpportunity): number | null {
-  if (!opp.StageEntryDate__c) return null
-  return Math.floor(
-    (Date.now() - new Date(opp.StageEntryDate__c).getTime()) / (1000 * 60 * 60 * 24)
-  )
+function findThreshold(
+  thresholds: StallThreshold[],
+  stageName: string,
+  opportunityType: string | null
+): StallThreshold | undefined {
+  // First try exact stage + type match
+  if (opportunityType) {
+    const exact = thresholds.find(
+      (t) => t.stageName === stageName && t.opportunityType === opportunityType && t.enabled
+    )
+    if (exact) return exact
+  }
+  // Fall back to stage + "All"
+  return thresholds.find((t) => t.stageName === stageName && t.opportunityType === 'All' && t.enabled)
 }
 
 function matchesFilters(opp: SfdcOpportunity, rule: StallRule): boolean {
   if (rule.filterStages.length > 0 && !rule.filterStages.includes(opp.StageName)) return false
   if (rule.filterOppTypes.length > 0 && !rule.filterOppTypes.includes(opp.Type ?? '')) return false
-  if (rule.filterSegments.length > 0 && !rule.filterSegments.includes(opp.Account?.Segment__c ?? '')) return false
   return true
 }
 
 export function evaluateStalled(
   opps: SfdcOpportunity[],
-  rules: StallRule[],
-  gongActivity: Map<string, GongOpportunityActivity>
+  stallRules: StallRule[],
+  gongActivity: Map<string, GongOpportunityActivity>,
+  stallThresholds: StallThreshold[] = []
 ): StalledAlert[] {
   const alerts: StalledAlert[] = []
 
   for (const opp of opps) {
     if (opp.IsClosed) continue
 
-    for (const rule of rules) {
+    const reasons: StalledReason[] = []
+    const oppAgeDays = opp.Opportunity_Age__c ?? null
+    const stageDays = opp.Stage_Duration_current__c ?? null
+    const activity = gongActivity.get(opp.Id)
+
+    // ── Per-stage thresholds (StallThresholdByStage) ─────────────────────────
+    const threshold = findThreshold(stallThresholds, opp.StageName, opp.Type ?? null)
+    if (threshold) {
+      if (threshold.dealAgeThresholdDays && oppAgeDays !== null && oppAgeDays >= threshold.dealAgeThresholdDays) {
+        reasons.push({ type: 'deal_age', days: oppAgeDays, threshold: threshold.dealAgeThresholdDays })
+      }
+      if (threshold.stageDurationThresholdDays && stageDays !== null && stageDays >= threshold.stageDurationThresholdDays) {
+        reasons.push({ type: 'stage_duration', days: stageDays, threshold: threshold.stageDurationThresholdDays })
+      }
+    }
+
+    // ── Legacy StallRules (with Gong checks) ─────────────────────────────────
+    for (const rule of stallRules) {
       if (!matchesFilters(opp, rule)) continue
 
-      const reasons: StalledReason[] = []
-      const age = dealAgeDays(opp)
-      const stageDays = stageDurationDays(opp)
-      const activity = gongActivity.get(opp.Id)
+      const ruleReasons: StalledReason[] = []
 
-      if (rule.dealAgeThresholdDays && age >= rule.dealAgeThresholdDays) {
-        reasons.push({ type: 'deal_age', days: age, threshold: rule.dealAgeThresholdDays })
+      if (rule.dealAgeThresholdDays && oppAgeDays !== null && oppAgeDays >= rule.dealAgeThresholdDays) {
+        // avoid duplicate if already caught by threshold
+        if (!reasons.some((r) => r.type === 'deal_age')) {
+          ruleReasons.push({ type: 'deal_age', days: oppAgeDays, threshold: rule.dealAgeThresholdDays })
+        }
       }
 
       if (rule.stageDurationThresholdDays && stageDays !== null && stageDays >= rule.stageDurationThresholdDays) {
-        reasons.push({ type: 'stage_duration', days: stageDays, threshold: rule.stageDurationThresholdDays })
+        if (!reasons.some((r) => r.type === 'stage_duration')) {
+          ruleReasons.push({ type: 'stage_duration', days: stageDays, threshold: rule.stageDurationThresholdDays })
+        }
       }
 
       if (rule.gongInactivityDays && activity) {
         const inactive = daysSinceLastGongCall(activity)
         if (inactive !== null && inactive >= rule.gongInactivityDays) {
-          reasons.push({ type: 'gong_inactivity', days: inactive, threshold: rule.gongInactivityDays })
+          ruleReasons.push({ type: 'gong_inactivity', days: inactive, threshold: rule.gongInactivityDays })
         }
       }
 
       if (rule.flagSingleThreaded && activity && isSingleThreaded(activity)) {
-        reasons.push({ type: 'single_threaded' })
+        ruleReasons.push({ type: 'single_threaded' })
       }
 
       if (rule.flagGongRedFlags && activity && hasRedFlags(activity)) {
-        reasons.push({ type: 'red_flag', phrases: activity.riskPhrasesFound })
+        ruleReasons.push({ type: 'red_flag', phrases: activity.riskPhrasesFound })
       }
 
-      if (reasons.length > 0) {
-        alerts.push({
-          alertType: AlertType.STALLED,
-          opportunityId: opp.Id,
-          opportunityName: opp.Name,
-          ownerSfdcId: opp.OwnerId,
-          ownerEmail: opp.Owner.Email,
-          dealAgeDays: age,
-          stageDurationDays: stageDays,
-          stage: opp.StageName,
-          triggeredBy: reasons,
-          ruleId: rule.id,
-        })
-        break // first matching rule wins per opp
-      }
+      reasons.push(...ruleReasons)
+      if (ruleReasons.length > 0) break // first matching legacy rule wins per opp
+    }
+
+    if (reasons.length > 0) {
+      alerts.push({
+        alertType: AlertType.STALLED,
+        opportunityId: opp.Id,
+        opportunityName: opp.Name,
+        ownerSfdcId: opp.OwnerId,
+        ownerEmail: opp.Owner.Email,
+        dealAgeDays: oppAgeDays,
+        stageDurationDays: stageDays,
+        stage: opp.StageName,
+        triggeredBy: reasons,
+        ruleId: threshold?.id ?? stallRules.find((r) => matchesFilters(opp, r))?.id ?? '',
+      })
     }
   }
 

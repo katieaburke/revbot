@@ -1,9 +1,10 @@
 import type { App, BlockAction, ViewSubmitAction } from '@slack/bolt'
 import { db } from '../db'
-import { updateCloseDate, updateMeddpiccFields, updateStage } from '../services/salesforce'
+import { updateCloseDate, updateMeddpiccFields, updateStage, updateOpportunity } from '../services/salesforce'
 import { config } from '../config'
 import { MEDDPICC_LABELS, type MeddpiccField } from '../alerts/meddpicc'
 import jwt from 'jsonwebtoken'
+import { registerConversationalHandler } from './conversational'
 
 // Helper: get or prompt user to connect SFDC
 async function requireSfdcUser(slackUserId: string, client: App['client'], triggerId?: string) {
@@ -27,6 +28,8 @@ async function requireSfdcUser(slackUserId: string, client: App['client'], trigg
 }
 
 export function registerHandlers(app: App) {
+  // Natural language DM handler
+  registerConversationalHandler(app)
 
   // ── Update Close Date ──────────────────────────────────────────────────────
 
@@ -260,25 +263,312 @@ export function registerHandlers(app: App) {
     }
   })
 
-  // ── Snooze ─────────────────────────────────────────────────────────────────
+  // ── Close Renewal ──────────────────────────────────────────────────────────
+
+  app.action('close_renewal', async ({ ack, body, client }) => {
+    await ack()
+    const action = (body as BlockAction).actions[0] as { value: string }
+    const { oppId, oppName } = JSON.parse(action.value)
+
+    const { connected } = await requireSfdcUser(body.user.id, client as App['client'])
+    if (!connected) {
+      const token = jwt.sign({ slackUserId: body.user.id, redirect: 'renewal', oppId }, config.JWT_SECRET, { expiresIn: '1h' })
+      await client.views.open({
+        trigger_id: (body as BlockAction).trigger_id,
+        view: {
+          type: 'modal',
+          title: { type: 'plain_text', text: 'Connect Salesforce' },
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `Before updating, please <${config.APP_URL}/auth/sfdc/start?state=${token}|connect your Salesforce account> (one-time).` },
+          }],
+        },
+      })
+      return
+    }
+
+    await client.views.open({
+      trigger_id: (body as BlockAction).trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'submit_close_renewal',
+        private_metadata: JSON.stringify({ oppId, oppName, slackUserId: body.user.id }),
+        title: { type: 'plain_text', text: 'Close Renewal' },
+        submit: { type: 'plain_text', text: 'Close in Salesforce' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `Closing renewal: *${oppName}*\n\n_If the account has auto-renewed, close this at the current flat renewal amount. Open a separate amendment for any growth you're still pitching._`,
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'close_date',
+            label: { type: 'plain_text', text: 'Actual Close Date' },
+            element: {
+              type: 'datepicker',
+              action_id: 'date_value',
+              initial_date: new Date().toISOString().split('T')[0],
+              placeholder: { type: 'plain_text', text: 'Select close date' },
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'renewal_type',
+            label: { type: 'plain_text', text: 'Renewal type' },
+            element: {
+              type: 'static_select',
+              action_id: 'value',
+              options: [
+                { text: { type: 'plain_text', text: 'Flat renewal (auto-renewed)' }, value: 'flat' },
+                { text: { type: 'plain_text', text: 'Standard renewal (rep-closed)' }, value: 'standard' },
+              ],
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'renewal_notes',
+            label: { type: 'plain_text', text: 'Notes (optional)' },
+            optional: true,
+            element: {
+              type: 'plain_text_input',
+              action_id: 'value',
+              multiline: true,
+              placeholder: { type: 'plain_text', text: 'Any context for this renewal...' },
+            },
+          },
+        ],
+      },
+    })
+  })
+
+  app.view('submit_close_renewal', async ({ ack, view, client }) => {
+    await ack()
+    const { oppId, oppName, slackUserId } = JSON.parse(view.private_metadata)
+    const closeDate = view.state.values.close_date.date_value.selected_date!
+    const renewalType = view.state.values.renewal_type.value.selected_option!.value
+    const notes = view.state.values.renewal_notes?.value?.value ?? ''
+
+    const user = await db.user.findUniqueOrThrow({ where: { slackUserId } })
+
+    try {
+      const typeLabel = renewalType === 'flat' ? 'Flat Renewal' : 'Standard Renewal'
+      await updateOpportunity(user.id, oppId, {
+        StageName: 'Closed Won',
+        CloseDate: closeDate,
+      })
+
+      // Log an activity note
+      const { getConnectionForUser } = await import('../services/salesforce') as typeof import('../services/salesforce')
+      const conn = await getConnectionForUser(user.id)
+      await conn.sobject('Task').create({
+        WhatId: oppId,
+        Subject: `${typeLabel} — closed via Beacon`,
+        Description: notes || `Renewal closed as ${typeLabel} via Beacon.`,
+        Status: 'Completed',
+        ActivityDate: closeDate,
+      })
+
+      const followUp = renewalType === 'flat'
+        ? `\n\n_Don't forget to open a separate amendment for any growth you're still pursuing._`
+        : ''
+
+      await client.chat.postMessage({
+        channel: slackUserId,
+        text: `✅ *${oppName}* closed as *${typeLabel}* in Salesforce.${followUp}`,
+      })
+
+      await db.notification.updateMany({
+        where: { opportunityId: oppId, status: 'SENT' },
+        data: { status: 'RESOLVED', resolvedAt: new Date(), sfdcUpdatedAt: new Date() },
+      })
+    } catch (err) {
+      await client.chat.postMessage({
+        channel: slackUserId,
+        text: `❌ Failed to update Salesforce: ${(err as Error).message}`,
+      })
+    }
+  })
+
+  // ── Snooze (legacy fixed 7-day, kept for any old messages still in flight) ──
 
   app.action('snooze_notification', async ({ ack, body, client }) => {
     await ack()
     const action = (body as BlockAction).actions[0] as { value: string }
     const { oppId, days, alertType } = JSON.parse(action.value)
-
     const snoozedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000)
-
     await db.notification.updateMany({
       where: { opportunityId: oppId, alertType, status: 'SENT' },
       data: { status: 'SNOOZED', snoozedUntil },
     })
-
     await client.chat.postMessage({
       channel: body.user.id,
       text: `😴 Snoozed — I'll remind you again on ${snoozedUntil.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.`,
     })
   })
+
+  // ── Snooze (with duration picker) ─────────────────────────────────────────
+
+  app.action('snooze_options', async ({ ack, body, client }) => {
+    await ack()
+    const action = (body as BlockAction).actions[0] as { value: string }
+    const { oppId, alertType } = JSON.parse(action.value)
+
+    await client.views.open({
+      trigger_id: (body as BlockAction).trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'submit_snooze',
+        private_metadata: JSON.stringify({ oppId, alertType, slackUserId: body.user.id }),
+        title: { type: 'plain_text', text: 'Snooze Alert' },
+        submit: { type: 'plain_text', text: 'Snooze' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          {
+            type: 'input',
+            block_id: 'snooze_duration',
+            label: { type: 'plain_text', text: 'Remind me again in...' },
+            element: {
+              type: 'radio_buttons',
+              action_id: 'value',
+              options: [
+                { text: { type: 'plain_text', text: '3 days' }, value: '3' },
+                { text: { type: 'plain_text', text: '1 week' }, value: '7' },
+                { text: { type: 'plain_text', text: '2 weeks' }, value: '14' },
+                { text: { type: 'plain_text', text: '1 month' }, value: '30' },
+              ],
+            },
+          },
+        ],
+      },
+    })
+  })
+
+  app.view('submit_snooze', async ({ ack, view, client }) => {
+    await ack()
+    const { oppId, alertType, slackUserId } = JSON.parse(view.private_metadata)
+    const days = parseInt(view.state.values.snooze_duration.value.selected_option!.value, 10)
+    const snoozedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+
+    await db.notification.updateMany({
+      where: { opportunityId: oppId, alertType, status: { in: ['SENT', 'SNOOZED'] } },
+      data: { status: 'SNOOZED', snoozedUntil },
+    })
+
+    await client.chat.postMessage({
+      channel: slackUserId,
+      text: `😴 Snoozed for ${days} day${days === 1 ? '' : 's'} — I'll remind you again on ${snoozedUntil.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.`,
+    })
+  })
+
+  // ── Need Help → #askrevops ─────────────────────────────────────────────────
+
+  app.action('need_help', async ({ ack, body, client }) => {
+    await ack()
+    await client.chat.postMessage({
+      channel: body.user.id,
+      text: `👋 Post in *#askrevops* and the RevOps team will help you out!`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `👋 Post in *#askrevops* and the RevOps team will help you out!`,
+          },
+        },
+      ],
+    })
+  })
+
+  // ── Update Next Step ───────────────────────────────────────────────────────
+
+  app.action('update_next_step', async ({ ack, body, client }) => {
+    await ack()
+    const action = (body as BlockAction).actions[0] as { value: string }
+    const { oppId, oppName } = JSON.parse(action.value)
+
+    await client.views.open({
+      trigger_id: (body as BlockAction).trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'submit_next_step',
+        private_metadata: JSON.stringify({ oppId, oppName, slackUserId: body.user.id }),
+        title: { type: 'plain_text', text: 'Update Next Step' },
+        submit: { type: 'plain_text', text: 'Save to Salesforce' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: `Updating next step for *${oppName}*` },
+          },
+          {
+            type: 'input',
+            block_id: 'next_step_text',
+            label: { type: 'plain_text', text: 'Next Step' },
+            element: {
+              type: 'plain_text_input',
+              action_id: 'value',
+              multiline: true,
+              placeholder: { type: 'plain_text', text: 'What is the next action on this deal?' },
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'next_step_date',
+            label: { type: 'plain_text', text: 'Next Step Date' },
+            element: {
+              type: 'datepicker',
+              action_id: 'date_value',
+              placeholder: { type: 'plain_text', text: 'Select a date' },
+            },
+          },
+        ],
+      },
+    })
+  })
+
+  app.view('submit_next_step', async ({ ack, view, client }) => {
+    await ack()
+    const { oppId, oppName, slackUserId } = JSON.parse(view.private_metadata)
+    const nextStepText = view.state.values.next_step_text.value.value!
+    const nextStepDate = view.state.values.next_step_date.date_value.selected_date!
+
+    const user = await db.user.findUniqueOrThrow({ where: { slackUserId } })
+
+    try {
+      await updateOpportunity(user.id, oppId, {
+        NextStep: nextStepText,
+        Next_Step_Date__c: nextStepDate,
+      })
+
+      await client.chat.postMessage({
+        channel: slackUserId,
+        text: `✅ Next step updated for *${oppName}*: "${nextStepText}" by *${nextStepDate}*.`,
+      })
+
+      await db.notification.updateMany({
+        where: { opportunityId: oppId, alertType: 'NEXT_STEP_MISSING', status: { in: ['SENT', 'SNOOZED'] } },
+        data: {
+          status: 'RESOLVED',
+          resolvedAt: new Date(),
+          sfdcUpdatedAt: new Date(),
+          sfdcUpdateFields: { NextStep: nextStepText, Next_Step_Date__c: nextStepDate },
+        },
+      })
+    } catch (err) {
+      await client.chat.postMessage({
+        channel: slackUserId,
+        text: `❌ Failed to update Salesforce: ${(err as Error).message}`,
+      })
+    }
+  })
+
+  // ── Open in Salesforce (URL button — just needs ack) ──────────────────────
+
+  app.action('open_sfdc', async ({ ack }) => { await ack() })
 
   // ── Log Activity (for stalled) ─────────────────────────────────────────────
 
@@ -344,7 +634,7 @@ export function registerHandlers(app: App) {
       const conn = await getConnectionForUser(user.id)
       await conn.sobject('Task').create({
         WhatId: oppId,
-        Subject: `${activityType} - Pipeline Nudge`,
+        Subject: `${activityType} - Beacon`,
         Description: note,
         Status: 'Completed',
         Type: activityType,

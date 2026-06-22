@@ -82,6 +82,25 @@ model StallRule {
   @@map("stall_rules")
 }
 
+// ─── Stall Thresholds by Stage ───────────────────────────────────────────────
+
+model StallThresholdByStage {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stageName       String
+  opportunityType String  @default("All") // "All" = applies to all types
+  enabled         Boolean @default(true)
+
+  // Thresholds — null means "don't check this"
+  stageDurationThresholdDays Int? // flag if Stage_Duration_current__c >= this
+  dealAgeThresholdDays       Int? // flag if Opportunity_Age__c >= this
+
+  @@unique([stageName, opportunityType])
+  @@map("stall_thresholds_by_stage")
+}
+
 // ─── MEDDPICC Config ─────────────────────────────────────────────────────────
 
 // Maps each SFDC stage to which MEDDPICC fields are required
@@ -90,10 +109,11 @@ model MeddpiccStageRequirement {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stageName String  @unique
-  enabled   Boolean @default(true)
+  stageName       String
+  opportunityType String  @default("All") // "All" = applies to all types
+  enabled         Boolean @default(true)
 
-  // Which MEDDPICC components are required at this stage
+  // Which MEDDPICCP components are required at this stage
   requireMetrics           Boolean @default(false)
   requireEconomicBuyer     Boolean @default(false)
   requireDecisionCriteria  Boolean @default(false)
@@ -101,17 +121,48 @@ model MeddpiccStageRequirement {
   requireIdentifyPain      Boolean @default(false)
   requireChampion          Boolean @default(false)
   requireCompetition       Boolean @default(false)
+  requirePaperProcess      Boolean @default(false)
 
-  // SFDC field API names for each component (configurable per org)
-  sfdcFieldMetrics          String @default("MEDDPICC_Metrics__c")
-  sfdcFieldEconomicBuyer    String @default("MEDDPICC_Economic_Buyer__c")
-  sfdcFieldDecisionCriteria String @default("MEDDPICC_Decision_Criteria__c")
-  sfdcFieldDecisionProcess  String @default("MEDDPICC_Decision_Process__c")
-  sfdcFieldIdentifyPain     String @default("MEDDPICC_Identify_Pain__c")
-  sfdcFieldChampion         String @default("MEDDPICC_Champion__c")
-  sfdcFieldCompetition      String @default("MEDDPICC_Competition__c")
+  // SFDC field API names (Uberall org)
+  sfdcFieldMetrics          String @default("M_Metrics__c")
+  sfdcFieldEconomicBuyer    String @default("E_Economic_buyer__c")
+  sfdcFieldDecisionCriteria String @default("DC_Decision_Criteria__c")
+  sfdcFieldDecisionProcess  String @default("DP_Decision_Process__c")
+  sfdcFieldIdentifyPain     String @default("I_Identify_Pain__c")
+  sfdcFieldChampion         String @default("Ch_Champion__c")
+  sfdcFieldCompetition      String @default("Co_Competition_New__c")
+  sfdcFieldPaperProcess     String @default("P_Paperwork__c")
 
+  // BANT fields
+  requireBudget    Boolean @default(false)
+  requireAuthority Boolean @default(false)
+  requireNeed      Boolean @default(false)
+  requireTiming    Boolean @default(false)
+
+  sfdcFieldBudget    String @default("Budget_Details__c")
+  sfdcFieldAuthority String @default("Authority_Details__c")
+  sfdcFieldNeed      String @default("Need_Details__c")
+  sfdcFieldTiming    String @default("Timing_Details__c")
+
+  @@unique([stageName, opportunityType])
   @@map("meddpicc_stage_requirements")
+}
+
+// ─── Close Date Risk Rules ───────────────────────────────────────────────────
+
+// Flag opps that are too close to their close date for the stage they're in
+model CloseDateRiskRule {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stageName       String
+  opportunityType String  @default("All")
+  daysThreshold   Int                       // alert if close date is within this many days
+  enabled         Boolean @default(true)
+
+  @@unique([stageName, opportunityType])
+  @@map("close_date_risk_rules")
 }
 
 // ─── Notifications ───────────────────────────────────────────────────────────
@@ -122,6 +173,8 @@ enum AlertType {
   PAST_DUE_RENEWAL
   STALLED
   MEDDPICC_MISSING
+  NEXT_STEP_MISSING
+  CLOSE_DATE_RISK
 }
 
 enum NotificationStatus {

@@ -4,12 +4,16 @@ import { buildOpportunityActivityIndex, invalidateGongCache } from '../services/
 import { evaluatePastDue } from '../alerts/pastDue'
 import { evaluateStalled } from '../alerts/stalled'
 import { evaluateMeddpicc } from '../alerts/meddpicc'
+import { evaluateNextStep } from '../alerts/nextStep'
+import { evaluateCloseDateRisk } from '../alerts/closeDate'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
-import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
+import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildNextStepMessage, buildCloseDateRiskMessage } from '../slack/messages'
 import { AlertType, NotificationStatus } from '../types'
 import type { PastDueAlert } from '../alerts/pastDue'
 import type { StalledAlert } from '../alerts/stalled'
 import type { MeddpiccAlert } from '../alerts/meddpicc'
+import type { NextStepAlert } from '../alerts/nextStep'
+import type { CloseDateRiskAlert } from '../alerts/closeDate'
 
 const COOLDOWN_HOURS = 24
 
@@ -19,7 +23,13 @@ export interface DryRunAlert {
   alertType: AlertType
   opportunityId: string
   opportunityName: string
+  accountName: string | null
+  opportunityType: string | null
+  salesChannel: string | null
+  salesFunction: string | null
+  salesRegion: string | null
   ownerEmail: string
+  ownerName: string | null
   ownerSlackId: string | null  // null = couldn't resolve in Slack
   wouldSkip: boolean           // already snoozed or in cooldown
   skipReason?: string
@@ -72,19 +82,30 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
   const sfdcIds = opps.map((o) => o.Id)
   const gongActivity = await buildOpportunityActivityIndex(sfdcIds)
 
-  const [stallRules, meddpiccRequirements] = await Promise.all([
+  const [stallRules, stallThresholds, meddpiccRequirements, closeDateRiskRules, bufferSettings] = await Promise.all([
     db.stallRule.findMany({ where: { enabled: true } }),
+    db.stallThresholdByStage.findMany({ where: { enabled: true } }),
     db.meddpiccStageRequirement.findMany({ where: { enabled: true } }),
+    db.closeDateRiskRule.findMany({ where: { enabled: true } }),
+    db.appSetting.findMany({ where: { key: { in: ['pastDueBufferDays', 'nextStepBufferDays'] } } }),
   ])
+
+  const settingMap = Object.fromEntries(bufferSettings.map((s) => [s.key, JSON.parse(s.value)]))
+  const pastDueBufferDays = Number(settingMap.pastDueBufferDays ?? 0)
+  const nextStepBufferDays = Number(settingMap.nextStepBufferDays ?? 0)
 
   return {
     opps,
     gongActivity,
     stallRules,
+    stallThresholds,
     meddpiccRequirements,
-    pastDueAlerts: evaluatePastDue(opps),
-    stalledAlerts: evaluateStalled(opps, stallRules, gongActivity),
+    closeDateRiskRules,
+    pastDueAlerts: evaluatePastDue(opps, pastDueBufferDays),
+    stalledAlerts: evaluateStalled(opps, stallRules, gongActivity, stallThresholds),
     meddpiccAlerts: evaluateMeddpicc(opps, meddpiccRequirements),
+    nextStepAlerts: evaluateNextStep(opps, nextStepBufferDays),
+    closeDateRiskAlerts: evaluateCloseDateRisk(opps, closeDateRiskRules),
   }
 }
 
@@ -93,23 +114,32 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
 export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise<DryRunResult> {
   console.log('[DryRun] Starting dry run evaluation...')
 
-  const { opps, pastDueAlerts, stalledAlerts, meddpiccAlerts, stallRules, meddpiccRequirements } = await evaluate(opts)
+  const { opps, pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stallRules, stallThresholds, meddpiccRequirements } = await evaluate(opts)
+
+  const oppById = new Map(opps.map((o) => [o.Id, o]))
 
   const wouldSend: DryRunAlert[] = []
   const wouldSkip: DryRunAlert[] = []
   const unreachable: DryRunAlert[] = []
 
-  type AnyAlert = PastDueAlert | StalledAlert | MeddpiccAlert
+  type AnyAlert = PastDueAlert | StalledAlert | MeddpiccAlert | NextStepAlert | CloseDateRiskAlert
 
   async function processAlert(alert: AnyAlert, alertType: AlertType) {
     const { skip, reason } = await isSnoozedOrRecentlySent(alert.opportunityId, alertType)
     const ownerSlackId = await resolveSlackUserId(alert.ownerEmail)
+    const opp = oppById.get(alert.opportunityId)
 
     const dryAlert: DryRunAlert = {
       alertType,
       opportunityId: alert.opportunityId,
       opportunityName: alert.opportunityName,
+      accountName: opp?.Account?.Name ?? null,
+      opportunityType: opp?.Type ?? null,
+      salesChannel: opp?.Sales_Channel__c ?? null,
+      salesFunction: opp?.Sales_Function__c ?? null,
+      salesRegion: opp?.Sales_Region__c ?? null,
       ownerEmail: alert.ownerEmail,
+      ownerName: opp?.Owner?.Name ?? null,
       ownerSlackId,
       wouldSkip: skip,
       skipReason: reason,
@@ -128,6 +158,8 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
   for (const alert of pastDueAlerts) await processAlert(alert, alert.alertType)
   for (const alert of stalledAlerts) await processAlert(alert, AlertType.STALLED)
   for (const alert of meddpiccAlerts) await processAlert(alert, AlertType.MEDDPICC_MISSING)
+  for (const alert of nextStepAlerts) await processAlert(alert, AlertType.NEXT_STEP_MISSING)
+  for (const alert of closeDateRiskAlerts) await processAlert(alert, AlertType.CLOSE_DATE_RISK)
 
   console.log(`[DryRun] Would send: ${wouldSend.length}, Would skip: ${wouldSkip.length}, Unreachable: ${unreachable.length}`)
 
@@ -136,7 +168,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
     wouldSend,
     wouldSkip,
     unreachable,
-    stallRulesActive: stallRules.length,
+    stallRulesActive: stallRules.length + stallThresholds.length,
     meddpiccStagesActive: meddpiccRequirements.length,
   }
 }
@@ -150,9 +182,9 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
   let skipped = 0
   let errors = 0
 
-  const { pastDueAlerts, stalledAlerts, meddpiccAlerts } = await evaluate(opts)
+  const { pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts } = await evaluate(opts)
 
-  console.log(`[AlertJob] Found: ${pastDueAlerts.length} past due, ${stalledAlerts.length} stalled, ${meddpiccAlerts.length} MEDDPICC`)
+  console.log(`[AlertJob] Found: ${pastDueAlerts.length} past due, ${stalledAlerts.length} stalled, ${meddpiccAlerts.length} MEDDPICC, ${nextStepAlerts.length} missing next step, ${closeDateRiskAlerts.length} close date risk`)
 
   for (const alert of pastDueAlerts) {
     try {
@@ -165,7 +197,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = buildPastDueMessage(alert)
+      const blocks = await buildPastDueMessage(alert)
       const ts = await sendDm(slackUserId, blocks, `Past due: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -198,7 +230,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = buildStalledMessage(alert)
+      const blocks = await buildStalledMessage(alert)
       const ts = await sendDm(slackUserId, blocks, `Stalled deal: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -232,7 +264,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = buildMeddpiccMessage(alert)
+      const blocks = await buildMeddpiccMessage(alert)
       const ts = await sendDm(slackUserId, blocks, `Missing MEDDPICC: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -250,6 +282,72 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       sent++
     } catch (err) {
       console.error(`[AlertJob] Error on MEDDPICC ${alert.opportunityId}:`, err)
+      errors++
+    }
+  }
+
+  for (const alert of nextStepAlerts) {
+    try {
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.NEXT_STEP_MISSING)
+      if (skip) { skipped++; continue }
+
+      const slackUserId = await resolveSlackUserId(alert.ownerEmail)
+      if (!slackUserId) { skipped++; continue }
+
+      const dbUser = await db.user.findUnique({ where: { slackUserId } })
+      if (!dbUser) { skipped++; continue }
+
+      const blocks = await buildNextStepMessage(alert)
+      const ts = await sendDm(slackUserId, blocks, `Missing next step: ${alert.opportunityName}`)
+
+      await db.notification.create({
+        data: {
+          opportunityId: alert.opportunityId,
+          opportunityName: alert.opportunityName,
+          ownerId: dbUser.id,
+          alertType: AlertType.NEXT_STEP_MISSING,
+          alertDetails: alert as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          slackMessageTs: ts,
+          slackChannelId: slackUserId,
+          status: NotificationStatus.SENT,
+        },
+      })
+      sent++
+    } catch (err) {
+      console.error(`[AlertJob] Error on next step ${alert.opportunityId}:`, err)
+      errors++
+    }
+  }
+
+  for (const alert of closeDateRiskAlerts) {
+    try {
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.CLOSE_DATE_RISK)
+      if (skip) { skipped++; continue }
+
+      const slackUserId = await resolveSlackUserId(alert.ownerEmail)
+      if (!slackUserId) { skipped++; continue }
+
+      const dbUser = await db.user.findUnique({ where: { slackUserId } })
+      if (!dbUser) { skipped++; continue }
+
+      const blocks = await buildCloseDateRiskMessage(alert)
+      const ts = await sendDm(slackUserId, blocks, `Close date risk: ${alert.opportunityName}`)
+
+      await db.notification.create({
+        data: {
+          opportunityId: alert.opportunityId,
+          opportunityName: alert.opportunityName,
+          ownerId: dbUser.id,
+          alertType: AlertType.CLOSE_DATE_RISK,
+          alertDetails: alert as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          slackMessageTs: ts,
+          slackChannelId: slackUserId,
+          status: NotificationStatus.SENT,
+        },
+      })
+      sent++
+    } catch (err) {
+      console.error(`[AlertJob] Error on close date risk ${alert.opportunityId}:`, err)
       errors++
     }
   }
