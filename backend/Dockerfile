@@ -2,8 +2,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy root workspace files
-COPY package.json package-lock.json ./
+# Copy root workspace manifest + lock file
+COPY package.json package-lock.json* ./
 COPY backend/package.json ./backend/
 COPY frontend/package.json ./frontend/
 
@@ -13,13 +13,11 @@ RUN npm install --legacy-peer-deps
 # Copy backend source
 COPY backend/ ./backend/
 
-# Generate Prisma client
-RUN cd backend && npx prisma generate
-
-# Build TypeScript
-RUN cd backend && npm run build
-
 WORKDIR /app/backend
+
+# Generate Prisma client and build
+RUN npx prisma generate
+RUN npm run build
 
 EXPOSE 3001
 
