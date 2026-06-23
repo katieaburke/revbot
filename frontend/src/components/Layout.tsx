@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch']
 
@@ -24,6 +25,7 @@ export function Layout() {
   const location = useLocation()
   const isInPlaybook = PLAYBOOK_ROUTES.some((r) => location.pathname.startsWith(r))
   const [playbookOpen, setPlaybookOpen] = useState(isInPlaybook)
+  const { data: dryRunSummary } = useDryRunSummary()
 
   function logout() {
     localStorage.removeItem('admin_token')
@@ -76,12 +78,21 @@ export function Layout() {
               <p className="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Opportunities
               </p>
-              <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} />
-              <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} />
-              <NavItem to="/past-due" label="Past Due" icon={CalendarX} />
-              <NavItem to="/next-step" label="Next Step" icon={ArrowRight} />
-              <NavItem to="/close-date-risk" label="Close Date Risk" icon={AlertTriangle} />
-              <NavItem to="/playbook/stage-mismatch" label="Stage Mismatch" icon={GitCompare} />
+              <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} badge={dryRunSummary?.byAlertType['STALLED']} />
+              <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} badge={dryRunSummary?.byAlertType['MEDDPICC_MISSING']} />
+              <NavItem
+                to="/past-due"
+                label="Past Due"
+                icon={CalendarX}
+                badge={
+                  (dryRunSummary?.byAlertType['PAST_DUE_INITIAL'] ?? 0) +
+                  (dryRunSummary?.byAlertType['PAST_DUE_AMENDMENT'] ?? 0) +
+                  (dryRunSummary?.byAlertType['PAST_DUE_RENEWAL'] ?? 0) || undefined
+                }
+              />
+              <NavItem to="/next-step" label="Next Step" icon={ArrowRight} badge={dryRunSummary?.byAlertType['NEXT_STEP_MISSING']} />
+              <NavItem to="/close-date-risk" label="Close Date Risk" icon={AlertTriangle} badge={dryRunSummary?.byAlertType['CLOSE_DATE_RISK']} />
+              <NavItem to="/playbook/stage-mismatch" label="Stage Mismatch" icon={GitCompare} badge={dryRunSummary?.byAlertType['STAGE_MISMATCH']} />
 
               {/* Accounts sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
@@ -130,11 +141,13 @@ function NavItem({
   label,
   icon: Icon,
   end,
+  badge,
 }: {
   to: string
   label: string
   icon: React.ElementType
   end?: boolean
+  badge?: number
 }) {
   return (
     <NavLink
@@ -150,7 +163,12 @@ function NavItem({
       }
     >
       <Icon size={16} />
-      {label}
+      <span className="flex-1">{label}</span>
+      {badge != null && badge > 0 && (
+        <span className="ml-auto text-xs bg-orange-100 text-orange-700 font-semibold px-1.5 py-0.5 rounded-full">
+          {badge}
+        </span>
+      )}
     </NavLink>
   )
 }

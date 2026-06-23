@@ -10,6 +10,14 @@ import bcrypt from 'bcrypt'
 const router = Router()
 router.use(requireAdmin)
 
+// ── Last Dry Run Summary ──────────────────────────────────────────────────────
+
+router.get('/last-dry-run-summary', async (_req, res) => {
+  const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunSummary' } })
+  if (!setting) return res.json(null)
+  res.json(JSON.parse(setting.value))
+})
+
 // ── Stall Rules ───────────────────────────────────────────────────────────────
 
 router.get('/stall-rules', async (_req, res) => {

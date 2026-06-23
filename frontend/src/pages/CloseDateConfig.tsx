@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Pencil, Plus, X, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import clsx from 'clsx'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 interface CloseDateRiskRule {
   id: string
@@ -18,6 +19,7 @@ const OPP_TYPES = ['All', 'Initial', 'Renewal', 'Amendment']
 export function CloseDateConfig() {
   const qc = useQueryClient()
   const [editing, setEditing] = useState<CloseDateRiskRule | 'new' | null>(null)
+  const { data: dryRunSummary } = useDryRunSummary()
 
   const { data: rules = [], isLoading } = useQuery<CloseDateRiskRule[]>({
     queryKey: ['close-date-risk'],
@@ -52,6 +54,12 @@ export function CloseDateConfig() {
             Flag deals whose close date is approaching but are still in an early stage.
             Set the maximum number of days before close date that triggers an alert, per stage and opportunity type.
           </p>
+          {dryRunSummary && (dryRunSummary.byAlertType['CLOSE_DATE_RISK'] ?? 0) > 0 && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full text-xs font-medium mt-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+              {dryRunSummary.byAlertType['CLOSE_DATE_RISK']} flagged in last dry run
+            </div>
+          )}
         </div>
         <button
           onClick={() => setEditing('new')}

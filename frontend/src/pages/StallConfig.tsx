@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Pencil, Plus, X, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import clsx from 'clsx'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 interface StallThreshold {
   id: string
@@ -28,6 +29,7 @@ const STAGES = [
 export function StallConfig() {
   const qc = useQueryClient()
   const [editing, setEditing] = useState<StallThreshold | 'new' | null>(null)
+  const { data: dryRunSummary } = useDryRunSummary()
 
   const { data: thresholds = [], isLoading } = useQuery<StallThreshold[]>({
     queryKey: ['stall-thresholds'],
@@ -70,6 +72,12 @@ export function StallConfig() {
             <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">Stage_Duration_current__c</code> and{' '}
             <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">Opportunity_Age__c</code> from Salesforce.
           </p>
+          {dryRunSummary && (dryRunSummary.byAlertType['STALLED'] ?? 0) > 0 && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full text-xs font-medium mt-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+              {dryRunSummary.byAlertType['STALLED']} flagged in last dry run
+            </div>
+          )}
         </div>
         <button
           onClick={() => setEditing('new')}
@@ -94,9 +102,20 @@ export function StallConfig() {
             {isLoading && (
               <tr><td colSpan={4} className="px-6 py-8 text-center text-sm text-gray-400">Loading...</td></tr>
             )}
-            {sorted.map((t) => (
+            {sorted.map((t) => {
+              const stallCount = dryRunSummary?.byStallRule[t.id] ?? 0
+              return (
               <tr key={t.id} className={clsx('hover:bg-gray-50', !t.enabled && 'opacity-50')}>
-                <td className="px-6 py-3 font-medium text-gray-900">{t.stageName}</td>
+                <td className="px-6 py-3 font-medium text-gray-900">
+                  <div className="flex items-center gap-2">
+                    {t.stageName}
+                    {stallCount > 0 && (
+                      <span className="text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-600 font-medium">
+                        {stallCount} flagged
+                      </span>
+                    )}
+                  </div>
+                </td>
                 <td className="px-4 py-3">
                   <span className={clsx(
                     'inline-flex px-2 py-0.5 rounded-full text-xs font-medium',
@@ -135,7 +154,7 @@ export function StallConfig() {
                   </button>
                 </td>
               </tr>
-            ))}
+            )})}
           </tbody>
         </table>
         {thresholds.length === 0 && !isLoading && (

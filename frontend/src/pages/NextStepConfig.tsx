@@ -2,11 +2,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useState, useEffect } from 'react'
 import { Save } from 'lucide-react'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 export function NextStepConfig() {
   const qc = useQueryClient()
   const [bufferDays, setBufferDays] = useState<string>('')
   const [saved, setSaved] = useState(false)
+  const { data: dryRunSummary } = useDryRunSummary()
 
   const { data: settings } = useQuery<Record<string, unknown>>({
     queryKey: ['settings'],
@@ -32,10 +34,16 @@ export function NextStepConfig() {
   return (
     <div className="p-8 max-w-2xl">
       <h2 className="text-2xl font-semibold text-gray-900 mb-1">Next Step</h2>
-      <p className="text-sm text-gray-500 mb-8">
+      <p className="text-sm text-gray-500 mb-3">
         Every active opportunity should have a clear next step and a date for it.
         Beacon flags reps when these are missing or overdue.
       </p>
+      {dryRunSummary && (dryRunSummary.byAlertType['NEXT_STEP_MISSING'] ?? 0) > 0 && (
+        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full text-xs font-medium mb-5">
+          <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+          {dryRunSummary.byAlertType['NEXT_STEP_MISSING']} flagged in last dry run
+        </div>
+      )}
 
       {/* Buffer setting */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">

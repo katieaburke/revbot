@@ -169,6 +169,48 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
 
   console.log(`[DryRun] Would send: ${wouldSend.length}, Would skip: ${wouldSkip.length}, Unreachable: ${unreachable.length}`)
 
+  // Save summary for playbook pages to display
+  const summaryByType: Record<string, number> = {}
+  const summaryByStallRule: Record<string, number> = {}
+  const summarybyStageMismatchRule: Record<string, number> = {}
+
+  for (const alert of wouldSend) {
+    summaryByType[alert.alertType] = (summaryByType[alert.alertType] ?? 0) + 1
+    // Per stall rule
+    if (alert.alertType === 'STALLED' && alert.details.ruleId) {
+      const rid = alert.details.ruleId as string
+      summaryByStallRule[rid] = (summaryByStallRule[rid] ?? 0) + 1
+    }
+    // Per stage mismatch rule
+    if (alert.alertType === 'STAGE_MISMATCH' && alert.details.ruleName) {
+      const rn = alert.details.ruleName as string
+      summarybyStageMismatchRule[rn] = (summarybyStageMismatchRule[rn] ?? 0) + 1
+    }
+  }
+
+  await db.appSetting.upsert({
+    where: { key: 'lastDryRunSummary' },
+    create: {
+      key: 'lastDryRunSummary',
+      value: JSON.stringify({
+        timestamp: new Date().toISOString(),
+        totalOpportunities: opps.length,
+        byAlertType: summaryByType,
+        byStallRule: summaryByStallRule,
+        byStageMismatchRule: summarybyStageMismatchRule,
+      }),
+    },
+    update: {
+      value: JSON.stringify({
+        timestamp: new Date().toISOString(),
+        totalOpportunities: opps.length,
+        byAlertType: summaryByType,
+        byStallRule: summaryByStallRule,
+        byStageMismatchRule: summarybyStageMismatchRule,
+      }),
+    },
+  })
+
   return {
     totalOpportunities: opps.length,
     wouldSend,

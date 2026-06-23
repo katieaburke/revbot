@@ -3,6 +3,7 @@ import { api } from '../lib/api'
 import { useState } from 'react'
 import { Plus, Trash2, X, Pencil } from 'lucide-react'
 import clsx from 'clsx'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 interface StageMismatchRule {
   id: string
@@ -25,6 +26,7 @@ export function StageMismatchConfig() {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [editingRule, setEditingRule] = useState<StageMismatchRule | null>(null)
+  const { data: dryRunSummary } = useDryRunSummary()
 
   const { data: rules = [], isLoading } = useQuery<StageMismatchRule[]>({
     queryKey: ['stage-mismatch-rules'],
@@ -51,6 +53,12 @@ export function StageMismatchConfig() {
             Flag opportunities whose Next Step text contains keywords that suggest a more advanced
             stage than the current Salesforce stage.
           </p>
+          {dryRunSummary && (dryRunSummary.byAlertType['STAGE_MISMATCH'] ?? 0) > 0 && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full text-xs font-medium mt-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+              {dryRunSummary.byAlertType['STAGE_MISMATCH']} flagged in last dry run
+            </div>
+          )}
         </div>
         <button
           onClick={() => setShowForm(true)}
@@ -80,6 +88,14 @@ export function StageMismatchConfig() {
                     Disabled
                   </span>
                 )}
+                {(() => {
+                  const count = dryRunSummary?.byStageMismatchRule[rule.name] ?? 0
+                  return count > 0 ? (
+                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-600 font-medium">
+                      {count} flagged
+                    </span>
+                  ) : null
+                })()}
               </div>
               <div className="mb-2">
                 <span className="text-xs font-medium text-gray-500 uppercase tracking-wider mr-2">

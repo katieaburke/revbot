@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Pencil, Plus, X } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import clsx from 'clsx'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 interface MeddpiccReq {
   id: string
@@ -47,6 +48,7 @@ const OPP_TYPES = ['All', 'Initial', 'Renewal', 'Amendment']
 export function MeddpiccConfig() {
   const qc = useQueryClient()
   const [editing, setEditing] = useState<MeddpiccReq | 'new' | null>(null)
+  const { data: dryRunSummary } = useDryRunSummary()
 
   const { data: reqs = [], isLoading } = useQuery<MeddpiccReq[]>({
     queryKey: ['meddpicc'],
@@ -71,6 +73,12 @@ export function MeddpiccConfig() {
         <div>
           <h2 className="text-2xl font-semibold text-gray-900">MEDDPICC + BANT Config</h2>
           <p className="text-sm text-gray-500 mt-1">Set which fields are required per stage</p>
+          {dryRunSummary && (dryRunSummary.byAlertType['MEDDPICC_MISSING'] ?? 0) > 0 && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full text-xs font-medium mt-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+              {dryRunSummary.byAlertType['MEDDPICC_MISSING']} flagged in last dry run
+            </div>
+          )}
         </div>
         <button
           onClick={() => setEditing('new')}

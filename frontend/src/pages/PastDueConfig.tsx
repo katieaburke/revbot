@@ -2,11 +2,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useState, useEffect } from 'react'
 import { Save } from 'lucide-react'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 export function PastDueConfig() {
   const qc = useQueryClient()
   const [bufferDays, setBufferDays] = useState<string>('')
   const [saved, setSaved] = useState(false)
+  const { data: dryRunSummary } = useDryRunSummary()
 
   const { data: settings } = useQuery<Record<string, unknown>>({
     queryKey: ['settings'],
@@ -29,12 +31,23 @@ export function PastDueConfig() {
     },
   })
 
+  const pastDueCount =
+    (dryRunSummary?.byAlertType['PAST_DUE_INITIAL'] ?? 0) +
+    (dryRunSummary?.byAlertType['PAST_DUE_AMENDMENT'] ?? 0) +
+    (dryRunSummary?.byAlertType['PAST_DUE_RENEWAL'] ?? 0)
+
   return (
     <div className="p-8 max-w-2xl">
       <h2 className="text-2xl font-semibold text-gray-900 mb-1">Past Due</h2>
-      <p className="text-sm text-gray-500 mb-8">
+      <p className="text-sm text-gray-500 mb-3">
         Opportunities with a Booking Date in the past that haven't been closed.
       </p>
+      {dryRunSummary && pastDueCount > 0 && (
+        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full text-xs font-medium mb-5">
+          <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+          {pastDueCount} flagged in last dry run
+        </div>
+      )}
 
       {/* Buffer setting */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
