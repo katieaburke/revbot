@@ -98,20 +98,27 @@ router.post('/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body as { email: string; password: string }
 
-    if (email !== config.ADMIN_EMAIL) {
-      return res.status(401).json({ error: 'Invalid credentials' })
+    let authenticated = false
+
+    if (email === config.ADMIN_EMAIL) {
+      // Primary: check env var credentials
+      if (config.ADMIN_PASSWORD) {
+        authenticated = password === config.ADMIN_PASSWORD
+      } else if (config.ADMIN_PASSWORD_HASH) {
+        authenticated = await bcrypt.compare(password, config.ADMIN_PASSWORD_HASH)
+      } else {
+        return res.status(500).json({ error: 'Admin password not configured' })
+      }
+    } else {
+      // Secondary: check AdminUser table
+      const adminUser = await db.adminUser.findUnique({ where: { email } })
+      if (adminUser) {
+        authenticated = await bcrypt.compare(password, adminUser.passwordHash)
+      }
     }
 
-    // Support plaintext ADMIN_PASSWORD (avoids Railway mangling $ in bcrypt hashes)
-    if (config.ADMIN_PASSWORD) {
-      if (password !== config.ADMIN_PASSWORD) {
-        return res.status(401).json({ error: 'Invalid credentials' })
-      }
-    } else if (config.ADMIN_PASSWORD_HASH) {
-      const valid = await bcrypt.compare(password, config.ADMIN_PASSWORD_HASH)
-      if (!valid) return res.status(401).json({ error: 'Invalid credentials' })
-    } else {
-      return res.status(500).json({ error: 'Admin password not configured' })
+    if (!authenticated) {
+      return res.status(401).json({ error: 'Invalid credentials' })
     }
 
     const token = jwt.sign({ email, role: 'admin' }, config.JWT_SECRET, { expiresIn: '8h' })

@@ -13,6 +13,7 @@ import {
   ArrowRight,
   AlertTriangle,
   GitCompare,
+  Users,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
@@ -96,6 +97,9 @@ export function Layout() {
           <div className="pt-2 pb-1">
             <div className="h-px bg-gray-100 mx-1" />
           </div>
+
+          {/* Team */}
+          <NavItem to="/team" label="Team" icon={Users} />
 
           {/* Settings */}
           <NavItem to="/settings" label="Settings" icon={Settings} />

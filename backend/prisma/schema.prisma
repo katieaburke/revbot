@@ -258,6 +258,17 @@ model NudgeLog {
   @@map("nudge_logs")
 }
 
+// ─── Admin Users ─────────────────────────────────────────────────────────────
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
 // ─── Admin Sessions ──────────────────────────────────────────────────────────
 
 model AdminSession {

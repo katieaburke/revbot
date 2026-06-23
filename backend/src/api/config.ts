@@ -5,6 +5,7 @@ import { requireAdmin } from '../middleware/adminAuth'
 import { z } from 'zod'
 import { scheduleAlertJob } from '../jobs/scheduler'
 import { invalidateTestOverrideCache } from '../slack/bot'
+import bcrypt from 'bcrypt'
 
 const router = Router()
 router.use(requireAdmin)
@@ -280,6 +281,50 @@ router.post('/settings/generate-extension-key', async (req, res) => {
     update: { value: JSON.stringify(key) },
   })
   res.json({ extensionApiKey: key })
+})
+
+// ── Admin Users ───────────────────────────────────────────────────────────────
+
+router.get('/admin-users', async (_req, res) => {
+  const users = await db.adminUser.findMany({
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, email: true, name: true, createdAt: true }, // never return passwordHash
+  })
+  res.json(users)
+})
+
+router.post('/admin-users', async (req, res) => {
+  try {
+    const { email, password, name } = req.body as { email: string; password: string; name?: string }
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' })
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' })
+    const passwordHash = await bcrypt.hash(password, 10)
+    const user = await db.adminUser.create({
+      data: { email, passwordHash, name: name || null },
+      select: { id: true, email: true, name: true, createdAt: true },
+    })
+    res.status(201).json(user)
+  } catch (err: any) {
+    if (err.code === 'P2002') return res.status(409).json({ error: 'Email already exists' })
+    res.status(500).json({ error: 'Failed to create user' })
+  }
+})
+
+router.put('/admin-users/:id/password', async (req, res) => {
+  try {
+    const { password } = req.body as { password: string }
+    if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' })
+    const passwordHash = await bcrypt.hash(password, 10)
+    await db.adminUser.update({ where: { id: req.params.id }, data: { passwordHash } })
+    res.json({ ok: true })
+  } catch {
+    res.status(500).json({ error: 'Failed to update password' })
+  }
+})
+
+router.delete('/admin-users/:id', async (req, res) => {
+  await db.adminUser.delete({ where: { id: req.params.id } })
+  res.json({ ok: true })
 })
 
 export default router
