@@ -1,4 +1,5 @@
 import { AlertType } from '../types'
+import { stageApiToLabel } from '../utils/stageMapping'
 
 export interface StageMismatchRuleConfig {
   id: string
@@ -28,15 +29,11 @@ export function evaluateStageMismatch(
   const alerts: StageMismatchAlert[] = []
   const activeRules = rules.filter((r) => r.enabled)
 
-  // Log unique stage names coming from Salesforce to help debug mismatches
-  const uniqueStages = Array.from(new Set(opps.map((o) => o.StageName).filter(Boolean)))
-  console.log('[StageMismatch] Salesforce stage names:', uniqueStages.sort().join(', '))
-
   for (const opp of opps) {
     const nextStep = (opp.NextStep ?? '').toLowerCase()
     if (!nextStep) continue
 
-    const stage = opp.StageName ?? ''
+    const stage = stageApiToLabel(opp.StageName ?? '')
     const oppType = opp.Type ?? ''
 
     for (const rule of activeRules) {

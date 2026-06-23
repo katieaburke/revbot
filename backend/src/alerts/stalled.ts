@@ -2,6 +2,7 @@ import type { SfdcOpportunity } from '../services/salesforce'
 import type { GongOpportunityActivity } from '../services/gong'
 import { isSingleThreaded, hasRedFlags, daysSinceLastGongCall } from '../services/gong'
 import { AlertType } from '../types'
+import { stageApiToLabel } from '../utils/stageMapping'
 
 export interface StalledAlert {
   alertType: AlertType.STALLED
@@ -63,7 +64,7 @@ function findThreshold(
 }
 
 function matchesFilters(opp: SfdcOpportunity, rule: StallRule): boolean {
-  if (rule.filterStages.length > 0 && !rule.filterStages.includes(opp.StageName)) return false
+  if (rule.filterStages.length > 0 && !rule.filterStages.includes(stageApiToLabel(opp.StageName))) return false
   if (rule.filterOppTypes.length > 0 && !rule.filterOppTypes.includes(opp.Type ?? '')) return false
   return true
 }
@@ -85,7 +86,7 @@ export function evaluateStalled(
     const activity = gongActivity.get(opp.Id)
 
     // ── Per-stage thresholds (StallThresholdByStage) ─────────────────────────
-    const threshold = findThreshold(stallThresholds, opp.StageName, opp.Type ?? null)
+    const threshold = findThreshold(stallThresholds, stageApiToLabel(opp.StageName), opp.Type ?? null)
     if (threshold) {
       if (threshold.dealAgeThresholdDays && oppAgeDays !== null && oppAgeDays >= threshold.dealAgeThresholdDays) {
         reasons.push({ type: 'deal_age', days: oppAgeDays, threshold: threshold.dealAgeThresholdDays })
