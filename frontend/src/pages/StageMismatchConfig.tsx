@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useState } from 'react'
-import { Plus, Trash2, X } from 'lucide-react'
+import { Plus, Trash2, X, Pencil } from 'lucide-react'
 import clsx from 'clsx'
 
 interface StageMismatchRule {
@@ -24,6 +24,7 @@ const ALL_STAGES = [
 export function StageMismatchConfig() {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
+  const [editingRule, setEditingRule] = useState<StageMismatchRule | null>(null)
 
   const { data: rules = [], isLoading } = useQuery<StageMismatchRule[]>({
     queryKey: ['stage-mismatch-rules'],
@@ -113,6 +114,13 @@ export function StageMismatchConfig() {
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button
+                onClick={() => setEditingRule(rule)}
+                className="p-1.5 text-gray-400 hover:text-brand-500 rounded"
+                title="Edit rule"
+              >
+                <Pencil size={15} />
+              </button>
+              <button
                 onClick={() => toggleEnabled.mutate({ ...rule, enabled: !rule.enabled })}
                 className={clsx(
                   'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none',
@@ -152,7 +160,7 @@ export function StageMismatchConfig() {
       </div>
 
       {showForm && (
-        <AddRuleModal
+        <RuleModal
           onClose={() => setShowForm(false)}
           onSaved={() => {
             qc.invalidateQueries({ queryKey: ['stage-mismatch-rules'] })
@@ -160,15 +168,25 @@ export function StageMismatchConfig() {
           }}
         />
       )}
+      {editingRule && (
+        <RuleModal
+          rule={editingRule}
+          onClose={() => setEditingRule(null)}
+          onSaved={() => {
+            qc.invalidateQueries({ queryKey: ['stage-mismatch-rules'] })
+            setEditingRule(null)
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [name, setName] = useState('')
-  const [keywordsRaw, setKeywordsRaw] = useState('')
-  const [selectedStages, setSelectedStages] = useState<string[]>([])
-  const [enabled, setEnabled] = useState(true)
+function RuleModal({ onClose, onSaved, rule }: { onClose: () => void; onSaved: () => void; rule?: StageMismatchRule }) {
+  const [name, setName] = useState(rule?.name ?? '')
+  const [keywordsRaw, setKeywordsRaw] = useState(rule?.keywords.join(', ') ?? '')
+  const [selectedStages, setSelectedStages] = useState<string[]>(rule?.stages ?? [])
+  const [enabled, setEnabled] = useState(rule?.enabled ?? true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -191,7 +209,11 @@ function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     setSaving(true)
     setError(null)
     try {
-      await api.post('/config/stage-mismatch-rules', { name: name.trim(), keywords, stages: selectedStages, enabled })
+      if (rule) {
+        await api.put(`/config/stage-mismatch-rules/${rule.id}`, { name: name.trim(), keywords, stages: selectedStages, enabled })
+      } else {
+        await api.post('/config/stage-mismatch-rules', { name: name.trim(), keywords, stages: selectedStages, enabled })
+      }
       onSaved()
     } catch (err: any) {
       setError(err?.response?.data?.error ?? String(err))
@@ -208,7 +230,7 @@ function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6">
         <div className="flex items-center justify-between mb-5">
-          <h3 className="font-semibold text-gray-900">Add stage mismatch rule</h3>
+          <h3 className="font-semibold text-gray-900">{rule ? 'Edit rule' : 'Add stage mismatch rule'}</h3>
           <button onClick={onClose}><X size={18} className="text-gray-400" /></button>
         </div>
 
@@ -308,7 +330,7 @@ function AddRuleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
               disabled={saving}
               className="px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50"
             >
-              {saving ? 'Saving...' : 'Add rule'}
+              {saving ? 'Saving...' : rule ? 'Save changes' : 'Add rule'}
             </button>
           </div>
         </form>
