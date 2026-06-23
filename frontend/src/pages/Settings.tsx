@@ -25,7 +25,7 @@ export function Settings() {
 
   function connectSalesforce() {
     const popup = window.open(
-      'http://localhost:3001/auth/sfdc/admin-start',
+      `${import.meta.env.VITE_API_URL ?? 'http://localhost:3001'}/auth/sfdc/admin-start`,
       'sfdc-connect',
       'width=600,height=700'
     )
