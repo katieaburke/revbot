@@ -89,12 +89,13 @@ function uniqueVals(groups: OppGroup[], key: keyof OppGroup): string[] {
   return Array.from(new Set(groups.map((g) => g[key] as string | null).filter(Boolean) as string[])).sort()
 }
 
-function applyFilters(groups: OppGroup[], filters: { channel: string; fn: string; region: string; owner: string }): OppGroup[] {
+function applyFilters(groups: OppGroup[], filters: { channel: string; fn: string; region: string; owner: string; flagType: string }): OppGroup[] {
   return groups.filter((g) =>
     (!filters.channel || g.salesChannel === filters.channel) &&
     (!filters.fn || g.salesFunction === filters.fn) &&
     (!filters.region || g.salesRegion === filters.region) &&
-    (!filters.owner || g.ownerEmail === filters.owner)
+    (!filters.owner || g.ownerEmail === filters.owner) &&
+    (!filters.flagType || g.alerts.some((a) => a.alertType === filters.flagType))
   )
 }
 
@@ -106,6 +107,7 @@ const alertTypeLabel: Record<string, string> = {
   STALLED:             'Zombie Pipeline',
   MEDDPICC_MISSING:    'Missing MEDDPICC / BANT',
   NEXT_STEP_MISSING:   'Missing Next Step',
+  CLOSE_DATE_RISK:     'Close Date Risk',
   STAGE_MISMATCH:      'Stage Mismatch',
 }
 
@@ -172,7 +174,7 @@ export function Dashboard() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [draftOpp, setDraftOpp] = useState<OppGroup | null>(null)
   const [draftSent, setDraftSent] = useState<string | null>(null)
-  const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '' })
+  const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '' })
 
   const { data: summary, isLoading } = useQuery<Summary>({
     queryKey: ['summary'],
@@ -392,12 +394,21 @@ export function Dashboard() {
             for (const g of allGroups) ownerMap.set(g.ownerEmail, g.ownerName ?? g.ownerEmail)
             const owners = Array.from(ownerMap.entries()).sort((a, b) => a[1].localeCompare(b[1]))
 
-            const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || owners.length > 1
+            // Collect unique alert types across all groups
+            const flagTypes = Array.from(new Set(allGroups.flatMap((g) => g.alerts.map((a) => a.alertType)))).sort()
+
+            const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || owners.length > 1 || flagTypes.length > 1
             if (!hasFilters) return null
-            const anyActive = filters.channel || filters.fn || filters.region || filters.owner
+            const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType
             return (
               <div className="px-6 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap bg-gray-50">
                 <span className="text-xs font-medium text-gray-500">Filter</span>
+                {flagTypes.length > 1 && (
+                  <select value={filters.flagType} onChange={(e) => setFilters((f) => ({ ...f, flagType: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                    <option value="">All flag types</option>
+                    {flagTypes.map((t) => <option key={t} value={t}>{alertTypeLabel[t] ?? t}</option>)}
+                  </select>
+                )}
                 {owners.length > 1 && (
                   <select value={filters.owner} onChange={(e) => setFilters((f) => ({ ...f, owner: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">All owners</option>
@@ -423,7 +434,7 @@ export function Dashboard() {
                   </select>
                 )}
                 {anyActive && (
-                  <button onClick={() => setFilters({ channel: '', fn: '', region: '', owner: '' })} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
+                  <button onClick={() => setFilters({ channel: '', fn: '', region: '', owner: '', flagType: '' })} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
                 )}
               </div>
             )
