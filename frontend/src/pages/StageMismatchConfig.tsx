@@ -15,15 +15,10 @@ interface StageMismatchRule {
 const ALL_STAGES = [
   'Qualification',
   'Discovery',
-  'Demo',
-  'Proposal',
-  'Negotiation',
-  'Closed Won',
-  'Closed Lost',
-  'Value Proposition',
-  'Id. Decision Makers',
-  'Perception Analysis',
-  'Needs Analysis',
+  'Custom Demo',
+  'Presentation/Proposal',
+  'Decision/Negotiation',
+  'Legal/Procurement',
 ]
 
 export function StageMismatchConfig() {
