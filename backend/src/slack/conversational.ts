@@ -343,7 +343,8 @@ export function registerConversationalHandler(app: App) {
 
     // Wrap client.chat.postMessage as a SayFn-compatible function
     const say: SayFn = (payload) =>
-      client.chat.postMessage({ channel: slackUserId, ...(payload as object) }) as ReturnType<SayFn>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client.chat.postMessage({ channel: slackUserId, ...(payload as any) }) as ReturnType<SayFn>
 
     const alert = await db.notification.findFirst({
       where: { opportunityId: oppId, owner: { slackUserId }, status: { in: ['SENT', 'SNOOZED'] } },
@@ -363,7 +364,8 @@ export function registerConversationalHandler(app: App) {
     const slackUserId = body.user.id
 
     const say: SayFn = (payload) =>
-      client.chat.postMessage({ channel: slackUserId, ...(payload as object) }) as ReturnType<SayFn>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client.chat.postMessage({ channel: slackUserId, ...(payload as any) }) as ReturnType<SayFn>
 
     const alert = await db.notification.findUnique({ where: { id: notifId } })
     if (!alert) {

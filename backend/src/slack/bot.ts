@@ -2,7 +2,7 @@ import { App, LogLevel } from '@slack/bolt'
 import { config } from '../config'
 import { registerHandlers } from './handlers'
 import { db } from '../db'
-import type { KnownBlock } from '@slack/bolt'
+import type { KnownBlock } from '@slack/web-api'
 
 export let slackApp: App
 

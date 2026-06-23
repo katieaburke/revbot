@@ -5,7 +5,7 @@ import { runAlertJob } from './alertOrchestrator'
 const QUEUE_NAME = 'alert-jobs'
 
 export const alertQueue = new Queue(QUEUE_NAME, {
-  connection: redis,
+  connection: redis as any,
   defaultJobOptions: {
     removeOnComplete: 100,
     removeOnFail: 50,
@@ -22,7 +22,7 @@ export function startWorker() {
         return runAlertJob({ bustGongCache: job.data?.bustGongCache === true })
       }
     },
-    { connection: redis, concurrency: 1 }
+    { connection: redis as any, concurrency: 1 }
   )
 
   worker.on('completed', (job, result) => {

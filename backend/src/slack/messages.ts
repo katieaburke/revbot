@@ -1,4 +1,4 @@
-import type { KnownBlock } from '@slack/bolt'
+import type { KnownBlock } from '@slack/web-api'
 import type { PastDueAlert } from '../alerts/pastDue'
 import type { StalledAlert, StalledReason } from '../alerts/stalled'
 import type { MeddpiccAlert } from '../alerts/meddpicc'
