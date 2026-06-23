@@ -102,12 +102,17 @@ router.post('/admin/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
 
-    if (!config.ADMIN_PASSWORD_HASH) {
+    // Support plaintext ADMIN_PASSWORD (avoids Railway mangling $ in bcrypt hashes)
+    if (config.ADMIN_PASSWORD) {
+      if (password !== config.ADMIN_PASSWORD) {
+        return res.status(401).json({ error: 'Invalid credentials' })
+      }
+    } else if (config.ADMIN_PASSWORD_HASH) {
+      const valid = await bcrypt.compare(password, config.ADMIN_PASSWORD_HASH)
+      if (!valid) return res.status(401).json({ error: 'Invalid credentials' })
+    } else {
       return res.status(500).json({ error: 'Admin password not configured' })
     }
-
-    const valid = await bcrypt.compare(password, config.ADMIN_PASSWORD_HASH)
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' })
 
     const token = jwt.sign({ email, role: 'admin' }, config.JWT_SECRET, { expiresIn: '8h' })
 

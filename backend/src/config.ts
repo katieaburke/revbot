@@ -38,6 +38,7 @@ const schema = z.object({
 
   JWT_SECRET: z.string().min(32),
   ADMIN_EMAIL: z.string().email(),
+  ADMIN_PASSWORD: z.string().optional(),
   ADMIN_PASSWORD_HASH: z.string().optional(),
 
   ANTHROPIC_API_KEY: z.string().optional(),
