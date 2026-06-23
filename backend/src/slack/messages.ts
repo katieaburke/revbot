@@ -4,6 +4,7 @@ import type { StalledAlert, StalledReason } from '../alerts/stalled'
 import type { MeddpiccAlert } from '../alerts/meddpicc'
 import type { NextStepAlert, NextStepIssue } from '../alerts/nextStep'
 import type { CloseDateRiskAlert } from '../alerts/closeDate'
+import type { StageMismatchAlert } from '../alerts/stageMismatch'
 import { MEDDPICC_LABELS } from '../alerts/meddpicc'
 import { AlertType } from '../types'
 import { getSfdcInstanceUrl } from '../services/salesforce'
@@ -303,6 +304,43 @@ export async function buildCloseDateRiskMessage(alert: CloseDateRiskAlert, isNud
   ]
 }
 
+export async function buildStageMismatchMessage(alert: StageMismatchAlert, isNudge = false): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
+  const prefix = isNudge ? '👋 *RevOps nudge:* ' : ''
+  const link = oppLink(base, alert.opportunityId, alert.opportunityName)
+  const kwText = alert.matchedKeywords.map((k) => `"${k}"`).join(', ')
+
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: [
+          `${prefix}🔀 *Potential stage mismatch — ${link}*`,
+          `Deal is in *${alert.stage}* but next step mentions ${kwText}.`,
+          ``,
+          `Is the stage up to date? Please advance the stage in Salesforce if the deal has progressed.`,
+        ].join('\n'),
+      },
+    },
+    {
+      type: 'actions',
+      block_id: `stage_mismatch_${alert.opportunityId}`,
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Open in Salesforce' },
+          style: 'primary',
+          url: `${base}/lightning/r/Opportunity/${alert.opportunityId}/view`,
+          action_id: 'open_sfdc_stage_mismatch',
+        },
+        snoozeButton(alert.opportunityId, AlertType.STAGE_MISMATCH),
+        needHelpButton(),
+      ],
+    },
+  ]
+}
+
 // Combined message for multiple alert types on one opp (used by the admin draft/send flow)
 export async function buildCombinedMessage(
   oppId: string,
@@ -351,6 +389,11 @@ export async function buildCombinedMessage(
           summarySections.push(`⏰ *Next step date is in the past* (${date ?? 'unknown'}) — please update it`)
         }
       }
+    } else if (a.alertType === AlertType.STAGE_MISMATCH) {
+      const keywords = (a.details.matchedKeywords as string[] | undefined) ?? []
+      summarySections.push(
+        `🔀 *Potential stage mismatch* — next step mentions "${keywords.join('", "')}" but stage is *${a.details.stage}*`
+      )
     }
   }
 
@@ -464,6 +507,23 @@ export async function buildCombinedMessage(
             text: { type: 'plain_text', text: 'Update Stage' },
             action_id: 'update_stage',
             value: JSON.stringify({ oppId, oppName, currentStage: (a.details.stage as string) ?? '' }),
+          },
+        ],
+      } as KnownBlock)
+      break
+    }
+    if (a.alertType === AlertType.STAGE_MISMATCH) {
+      const sfdcBase = await getSfdcBase()
+      blocks.push({
+        type: 'actions',
+        block_id: `stage_mismatch_action_${oppId}`,
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Open in Salesforce' },
+            style: 'primary',
+            url: `${sfdcBase}/lightning/r/Opportunity/${oppId}/view`,
+            action_id: 'open_sfdc_stage_mismatch',
           },
         ],
       } as KnownBlock)

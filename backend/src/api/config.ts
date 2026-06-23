@@ -196,6 +196,35 @@ router.delete('/meddpicc/:id', async (req, res) => {
   res.status(204).send()
 })
 
+// ── Stage Mismatch Rules ──────────────────────────────────────────────────────
+
+router.get('/stage-mismatch-rules', async (_req, res) => {
+  const rules = await db.stageMismatchRule.findMany({ orderBy: { createdAt: 'asc' } })
+  res.json(rules)
+})
+
+router.post('/stage-mismatch-rules', async (req, res) => {
+  const { name, keywords, stages, enabled } = req.body
+  const rule = await db.stageMismatchRule.create({
+    data: { name, keywords, stages, enabled: enabled ?? true },
+  })
+  res.json(rule)
+})
+
+router.put('/stage-mismatch-rules/:id', async (req, res) => {
+  const { name, keywords, stages, enabled } = req.body
+  const rule = await db.stageMismatchRule.update({
+    where: { id: req.params.id },
+    data: { name, keywords, stages, enabled },
+  })
+  res.json(rule)
+})
+
+router.delete('/stage-mismatch-rules/:id', async (req, res) => {
+  await db.stageMismatchRule.delete({ where: { id: req.params.id } })
+  res.json({ ok: true })
+})
+
 // ── Salesforce connection status ──────────────────────────────────────────────
 
 router.get('/sfdc-status', async (_req, res) => {

@@ -165,6 +165,19 @@ model CloseDateRiskRule {
   @@map("close_date_risk_rules")
 }
 
+// ─── Stage Mismatch Rules ────────────────────────────────────────────────────
+
+model StageMismatchRule {
+  id        String   @id @default(cuid())
+  name      String
+  keywords  String[]
+  stages    String[]
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@map("stage_mismatch_rules")
+}
+
 // ─── Notifications ───────────────────────────────────────────────────────────
 
 enum AlertType {
@@ -175,6 +188,7 @@ enum AlertType {
   MEDDPICC_MISSING
   NEXT_STEP_MISSING
   CLOSE_DATE_RISK
+  STAGE_MISMATCH
 }
 
 enum NotificationStatus {

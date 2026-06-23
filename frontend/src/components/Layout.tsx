@@ -12,11 +12,12 @@ import {
   ChevronDown,
   ArrowRight,
   AlertTriangle,
+  GitCompare,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
 
-const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts']
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch']
 
 export function Layout() {
   const location = useLocation()
@@ -79,6 +80,7 @@ export function Layout() {
               <NavItem to="/past-due" label="Past Due" icon={CalendarX} />
               <NavItem to="/next-step" label="Next Step" icon={ArrowRight} />
               <NavItem to="/close-date-risk" label="Close Date Risk" icon={AlertTriangle} />
+              <NavItem to="/playbook/stage-mismatch" label="Stage Mismatch" icon={GitCompare} />
 
               {/* Accounts sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">

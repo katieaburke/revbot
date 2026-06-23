@@ -9,6 +9,7 @@ import { MeddpiccConfig } from './pages/MeddpiccConfig'
 import { PastDueConfig } from './pages/PastDueConfig'
 import { NextStepConfig } from './pages/NextStepConfig'
 import { CloseDateConfig } from './pages/CloseDateConfig'
+import { StageMismatchConfig } from './pages/StageMismatchConfig'
 import { Settings } from './pages/Settings'
 
 const qc = new QueryClient()
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="/past-due" element={<PastDueConfig />} />
             <Route path="/next-step" element={<NextStepConfig />} />
             <Route path="/close-date-risk" element={<CloseDateConfig />} />
+            <Route path="/playbook/stage-mismatch" element={<StageMismatchConfig />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
         </Routes>

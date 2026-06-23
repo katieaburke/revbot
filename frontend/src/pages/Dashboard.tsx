@@ -106,6 +106,7 @@ const alertTypeLabel: Record<string, string> = {
   STALLED:             'Zombie Pipeline',
   MEDDPICC_MISSING:    'Missing MEDDPICC / BANT',
   NEXT_STEP_MISSING:   'Missing Next Step',
+  STAGE_MISMATCH:      'Stage Mismatch',
 }
 
 const alertTypeDotColor: Record<string, string> = {
@@ -115,6 +116,7 @@ const alertTypeDotColor: Record<string, string> = {
   STALLED:            'bg-yellow-400',
   MEDDPICC_MISSING:   'bg-purple-400',
   NEXT_STEP_MISSING:  'bg-teal-400',
+  STAGE_MISMATCH:     'bg-violet-400',
 }
 
 // Per-alert tags — may return multiple tags from one alert (e.g. Missing MEDDPICC + Missing BANT)
@@ -132,6 +134,8 @@ function getAlertTags(alert: DryRunAlert): { label: string; color: string }[] {
       return [{ label: 'Zombie Pipeline', color: 'text-yellow-700 bg-yellow-50' }]
     case 'CLOSE_DATE_RISK':
       return [{ label: 'Close Date Risk', color: 'text-rose-600 bg-rose-50' }]
+    case 'STAGE_MISMATCH':
+      return [{ label: 'Stage Mismatch', color: 'text-violet-600 bg-violet-50' }]
     case 'NEXT_STEP_MISSING': {
       const issues = (alert.details.issues as string[] | undefined) ?? []
       const tags: { label: string; color: string }[] = []

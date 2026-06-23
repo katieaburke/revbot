@@ -9,6 +9,7 @@ export enum AlertType {
   MEDDPICC_MISSING = 'MEDDPICC_MISSING',
   NEXT_STEP_MISSING = 'NEXT_STEP_MISSING',
   CLOSE_DATE_RISK = 'CLOSE_DATE_RISK',
+  STAGE_MISMATCH = 'STAGE_MISMATCH',
 }
 
 export enum NotificationStatus {
