@@ -109,7 +109,7 @@ export function Settings() {
         <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
           <h3 className="font-medium text-gray-900 text-sm">Salesforce</h3>
           <Field label="Instance URL" hint="Used to generate deep links in Slack messages">
-            <input {...register('sfdcInstanceUrl')} className="input w-full" placeholder="https://yourorg.my.salesforce.com" />
+            <input {...register('sfdcInstanceUrl')} className="input w-full" placeholder="https://uberall.lightning.force.com/" />
           </Field>
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-0.5">RevOps connection</label>

@@ -207,7 +207,10 @@ router.get('/sfdc-status', async (_req, res) => {
 
 router.get('/settings', async (_req, res) => {
   const settings = await db.appSetting.findMany()
-  const result = Object.fromEntries(settings.map((s: { key: string; value: string }) => [s.key, JSON.parse(s.value)]))
+  const result: Record<string, unknown> = {
+    sfdcInstanceUrl: 'https://uberall.lightning.force.com/',
+  }
+  for (const s of settings) result[s.key] = JSON.parse(s.value)
   res.json(result)
 })
 
