@@ -95,7 +95,7 @@ function applyFilters(groups: OppGroup[], filters: { channel: string; fn: string
     (!filters.fn || g.salesFunction === filters.fn) &&
     (!filters.region || g.salesRegion === filters.region) &&
     (!filters.owner || g.ownerEmail === filters.owner) &&
-    (!filters.flagType || g.alerts.some((a) => a.alertType === filters.flagType))
+    (!filters.flagType || g.alerts.some((a) => filters.flagType.split(',').includes(a.alertType)))
   )
 }
 
@@ -394,19 +394,27 @@ export function Dashboard() {
             for (const g of allGroups) ownerMap.set(g.ownerEmail, g.ownerName ?? g.ownerEmail)
             const owners = Array.from(ownerMap.entries()).sort((a, b) => a[1].localeCompare(b[1]))
 
-            // Collect unique alert types across all groups
-            const flagTypes = Array.from(new Set(allGroups.flatMap((g) => g.alerts.map((a) => a.alertType)))).sort()
+            // Collect unique flag labels (deduplicated) — e.g. PAST_DUE_INITIAL + PAST_DUE_AMENDMENT both = "Past Due Close Date"
+            const flagLabelToTypes = new Map<string, string[]>()
+            for (const g of allGroups) {
+              for (const a of g.alerts) {
+                const label = alertTypeLabel[a.alertType] ?? a.alertType
+                if (!flagLabelToTypes.has(label)) flagLabelToTypes.set(label, [])
+                if (!flagLabelToTypes.get(label)!.includes(a.alertType)) flagLabelToTypes.get(label)!.push(a.alertType)
+              }
+            }
+            const flagOptions = Array.from(flagLabelToTypes.entries()).sort((a, b) => a[0].localeCompare(b[0]))
 
-            const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || owners.length > 1 || flagTypes.length > 1
+            const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || owners.length > 1 || flagOptions.length > 1
             if (!hasFilters) return null
             const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType
             return (
               <div className="px-6 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap bg-gray-50">
                 <span className="text-xs font-medium text-gray-500">Filter</span>
-                {flagTypes.length > 1 && (
+                {flagOptions.length > 1 && (
                   <select value={filters.flagType} onChange={(e) => setFilters((f) => ({ ...f, flagType: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">All flag types</option>
-                    {flagTypes.map((t) => <option key={t} value={t}>{alertTypeLabel[t] ?? t}</option>)}
+                    {flagOptions.map(([label, types]) => <option key={label} value={types.join(',')}>{label}</option>)}
                   </select>
                 )}
                 {owners.length > 1 && (
