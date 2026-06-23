@@ -196,6 +196,13 @@ router.delete('/meddpicc/:id', async (req, res) => {
   res.status(204).send()
 })
 
+// ── Salesforce connection status ──────────────────────────────────────────────
+
+router.get('/sfdc-status', async (_req, res) => {
+  const user = await db.user.findFirst({ where: { isRevOps: true, sfdcAccessToken: { not: null } } })
+  res.json({ connected: !!user })
+})
+
 // ── App Settings (schedule, cooldown, etc.) ───────────────────────────────────
 
 router.get('/settings', async (_req, res) => {

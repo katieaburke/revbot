@@ -23,12 +23,20 @@ export function Settings() {
   const [copied, setCopied] = useState(false)
   const [sfdcConnected, setSfdcConnected] = useState(false)
 
+  const { data: sfdcStatus } = useQuery<{ connected: boolean }>({
+    queryKey: ['sfdc-status'],
+    queryFn: () => api.get('/config/sfdc-status').then((r) => r.data),
+  })
+  const isConnected = sfdcConnected || !!sfdcStatus?.connected
+
   function connectSalesforce() {
     const popup = window.open(
       `${import.meta.env.VITE_API_URL ?? 'http://localhost:3001'}/auth/sfdc/admin-start`,
       'sfdc-connect',
       'width=600,height=700'
     )
+
+    // Listen for postMessage from the popup
     const handler = (e: MessageEvent) => {
       if (e.data === 'sfdc-connected') {
         setSfdcConnected(true)
@@ -37,6 +45,18 @@ export function Settings() {
       }
     }
     window.addEventListener('message', handler)
+
+    // Also poll for popup close — if user manually closes it, check connection status
+    const poll = setInterval(async () => {
+      if (popup?.closed) {
+        clearInterval(poll)
+        window.removeEventListener('message', handler)
+        try {
+          const res = await api.get('/config/sfdc-status')
+          if (res.data?.connected) setSfdcConnected(true)
+        } catch { /* ignore */ }
+      }
+    }, 500)
   }
   const { register, handleSubmit, reset } = useForm<AppSettings>()
 
@@ -94,7 +114,7 @@ export function Settings() {
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-0.5">RevOps connection</label>
             <p className="text-xs text-gray-400 mb-2">Connect your Salesforce account so the app can read pipeline data for dry runs and alert evaluation.</p>
-            {sfdcConnected ? (
+            {isConnected ? (
               <div className="flex items-center gap-2 text-sm text-green-600">
                 <CheckCircle size={15} /> Salesforce connected successfully!
               </div>
