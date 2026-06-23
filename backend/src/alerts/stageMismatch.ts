@@ -29,6 +29,13 @@ export function evaluateStageMismatch(
   const alerts: StageMismatchAlert[] = []
   const activeRules = rules.filter((r) => r.enabled)
 
+  const oppsWithNextStep = opps.filter((o) => o.NextStep?.trim())
+  const uniqueStages = Array.from(new Set(opps.map((o) => stageApiToLabel(o.StageName ?? '')))).sort()
+  console.log(`[StageMismatch] Rules: ${activeRules.length}, Opps with NextStep: ${oppsWithNextStep.length}/${opps.length}`)
+  console.log(`[StageMismatch] Stages in pipeline: ${uniqueStages.join(', ')}`)
+  console.log(`[StageMismatch] Rule stages configured: ${activeRules.flatMap((r) => r.stages).join(', ')}`)
+  console.log(`[StageMismatch] Rule keywords: ${activeRules.map((r) => `[${r.keywords.join(', ')}]`).join(' | ')}`)
+
   for (const opp of opps) {
     const nextStep = (opp.NextStep ?? '').toLowerCase()
     if (!nextStep) continue
