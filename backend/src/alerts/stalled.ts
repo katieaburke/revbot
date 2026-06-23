@@ -77,6 +77,14 @@ export function evaluateStalled(
 ): StalledAlert[] {
   const alerts: StalledAlert[] = []
 
+  // Debug: log field availability
+  const sample = opps.filter((o) => !o.IsClosed).slice(0, 5)
+  console.log('[Stall] Sample opp fields:', sample.map((o) => ({
+    id: o.Id, stage: o.StageName, stageLabel: stageApiToLabel(o.StageName),
+    stageDays: o.Stage_Duration_current__c, ageDays: o.Opportunity_Age__c, type: o.Type
+  })))
+  console.log('[Stall] Thresholds loaded:', stallThresholds.map((t) => ({ stage: t.stageName, type: t.opportunityType, stageDays: t.stageDurationThresholdDays, ageDays: t.dealAgeThresholdDays })))
+
   for (const opp of opps) {
     if (opp.IsClosed) continue
 
