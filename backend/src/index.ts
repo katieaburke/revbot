@@ -29,7 +29,7 @@ async function main() {
   // Express app
   const app = express()
   app.use(helmet())
-  app.use(cors({ origin: config.NODE_ENV === 'development' ? '*' : process.env.FRONTEND_URL }))
+  app.use(cors({ origin: '*' }))
   app.use(express.json())
 
   // Mount Slack Bolt middleware if configured
