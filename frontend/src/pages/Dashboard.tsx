@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import {
-  Play, RefreshCw, AlertCircle, Clock, CheckCircle, FlaskConical,
+  Play, RefreshCw, AlertCircle, Clock, CheckCircle,
   ChevronDown, ChevronUp, ExternalLink, Trash2, MessageSquare, X, Send,
   Briefcase, Building2, UserCheck,
 } from 'lucide-react'
@@ -229,11 +229,6 @@ export function Dashboard() {
 
   const sfdcBase = settings?.sfdcInstanceUrl?.replace(/\/$/, '') ?? ''
 
-  const runNow = useMutation({
-    mutationFn: () => api.post('/notifications/run-now'),
-    onSuccess: () => setTimeout(() => qc.invalidateQueries({ queryKey: ['summary'] }), 3000),
-  })
-
   const dryRun = useMutation({
     mutationFn: () => api.post('/notifications/dry-run').then((r) => r.data as DryRunResult),
     onSuccess: (data) => {
@@ -322,18 +317,10 @@ export function Dashboard() {
           <button
             onClick={() => { setDryRunError(null); dryRun.mutate() }}
             disabled={dryRun.isPending}
-            className="flex items-center gap-2 px-4 py-2 border border-gray-200 bg-white text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
-          >
-            {dryRun.isPending ? <RefreshCw size={15} className="animate-spin" /> : <FlaskConical size={15} />}
-            Dry run
-          </button>
-          <button
-            onClick={() => runNow.mutate()}
-            disabled={runNow.isPending}
             className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50"
           >
-            {runNow.isPending ? <RefreshCw size={15} className="animate-spin" /> : <Play size={15} />}
-            Send alerts
+            {dryRun.isPending ? <RefreshCw size={15} className="animate-spin" /> : <Play size={15} />}
+            Run
           </button>
         </div>
       </div>
@@ -343,8 +330,8 @@ export function Dashboard() {
         <div className="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-6 flex flex-col items-center gap-3 text-center">
           <RefreshCw size={28} className="animate-spin text-blue-500" />
           <div>
-            <p className="font-medium text-blue-800">Running dry run...</p>
-            <p className="text-sm text-blue-600 mt-0.5">Scanning live Salesforce + Gong data — this takes 30–60 seconds</p>
+            <p className="font-medium text-blue-800">Scanning pipeline...</p>
+            <p className="text-sm text-blue-600 mt-0.5">Pulling live Salesforce + Gong data — this takes 30–60 seconds</p>
           </div>
           <div className="w-full bg-blue-100 rounded-full h-1.5 overflow-hidden mt-1">
             <div className="h-1.5 bg-blue-400 rounded-full animate-pulse w-2/3" />
