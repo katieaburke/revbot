@@ -101,11 +101,10 @@ export function evaluateStalled(
 
     const reasons: StalledReason[] = []
     const oppAgeDays = opp.Opportunity_Age__c ?? null
-    // Fall back to calculating from LastStageChangeDate if custom field is null
     const stageDays = opp.Stage_Duration_current__c != null
       ? opp.Stage_Duration_current__c
-      : opp.LastStageChangeDate
-        ? Math.floor((Date.now() - new Date(opp.LastStageChangeDate).getTime()) / (1000 * 60 * 60 * 24))
+      : opp.Stage_Change_Date__c
+        ? Math.floor((Date.now() - new Date(opp.Stage_Change_Date__c).getTime()) / (1000 * 60 * 60 * 24))
         : null
     const activity = gongActivity.get(opp.Id)
 
