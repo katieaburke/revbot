@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 import {
   Play, RefreshCw, AlertCircle, Clock, CheckCircle, FlaskConical,
   ChevronDown, ChevronUp, ExternalLink, Trash2, MessageSquare, X, Send,
-  Briefcase, Building2,
+  Briefcase, Building2, UserCheck,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -30,12 +30,16 @@ interface DryRunAlert {
   ownerEmail: string
   ownerName: string | null
   ownerSlackId: string | null
+  managerEmail: string | null
+  managerName: string | null
+  managerSlackId: string | null
   wouldSkip: boolean
   skipReason?: string
   details: Record<string, unknown>
 }
 
 interface DryRunResult {
+  timestamp?: string
   totalOpportunities: number
   wouldSend: DryRunAlert[]
   wouldSkip: DryRunAlert[]
@@ -58,6 +62,9 @@ interface OppGroup {
   salesRegion: string | null
   ownerEmail: string
   ownerName: string | null
+  managerEmail: string | null
+  managerName: string | null
+  managerSlackId: string | null
   alerts: DryRunAlert[]
 }
 
@@ -77,6 +84,9 @@ function groupByOpp(alerts: DryRunAlert[]): OppGroup[] {
         salesRegion: a.salesRegion,
         ownerEmail: a.ownerEmail,
         ownerName: a.ownerName,
+        managerEmail: a.managerEmail,
+        managerName: a.managerName,
+        managerSlackId: a.managerSlackId,
         alerts: [],
       })
     }
@@ -167,13 +177,15 @@ function getAlertTags(alert: DryRunAlert): { label: string; color: string }[] {
 
 export function Dashboard() {
   const qc = useQueryClient()
-  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null)
+  const [dryRunOverride, setDryRunOverride] = useState<DryRunResult | null>(null)
   const [dryRunError, setDryRunError] = useState<string | null>(null)
   const [expandedSection, setExpandedSection] = useState<'wouldSend' | 'wouldSkip' | 'unreachable' | null>('wouldSend')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [draftOpp, setDraftOpp] = useState<OppGroup | null>(null)
   const [draftSent, setDraftSent] = useState<string | null>(null)
+  const [notifyingManagerOppId, setNotifyingManagerOppId] = useState<string | null>(null)
+  const [managerNotifiedOppId, setManagerNotifiedOppId] = useState<string | null>(null)
   const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '' })
 
   const { data: summary, isLoading } = useQuery<Summary>({
@@ -186,6 +198,14 @@ export function Dashboard() {
     queryKey: ['settings'],
     queryFn: () => api.get('/config/settings').then((r) => r.data),
   })
+
+  const { data: lastDryRun } = useQuery<DryRunResult | null>({
+    queryKey: ['last-dry-run'],
+    queryFn: () => api.get('/notifications/last-dry-run').then((r) => r.data),
+  })
+
+  // Prefer the result of the most recent in-session run; fall back to persisted last run
+  const dryRunResult = dryRunOverride ?? lastDryRun ?? null
 
   // Fetch per-opp sent counts whenever dry run result changes
   const allDryRunOppIds = useMemo(() => {
@@ -216,11 +236,31 @@ export function Dashboard() {
 
   const dryRun = useMutation({
     mutationFn: () => api.post('/notifications/dry-run').then((r) => r.data as DryRunResult),
-    onSuccess: (data) => { setDryRunResult(data); setDryRunError(null) },
+    onSuccess: (data) => {
+      setDryRunOverride(data)
+      setDryRunError(null)
+      qc.invalidateQueries({ queryKey: ['last-dry-run'] })
+    },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? String(err)
       setDryRunError(msg)
     },
+  })
+
+  const notifyManager = useMutation({
+    mutationFn: (g: OppGroup) => api.post('/notifications/notify-manager', {
+      opportunityId: g.opportunityId,
+      opportunityName: g.opportunityName,
+      ownerName: g.ownerName ?? g.ownerEmail,
+      managerSlackId: g.managerSlackId,
+      alerts: g.alerts.map((a) => ({ alertType: a.alertType, details: a.details })),
+    }),
+    onSuccess: (_data, g) => {
+      setManagerNotifiedOppId(g.opportunityId)
+      setNotifyingManagerOppId(null)
+      setTimeout(() => setManagerNotifiedOppId(null), 4000)
+    },
+    onError: () => setNotifyingManagerOppId(null),
   })
 
   const sendDraft = useMutation({
@@ -240,7 +280,7 @@ export function Dashboard() {
       setDeletingId(null)
       setConfirmDeleteId(null)
       if (dryRunResult) {
-        setDryRunResult({
+        setDryRunOverride({
           ...dryRunResult,
           wouldSend: dryRunResult.wouldSend.filter((a) => a.opportunityId !== id),
           wouldSkip: dryRunResult.wouldSkip.filter((a) => a.opportunityId !== id),
@@ -280,7 +320,7 @@ export function Dashboard() {
         </div>
         <div className="flex gap-3">
           <button
-            onClick={() => { setDryRunResult(null); setDryRunError(null); dryRun.mutate() }}
+            onClick={() => { setDryRunError(null); dryRun.mutate() }}
             disabled={dryRun.isPending}
             className="flex items-center gap-2 px-4 py-2 border border-gray-200 bg-white text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
           >
@@ -364,6 +404,11 @@ export function Dashboard() {
               </h3>
               <p className="text-xs text-blue-700 mt-0.5">
                 {dryRunResult.totalOpportunities} open opps scanned · nothing sent to Slack
+                {dryRunResult.timestamp && (
+                  <span className="ml-2 text-blue-500">
+                    · {new Date(dryRunResult.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
               </p>
             </div>
             <div className="flex gap-4 text-xs font-medium">
@@ -458,6 +503,9 @@ export function Dashboard() {
             sfdcLink={sfdcLink}
             onDelete={handleDelete}
             onDraft={setDraftOpp}
+            onNotifyManager={(g) => { setNotifyingManagerOppId(g.opportunityId); notifyManager.mutate(g) }}
+            notifyingManagerOppId={notifyingManagerOppId}
+            managerNotifiedOppId={managerNotifiedOppId}
             confirmDeleteId={confirmDeleteId}
             deletingId={deletingId}
             oppCounts={oppCounts}
@@ -475,6 +523,9 @@ export function Dashboard() {
               sfdcLink={sfdcLink}
               onDelete={handleDelete}
               onDraft={setDraftOpp}
+              onNotifyManager={(g) => { setNotifyingManagerOppId(g.opportunityId); notifyManager.mutate(g) }}
+              notifyingManagerOppId={notifyingManagerOppId}
+              managerNotifiedOppId={managerNotifiedOppId}
               confirmDeleteId={confirmDeleteId}
               deletingId={deletingId}
               oppCounts={oppCounts}
@@ -492,6 +543,9 @@ export function Dashboard() {
               sfdcLink={sfdcLink}
               onDelete={handleDelete}
               onDraft={setDraftOpp}
+              onNotifyManager={(g) => { setNotifyingManagerOppId(g.opportunityId); notifyManager.mutate(g) }}
+              notifyingManagerOppId={notifyingManagerOppId}
+              managerNotifiedOppId={managerNotifiedOppId}
               confirmDeleteId={confirmDeleteId}
               deletingId={deletingId}
               oppCounts={oppCounts}
@@ -538,7 +592,7 @@ function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }
 
 // ── OppSection ────────────────────────────────────────────────────────────────
 
-function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, hint, sfdcLink, onDelete, onDraft, confirmDeleteId, deletingId, oppCounts }: {
+function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, hint, sfdcLink, onDelete, onDraft, onNotifyManager, notifyingManagerOppId, managerNotifiedOppId, confirmDeleteId, deletingId, oppCounts }: {
   title: string
   groups: OppGroup[]
   expanded: boolean
@@ -549,6 +603,9 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
   sfdcLink: (id: string) => string | null
   onDelete: (id: string) => void
   onDraft: (g: OppGroup) => void
+  onNotifyManager: (g: OppGroup) => void
+  notifyingManagerOppId: string | null
+  managerNotifiedOppId: string | null
   confirmDeleteId: string | null
   deletingId: string | null
   oppCounts: Record<string, number>
@@ -575,6 +632,8 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                 const isConfirming = confirmDeleteId === g.opportunityId
                 const isDeleting = deletingId === g.opportunityId
                 const sentCount = oppCounts[g.opportunityId] ?? 0
+                const isNotifyingMgr = notifyingManagerOppId === g.opportunityId
+                const managerNotified = managerNotifiedOppId === g.opportunityId
                 return (
                   <div key={g.opportunityId} className="flex items-start justify-between py-2.5 px-3 rounded-lg border border-gray-100 hover:bg-gray-50">
                     <div className="flex-1 min-w-0">
@@ -591,8 +650,8 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                           <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-medium">{g.opportunityType}</span>
                         )}
                         {sentCount > 0 && (
-                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium" title={`${sentCount} alert${sentCount === 1 ? '' : 's'} sent`}>
-                            {sentCount} sent
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium" title={`${sentCount} alert${sentCount === 1 ? '' : 's'} sent previously`}>
+                            {sentCount}× sent
                           </span>
                         )}
                       </div>
@@ -607,12 +666,28 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                           ))
                         )}
                       </div>
-                      <p className="text-xs text-gray-400 mt-1">{g.ownerName ?? g.ownerEmail}</p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {g.ownerName ?? g.ownerEmail}
+                        {g.managerName && <span className="ml-1 text-gray-300">· mgr: {g.managerName}</span>}
+                      </p>
                     </div>
                     <div className="ml-3 flex-shrink-0 flex items-center gap-1">
                       <button onClick={() => onDraft(g)} className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-brand-600 hover:bg-brand-50" title="Draft message to rep">
                         <MessageSquare size={11} /> Draft
                       </button>
+                      {g.managerSlackId && (
+                        <button
+                          onClick={() => !isNotifyingMgr && !managerNotified && onNotifyManager(g)}
+                          disabled={isNotifyingMgr || managerNotified}
+                          className={clsx('flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors',
+                            managerNotified ? 'text-green-600 bg-green-50' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+                          )}
+                          title={managerNotified ? 'Manager notified' : `Notify manager (${g.managerName ?? g.managerEmail})`}
+                        >
+                          {isNotifyingMgr ? <RefreshCw size={11} className="animate-spin" /> : <UserCheck size={11} />}
+                          {managerNotified ? 'Sent' : 'Mgr'}
+                        </button>
+                      )}
                       <button
                         onClick={() => onDelete(g.opportunityId)}
                         disabled={isDeleting}

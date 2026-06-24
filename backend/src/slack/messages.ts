@@ -550,6 +550,77 @@ export async function buildCombinedMessage(
   return blocks
 }
 
+// Manager heads-up message — informational, sent to the owner's manager
+export async function buildManagerAlertMessage(
+  oppId: string,
+  oppName: string,
+  ownerName: string,
+  alerts: { alertType: string; details: Record<string, unknown> }[]
+): Promise<KnownBlock[]> {
+  const base = await getSfdcBase()
+  const link = oppLink(base, oppId, oppName)
+  const summarySections: string[] = []
+
+  for (const a of alerts) {
+    if (a.alertType === AlertType.MEDDPICC_MISSING) {
+      const missing = (a.details.missingFields as string[] | undefined) ?? []
+      const labels = missing.map((f) => MEDDPICC_LABELS[f as keyof typeof MEDDPICC_LABELS] ?? f)
+      summarySections.push(`📋 *Missing MEDDPICC/BANT:* ${labels.join(', ')}`)
+    } else if (a.alertType === AlertType.STALLED) {
+      const reasons = (a.details.triggeredBy as Array<{ type: string; days?: number; threshold?: number; phrases?: string[] }> | undefined) ?? []
+      for (const r of reasons) summarySections.push(`🔴 ${stalledReasonText(r as StalledReason)}`)
+    } else if (a.alertType === AlertType.PAST_DUE_RENEWAL) {
+      const days = a.details.daysOverdue as number
+      const date = a.details.bookingDate as string
+      summarySections.push(`🔁 *Renewal past due:* Booking date was *${date}* — ${days} day${days === 1 ? '' : 's'} ago`)
+    } else if (a.alertType === AlertType.PAST_DUE_INITIAL || a.alertType === AlertType.PAST_DUE_AMENDMENT) {
+      const days = a.details.daysOverdue as number
+      const date = a.details.bookingDate as string
+      const typeLabel = a.alertType === AlertType.PAST_DUE_AMENDMENT ? 'Amendment' : 'Opportunity'
+      summarySections.push(`📅 *${typeLabel} past due:* Close date was *${date}* — ${days} day${days === 1 ? '' : 's'} ago`)
+    } else if (a.alertType === AlertType.CLOSE_DATE_RISK) {
+      const daysUntilClose = a.details.daysUntilClose as number
+      const closeDate = a.details.closeDate as string
+      const stage = a.details.stage as string
+      const daysText = daysUntilClose === 0 ? 'today' : daysUntilClose === 1 ? 'tomorrow' : `in ${daysUntilClose} days`
+      summarySections.push(`⚠️ *Close date risk:* Close date is ${daysText} (*${closeDate}*) but deal is still in *${stage}*`)
+    } else if (a.alertType === AlertType.NEXT_STEP_MISSING) {
+      const issues = (a.details.issues as string[] | undefined) ?? []
+      for (const issue of issues) {
+        if (issue === 'missing_text') summarySections.push(`📌 *Missing next step description*`)
+        if (issue === 'missing_date') summarySections.push(`📌 *Missing next step date*`)
+        if (issue === 'past_date') summarySections.push(`⏰ *Next step date is in the past* (${a.details.nextStepDate ?? 'unknown'})`)
+      }
+    } else if (a.alertType === AlertType.STAGE_MISMATCH) {
+      const keywords = (a.details.matchedKeywords as string[] | undefined) ?? []
+      summarySections.push(`🔀 *Potential stage mismatch* — next step mentions "${keywords.join('", "')}"`)
+    }
+  }
+
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `🔔 *FYI — ${link}* needs attention\n${ownerName}'s deal has been flagged:\n\n${summarySections.join('\n')}`,
+      },
+    },
+    {
+      type: 'actions',
+      block_id: `manager_alert_${oppId}`,
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Open in Salesforce' },
+          style: 'primary',
+          url: `${base}/lightning/r/Opportunity/${oppId}/view`,
+          action_id: 'open_sfdc_manager',
+        },
+      ],
+    },
+  ]
+}
+
 // Sent to a user who hasn't connected Salesforce yet
 export function buildConnectSfdcMessage(connectUrl: string): KnownBlock[] {
   return [

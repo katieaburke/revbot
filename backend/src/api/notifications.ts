@@ -4,7 +4,7 @@ import { requireAdmin } from '../middleware/adminAuth'
 import { triggerAlertJobNow } from '../jobs/scheduler'
 import { runDryRun } from '../jobs/alertOrchestrator'
 import { sendDm } from '../slack/bot'
-import { buildCombinedMessage, buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage } from '../slack/messages'
+import { buildCombinedMessage, buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildManagerAlertMessage } from '../slack/messages'
 import { AlertType } from '../types'
 import { getServiceConnection } from '../services/salesforce'
 import { z } from 'zod'
@@ -65,6 +65,33 @@ router.get('/opp-counts', async (req, res) => {
   const result: Record<string, number> = {}
   for (const row of rows) result[row.opportunityId] = row._count.id
   res.json(result)
+})
+
+// Get persisted dry run results from the last run
+router.get('/last-dry-run', async (_req, res) => {
+  const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+  if (!setting) return res.json(null)
+  res.json(JSON.parse(setting.value))
+})
+
+// Notify a deal owner's manager about flagged alerts
+router.post('/notify-manager', async (req, res) => {
+  try {
+    const { opportunityId, opportunityName, ownerName, managerSlackId, alerts } = req.body as {
+      opportunityId: string
+      opportunityName: string
+      ownerName: string
+      managerSlackId: string
+      alerts: { alertType: string; details: Record<string, unknown> }[]
+    }
+    if (!managerSlackId) return res.status(400).json({ error: 'No Slack ID for manager' })
+
+    const blocks = await buildManagerAlertMessage(opportunityId, opportunityName, ownerName, alerts)
+    const ts = await sendDm(managerSlackId, blocks, `FYI: ${opportunityName} needs attention`)
+    res.json({ ok: true, ts })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
 })
 
 // Trigger an immediate alert run

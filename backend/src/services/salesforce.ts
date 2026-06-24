@@ -12,7 +12,7 @@ export interface SfdcOpportunity {
   Type: string
   Amount: number | null
   OwnerId: string
-  Owner: { Id: string; Name: string; Email: string }
+  Owner: { Id: string; Name: string; Email: string; Manager?: { Email: string | null; Name: string | null } | null }
   CreatedDate: string
   LastActivityDate: string | null
   IsClosed: boolean
@@ -178,7 +178,7 @@ export async function fetchOpenOpportunities(): Promise<SfdcOpportunity[]> {
   let result = await conn.query<SfdcOpportunity>(`
     SELECT
       Id, Name, StageName, CloseDate, Type, Amount,
-      OwnerId, Owner.Id, Owner.Name, Owner.Email,
+      OwnerId, Owner.Id, Owner.Name, Owner.Email, Owner.Manager.Email, Owner.Manager.Name,
       CreatedDate, LastActivityDate, IsClosed, IsWon,
       Stage_Duration_current__c, Opportunity_Age__c, Booking_Date__c, Stage_Change_Date__c,
       M_Metrics__c, E_Economic_buyer__c,

@@ -33,6 +33,9 @@ export interface DryRunAlert {
   ownerEmail: string
   ownerName: string | null
   ownerSlackId: string | null  // null = couldn't resolve in Slack
+  managerEmail: string | null
+  managerName: string | null
+  managerSlackId: string | null
   wouldSkip: boolean           // already snoozed or in cooldown
   skipReason?: string
   details: Record<string, unknown>
@@ -130,9 +133,15 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
   type AnyAlert = PastDueAlert | StalledAlert | MeddpiccAlert | NextStepAlert | CloseDateRiskAlert | StageMismatchAlert
 
   async function processAlert(alert: AnyAlert, alertType: AlertType) {
-    const { skip, reason } = await isSnoozedOrRecentlySent(alert.opportunityId, alertType)
-    const ownerSlackId = await resolveSlackUserId(alert.ownerEmail)
     const opp = oppById.get(alert.opportunityId)
+    const managerEmail = opp?.Owner?.Manager?.Email ?? null
+    const managerName = opp?.Owner?.Manager?.Name ?? null
+
+    const [{ skip, reason }, ownerSlackId, managerSlackId] = await Promise.all([
+      isSnoozedOrRecentlySent(alert.opportunityId, alertType),
+      resolveSlackUserId(alert.ownerEmail),
+      managerEmail ? resolveSlackUserId(managerEmail) : Promise.resolve(null),
+    ])
 
     const dryAlert: DryRunAlert = {
       alertType,
@@ -146,6 +155,9 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
       ownerEmail: alert.ownerEmail,
       ownerName: opp?.Owner?.Name ?? null,
       ownerSlackId,
+      managerEmail,
+      managerName,
+      managerSlackId,
       wouldSkip: skip,
       skipReason: reason,
       details: alert as unknown as Record<string, unknown>,
@@ -188,28 +200,58 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
     }
   }
 
-  await db.appSetting.upsert({
-    where: { key: 'lastDryRunSummary' },
-    create: {
-      key: 'lastDryRunSummary',
-      value: JSON.stringify({
-        timestamp: new Date().toISOString(),
-        totalOpportunities: opps.length,
-        byAlertType: summaryByType,
-        byStallRule: summaryByStallRule,
-        byStageMismatchRule: summarybyStageMismatchRule,
-      }),
-    },
-    update: {
-      value: JSON.stringify({
-        timestamp: new Date().toISOString(),
-        totalOpportunities: opps.length,
-        byAlertType: summaryByType,
-        byStallRule: summaryByStallRule,
-        byStageMismatchRule: summarybyStageMismatchRule,
-      }),
-    },
-  })
+  const runTimestamp = new Date().toISOString()
+
+  await Promise.all([
+    db.appSetting.upsert({
+      where: { key: 'lastDryRunSummary' },
+      create: {
+        key: 'lastDryRunSummary',
+        value: JSON.stringify({
+          timestamp: runTimestamp,
+          totalOpportunities: opps.length,
+          byAlertType: summaryByType,
+          byStallRule: summaryByStallRule,
+          byStageMismatchRule: summarybyStageMismatchRule,
+        }),
+      },
+      update: {
+        value: JSON.stringify({
+          timestamp: runTimestamp,
+          totalOpportunities: opps.length,
+          byAlertType: summaryByType,
+          byStallRule: summaryByStallRule,
+          byStageMismatchRule: summarybyStageMismatchRule,
+        }),
+      },
+    }),
+    db.appSetting.upsert({
+      where: { key: 'lastDryRunFullResults' },
+      create: {
+        key: 'lastDryRunFullResults',
+        value: JSON.stringify({
+          timestamp: runTimestamp,
+          totalOpportunities: opps.length,
+          wouldSend,
+          wouldSkip,
+          unreachable,
+          stallRulesActive: stallRules.length + stallThresholds.length,
+          meddpiccStagesActive: meddpiccRequirements.length,
+        }),
+      },
+      update: {
+        value: JSON.stringify({
+          timestamp: runTimestamp,
+          totalOpportunities: opps.length,
+          wouldSend,
+          wouldSkip,
+          unreachable,
+          stallRulesActive: stallRules.length + stallThresholds.length,
+          meddpiccStagesActive: meddpiccRequirements.length,
+        }),
+      },
+    }),
+  ])
 
   return {
     totalOpportunities: opps.length,
