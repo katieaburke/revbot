@@ -137,6 +137,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
     const managerEmail = opp?.Owner?.Manager?.Email ?? null
     const managerName = opp?.Owner?.Manager?.Name ?? null
 
+
     const [{ skip, reason }, ownerSlackId, managerSlackId] = await Promise.all([
       isSnoozedOrRecentlySent(alert.opportunityId, alertType),
       resolveSlackUserId(alert.ownerEmail),

@@ -17,8 +17,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
 const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch']
 
@@ -26,17 +25,7 @@ export function Layout() {
   const location = useLocation()
   const isInPlaybook = PLAYBOOK_ROUTES.some((r) => location.pathname.startsWith(r))
   const [playbookOpen, setPlaybookOpen] = useState(isInPlaybook)
-  const { data: notifSummary } = useQuery<{ byType: { alertType: string; _count: { id: number } }[] }>({
-    queryKey: ['summary'],
-    queryFn: () => api.get('/notifications/summary').then((r) => r.data),
-    refetchInterval: 30_000,
-  })
-
-  // Build a quick lookup: alertType → active sent count
-  const activeByType: Record<string, number> = {}
-  for (const t of notifSummary?.byType ?? []) {
-    activeByType[t.alertType] = t._count.id
-  }
+  const { data: dryRunSummary } = useDryRunSummary()
 
   function logout() {
     localStorage.removeItem('admin_token')
@@ -89,21 +78,21 @@ export function Layout() {
               <p className="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Opportunities
               </p>
-              <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} badge={activeByType['STALLED'] || undefined} />
-              <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} badge={activeByType['MEDDPICC_MISSING'] || undefined} />
+              <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} badge={dryRunSummary?.byAlertType['STALLED']} />
+              <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} badge={dryRunSummary?.byAlertType['MEDDPICC_MISSING']} />
               <NavItem
                 to="/past-due"
                 label="Past Due"
                 icon={CalendarX}
                 badge={
-                  (activeByType['PAST_DUE_INITIAL'] ?? 0) +
-                  (activeByType['PAST_DUE_AMENDMENT'] ?? 0) +
-                  (activeByType['PAST_DUE_RENEWAL'] ?? 0) || undefined
+                  (dryRunSummary?.byAlertType['PAST_DUE_INITIAL'] ?? 0) +
+                  (dryRunSummary?.byAlertType['PAST_DUE_AMENDMENT'] ?? 0) +
+                  (dryRunSummary?.byAlertType['PAST_DUE_RENEWAL'] ?? 0) || undefined
                 }
               />
-              <NavItem to="/next-step" label="Next Step" icon={ArrowRight} badge={activeByType['NEXT_STEP_MISSING'] || undefined} />
-              <NavItem to="/close-date-risk" label="Close Date Risk" icon={AlertTriangle} badge={activeByType['CLOSE_DATE_RISK'] || undefined} />
-              <NavItem to="/playbook/stage-mismatch" label="Stage Mismatch" icon={GitCompare} badge={activeByType['STAGE_MISMATCH'] || undefined} />
+              <NavItem to="/next-step" label="Next Step" icon={ArrowRight} badge={dryRunSummary?.byAlertType['NEXT_STEP_MISSING']} />
+              <NavItem to="/close-date-risk" label="Close Date Risk" icon={AlertTriangle} badge={dryRunSummary?.byAlertType['CLOSE_DATE_RISK']} />
+              <NavItem to="/playbook/stage-mismatch" label="Stage Mismatch" icon={GitCompare} badge={dryRunSummary?.byAlertType['STAGE_MISMATCH']} />
 
               {/* Accounts sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
