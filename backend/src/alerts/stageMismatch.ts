@@ -36,6 +36,22 @@ export function evaluateStageMismatch(
   console.log(`[StageMismatch] Rule stages configured: ${activeRules.flatMap((r) => r.stages).join(', ')}`)
   console.log(`[StageMismatch] Rule keywords: ${activeRules.map((r) => `[${r.keywords.join(', ')}]`).join(' | ')}`)
 
+  // Log how many opps are in rule-configured stages
+  for (const rule of activeRules) {
+    const inStage = oppsWithNextStep.filter((o) => rule.stages.includes(stageApiToLabel(o.StageName ?? '')))
+    console.log(`[StageMismatch] Rule "${rule.name}": ${inStage.length} opps with NextStep in target stages`)
+    if (inStage.length > 0 && inStage.length <= 5) {
+      for (const o of inStage) {
+        console.log(`  → "${o.Name}" NextStep: "${(o.NextStep ?? '').substring(0, 100)}"`)
+      }
+    } else if (inStage.length > 5) {
+      // Log first 3 as samples
+      for (const o of inStage.slice(0, 3)) {
+        console.log(`  → (sample) "${o.Name}" NextStep: "${(o.NextStep ?? '').substring(0, 100)}"`)
+      }
+    }
+  }
+
   for (const opp of opps) {
     const nextStep = (opp.NextStep ?? '').toLowerCase()
     if (!nextStep) continue
