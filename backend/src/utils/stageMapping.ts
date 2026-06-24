@@ -3,6 +3,13 @@
 // and what's stored in rule configuration.
 
 export const STAGE_API_TO_LABEL: Record<string, string> = {
+  '1 – Conversation': 'Qualification',
+  '3 – Interest':     'Discovery',
+  '4 – Demo':         'Custom Demo',
+  '5 – Proposal':     'Presentation/Proposal',
+  '6 – Negotiation':  'Decision/Negotiation',
+  '7 – Commitment':   'Legal/Procurement',
+  // Fallbacks without number prefix
   'Conversation': 'Qualification',
   'Interest':     'Discovery',
   'Demo':         'Custom Demo',
