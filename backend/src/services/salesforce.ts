@@ -18,6 +18,7 @@ export interface SfdcOpportunity {
   IsClosed: boolean
   IsWon: boolean
   Stage_Duration_current__c?: number | null
+  LastStageChangeDate?: string | null
   Opportunity_Age__c?: number | null
   Booking_Date__c?: string | null
   M_Metrics__c?: string | null
@@ -179,7 +180,7 @@ export async function fetchOpenOpportunities(): Promise<SfdcOpportunity[]> {
       Id, Name, StageName, CloseDate, Type, Amount,
       OwnerId, Owner.Id, Owner.Name, Owner.Email,
       CreatedDate, LastActivityDate, IsClosed, IsWon,
-      Stage_Duration_current__c, Opportunity_Age__c, Booking_Date__c,
+      Stage_Duration_current__c, Opportunity_Age__c, Booking_Date__c, LastStageChangeDate,
       M_Metrics__c, E_Economic_buyer__c,
       DC_Decision_Criteria__c, DP_Decision_Process__c,
       I_Identify_Pain__c, Ch_Champion__c, Co_Competition_New__c, P_Paperwork__c,
