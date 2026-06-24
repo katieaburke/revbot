@@ -77,13 +77,24 @@ export function evaluateStalled(
 ): StalledAlert[] {
   const alerts: StalledAlert[] = []
 
-  // Debug: log field availability
-  const sample = opps.filter((o) => !o.IsClosed).slice(0, 5)
-  console.log('[Stall] Sample opp fields:', sample.map((o) => ({
-    id: o.Id, stage: o.StageName, stageLabel: stageApiToLabel(o.StageName),
-    stageDays: o.Stage_Duration_current__c, ageDays: o.Opportunity_Age__c, type: o.Type
-  })))
-  console.log('[Stall] Thresholds loaded:', stallThresholds.map((t) => ({ stage: t.stageName, type: t.opportunityType, stageDays: t.stageDurationThresholdDays, ageDays: t.dealAgeThresholdDays })))
+  // Debug: targeted diagnostics
+  const openOpps = opps.filter((o) => !o.IsClosed)
+  const withStageDays = openOpps.filter((o) => o.Stage_Duration_current__c != null)
+  const withAgeDays = openOpps.filter((o) => o.Opportunity_Age__c != null)
+  console.log(`[Stall] Open opps: ${openOpps.length}, with Stage_Duration_current__c: ${withStageDays.length}, with Opportunity_Age__c: ${withAgeDays.length}`)
+  console.log(`[Stall] Thresholds count: ${stallThresholds.length}, StallRules count: ${stallRules.length}`)
+  if (stallThresholds.length > 0) {
+    for (const t of stallThresholds) {
+      console.log(`[Stall] Threshold: stage="${t.stageName}" type="${t.opportunityType}" stageDays=${t.stageDurationThresholdDays} ageDays=${t.dealAgeThresholdDays}`)
+    }
+  }
+  // Log the specific opp the user flagged
+  const debugOpp = opps.find((o) => o.Id === '006W600000Zrg9pIAB')
+  if (debugOpp) {
+    console.log(`[Stall] Target opp: stage="${debugOpp.StageName}" label="${stageApiToLabel(debugOpp.StageName)}" stageDays=${debugOpp.Stage_Duration_current__c} ageDays=${debugOpp.Opportunity_Age__c} closed=${debugOpp.IsClosed}`)
+  } else {
+    console.log('[Stall] Target opp 006W600000Zrg9pIAB not found in results (may be closed or filtered out)')
+  }
 
   for (const opp of opps) {
     if (opp.IsClosed) continue
