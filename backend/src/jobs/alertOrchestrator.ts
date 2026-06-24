@@ -183,11 +183,13 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
   console.log(`[DryRun] Would send: ${wouldSend.length}, Would skip: ${wouldSkip.length}, Unreachable: ${unreachable.length}`)
 
   // Save summary for playbook pages to display
+  // Count ALL flagged opps (would send + skipped + unreachable) so sidebar shows
+  // total flags regardless of cooldown/notification status
   const summaryByType: Record<string, number> = {}
   const summaryByStallRule: Record<string, number> = {}
   const summarybyStageMismatchRule: Record<string, number> = {}
 
-  for (const alert of wouldSend) {
+  for (const alert of [...wouldSend, ...wouldSkip, ...unreachable]) {
     summaryByType[alert.alertType] = (summaryByType[alert.alertType] ?? 0) + 1
     // Per stall rule
     if (alert.alertType === 'STALLED' && alert.details.ruleId) {
