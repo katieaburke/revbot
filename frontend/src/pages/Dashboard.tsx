@@ -483,11 +483,11 @@ export function Dashboard() {
                   <span className="text-xs text-gray-500 shrink-0">Rep sends</span>
                   <select value={filters.repOp} onChange={(e) => setFilters((f) => ({ ...f, repOp: e.target.value, repVal: f.repVal || '0' }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">any</option>
-                    <option value="=">= </option>
+                    <option value="=">=</option>
                     <option value=">=">≥</option>
                     <option value="<=">≤</option>
-                    <option value=">"> > </option>
-                    <option value="<"> &lt; </option>
+                    <option value=">">{'>'}</option>
+                    <option value="<">{'<'}</option>
                   </select>
                   {filters.repOp && (
                     <input
@@ -502,11 +502,11 @@ export function Dashboard() {
                   <span className="text-xs text-gray-500 shrink-0">Mgr sends</span>
                   <select value={filters.mgrOp} onChange={(e) => setFilters((f) => ({ ...f, mgrOp: e.target.value, mgrVal: f.mgrVal || '0' }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">any</option>
-                    <option value="=">= </option>
+                    <option value="=">=</option>
                     <option value=">=">≥</option>
                     <option value="<=">≤</option>
-                    <option value=">"> > </option>
-                    <option value="<"> &lt; </option>
+                    <option value=">">{'>'}</option>
+                    <option value="<">{'<'}</option>
                   </select>
                   {filters.mgrOp && (
                     <input
