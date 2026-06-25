@@ -212,6 +212,9 @@ model Notification {
   alertType    AlertType
   alertDetails Json    // type-specific payload (missing fields, days stalled, etc.)
 
+  // Who was notified: "rep" (deal owner) or "manager" (owner's manager)
+  recipientType String @default("rep")
+
   // Slack message tracking
   slackMessageTs  String?
   slackChannelId  String?

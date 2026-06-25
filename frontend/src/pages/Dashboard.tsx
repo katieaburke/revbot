@@ -99,14 +99,24 @@ function uniqueVals(groups: OppGroup[], key: keyof OppGroup): string[] {
   return Array.from(new Set(groups.map((g) => g[key] as string | null).filter(Boolean) as string[])).sort()
 }
 
-function applyFilters(groups: OppGroup[], filters: { channel: string; fn: string; region: string; owner: string; flagType: string }): OppGroup[] {
-  return groups.filter((g) =>
-    (!filters.channel || g.salesChannel === filters.channel) &&
-    (!filters.fn || g.salesFunction === filters.fn) &&
-    (!filters.region || g.salesRegion === filters.region) &&
-    (!filters.owner || g.ownerEmail === filters.owner) &&
-    (!filters.flagType || g.alerts.some((a) => filters.flagType.split(',').includes(a.alertType)))
-  )
+function applyFilters(
+  groups: OppGroup[],
+  filters: { channel: string; fn: string; region: string; owner: string; flagType: string; repNotified: string; mgrNotified: string },
+  oppCounts: Record<string, { rep: number; manager: number }>
+): OppGroup[] {
+  return groups.filter((g) => {
+    if (filters.channel && g.salesChannel !== filters.channel) return false
+    if (filters.fn && g.salesFunction !== filters.fn) return false
+    if (filters.region && g.salesRegion !== filters.region) return false
+    if (filters.owner && g.ownerEmail !== filters.owner) return false
+    if (filters.flagType && !g.alerts.some((a) => filters.flagType.split(',').includes(a.alertType))) return false
+    const counts = oppCounts[g.opportunityId] ?? { rep: 0, manager: 0 }
+    if (filters.repNotified === 'yes' && counts.rep === 0) return false
+    if (filters.repNotified === 'no' && counts.rep > 0) return false
+    if (filters.mgrNotified === 'yes' && counts.manager === 0) return false
+    if (filters.mgrNotified === 'no' && counts.manager > 0) return false
+    return true
+  })
 }
 
 // Summary-level labels (one per alert type row)
@@ -186,7 +196,7 @@ export function Dashboard() {
   const [draftSent, setDraftSent] = useState<string | null>(null)
   const [notifyingManagerOppId, setNotifyingManagerOppId] = useState<string | null>(null)
   const [managerNotifiedOppId, setManagerNotifiedOppId] = useState<string | null>(null)
-  const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '' })
+  const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '', repNotified: '', mgrNotified: '' })
 
   const { data: summary, isLoading } = useQuery<Summary>({
     queryKey: ['summary'],
@@ -218,7 +228,7 @@ export function Dashboard() {
     return Array.from(ids)
   }, [dryRunResult])
 
-  const { data: oppCounts = {} } = useQuery<Record<string, number>>({
+  const { data: oppCounts = {} } = useQuery<Record<string, { rep: number; manager: number }>>({
     queryKey: ['opp-counts', allDryRunOppIds],
     queryFn: () =>
       allDryRunOppIds.length
@@ -247,6 +257,7 @@ export function Dashboard() {
       opportunityId: g.opportunityId,
       opportunityName: g.opportunityName,
       ownerName: g.ownerName ?? g.ownerEmail,
+      ownerSlackId: g.alerts[0]?.ownerSlackId ?? null,
       managerSlackId: g.managerSlackId,
       alerts: g.alerts.map((a) => ({ alertType: a.alertType, details: a.details })),
     }),
@@ -439,7 +450,7 @@ export function Dashboard() {
 
             const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || owners.length > 1 || flagOptions.length > 1
             if (!hasFilters) return null
-            const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType
+            const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType || filters.repNotified || filters.mgrNotified
             return (
               <div className="px-6 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap bg-gray-50">
                 <span className="text-xs font-medium text-gray-500">Filter</span>
@@ -455,6 +466,16 @@ export function Dashboard() {
                     {owners.map(([email, name]) => <option key={email} value={email}>{name}</option>)}
                   </select>
                 )}
+                <select value={filters.repNotified} onChange={(e) => setFilters((f) => ({ ...f, repNotified: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                  <option value="">Rep: any</option>
+                  <option value="no">Rep: not yet notified</option>
+                  <option value="yes">Rep: notified 1+×</option>
+                </select>
+                <select value={filters.mgrNotified} onChange={(e) => setFilters((f) => ({ ...f, mgrNotified: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                  <option value="">Manager: any</option>
+                  <option value="no">Manager: not yet notified</option>
+                  <option value="yes">Manager: notified</option>
+                </select>
                 {channels.length > 0 && (
                   <select value={filters.channel} onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">All channels</option>
@@ -474,7 +495,7 @@ export function Dashboard() {
                   </select>
                 )}
                 {anyActive && (
-                  <button onClick={() => setFilters({ channel: '', fn: '', region: '', owner: '', flagType: '' })} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
+                  <button onClick={() => setFilters({ channel: '', fn: '', region: '', owner: '', flagType: '', repNotified: '', mgrNotified: '' })} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
                 )}
               </div>
             )
@@ -482,7 +503,7 @@ export function Dashboard() {
 
           <OppSection
             title="Would send"
-            groups={applyFilters(groupByOpp(dryRunResult.wouldSend), filters)}
+            groups={applyFilters(groupByOpp(dryRunResult.wouldSend), filters, oppCounts)}
             expanded={expandedSection === 'wouldSend'}
             onToggle={() => setExpandedSection(expandedSection === 'wouldSend' ? null : 'wouldSend')}
             emptyText="No alerts would be sent with current rules"
@@ -501,7 +522,7 @@ export function Dashboard() {
           {dryRunResult.unreachable.length > 0 && (
             <OppSection
               title="Owner not in Slack"
-              groups={applyFilters(groupByOpp(dryRunResult.unreachable), filters)}
+              groups={applyFilters(groupByOpp(dryRunResult.unreachable), filters, oppCounts)}
               expanded={expandedSection === 'unreachable'}
               onToggle={() => setExpandedSection(expandedSection === 'unreachable' ? null : 'unreachable')}
               emptyText=""
@@ -522,7 +543,7 @@ export function Dashboard() {
           {dryRunResult.wouldSkip.length > 0 && (
             <OppSection
               title="Skipped (cooldown / snoozed)"
-              groups={applyFilters(groupByOpp(dryRunResult.wouldSkip), filters)}
+              groups={applyFilters(groupByOpp(dryRunResult.wouldSkip), filters, oppCounts)}
               expanded={expandedSection === 'wouldSkip'}
               onToggle={() => setExpandedSection(expandedSection === 'wouldSkip' ? null : 'wouldSkip')}
               emptyText=""
@@ -618,7 +639,7 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                 const link = sfdcLink(g.opportunityId)
                 const isConfirming = confirmDeleteId === g.opportunityId
                 const isDeleting = deletingId === g.opportunityId
-                const sentCount = oppCounts[g.opportunityId] ?? 0
+                const counts = oppCounts[g.opportunityId] ?? { rep: 0, manager: 0 }
                 const isNotifyingMgr = notifyingManagerOppId === g.opportunityId
                 const managerNotified = managerNotifiedOppId === g.opportunityId
                 return (
@@ -636,9 +657,14 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                         {g.opportunityType && (
                           <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-medium">{g.opportunityType}</span>
                         )}
-                        {sentCount > 0 && (
-                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium" title={`${sentCount} alert${sentCount === 1 ? '' : 's'} sent previously`}>
-                            {sentCount}× sent
+                        {counts.rep > 0 && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium" title={`Rep notified ${counts.rep} time${counts.rep === 1 ? '' : 's'}`}>
+                            rep {counts.rep}×
+                          </span>
+                        )}
+                        {counts.manager > 0 && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium" title={`Manager notified ${counts.manager} time${counts.manager === 1 ? '' : 's'}`}>
+                            mgr {counts.manager}×
                           </span>
                         )}
                       </div>

@@ -50,20 +50,24 @@ router.get('/summary', async (_req, res) => {
   res.json({ total, sent, snoozed, resolved, byType })
 })
 
-// Sent notification counts per opportunity (for the dashboard badges)
+// Sent notification counts per opportunity split by recipient type (rep vs manager)
 router.get('/opp-counts', async (req, res) => {
   const { oppIds } = req.query as { oppIds?: string }
   const ids = oppIds ? oppIds.split(',').filter(Boolean) : []
   if (!ids.length) return res.json({})
 
   const rows = await db.notification.groupBy({
-    by: ['opportunityId'],
+    by: ['opportunityId', 'recipientType'],
     _count: { id: true },
     where: { opportunityId: { in: ids } },
   })
 
-  const result: Record<string, number> = {}
-  for (const row of rows) result[row.opportunityId] = row._count.id
+  const result: Record<string, { rep: number; manager: number }> = {}
+  for (const row of rows) {
+    if (!result[row.opportunityId]) result[row.opportunityId] = { rep: 0, manager: 0 }
+    if (row.recipientType === 'manager') result[row.opportunityId].manager = row._count.id
+    else result[row.opportunityId].rep = row._count.id
+  }
   res.json(result)
 })
 
@@ -77,10 +81,11 @@ router.get('/last-dry-run', async (_req, res) => {
 // Notify a deal owner's manager about flagged alerts
 router.post('/notify-manager', async (req, res) => {
   try {
-    const { opportunityId, opportunityName, ownerName, managerSlackId, alerts } = req.body as {
+    const { opportunityId, opportunityName, ownerName, ownerSlackId, managerSlackId, alerts } = req.body as {
       opportunityId: string
       opportunityName: string
       ownerName: string
+      ownerSlackId: string | null
       managerSlackId: string
       alerts: { alertType: string; details: Record<string, unknown> }[]
     }
@@ -88,6 +93,25 @@ router.post('/notify-manager', async (req, res) => {
 
     const blocks = await buildManagerAlertMessage(opportunityId, opportunityName, ownerName, alerts)
     const ts = await sendDm(managerSlackId, blocks, `FYI: ${opportunityName} needs attention`)
+
+    // Record notification so counters stay accurate
+    const repUser = ownerSlackId ? await db.user.findUnique({ where: { slackUserId: ownerSlackId } }) : null
+    if (repUser) {
+      await db.notification.create({
+        data: {
+          opportunityId,
+          opportunityName,
+          ownerId: repUser.id,
+          alertType: (alerts[0]?.alertType ?? 'STALLED') as AlertType,
+          alertDetails: alerts as never,
+          slackMessageTs: ts ?? undefined,
+          slackChannelId: managerSlackId,
+          recipientType: 'manager',
+          status: 'SENT',
+        },
+      })
+    }
+
     res.json({ ok: true, ts })
   } catch (err) {
     res.status(500).json({ error: String(err) })
