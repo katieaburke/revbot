@@ -194,7 +194,8 @@ export function Dashboard() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [draftOpp, setDraftOpp] = useState<OppGroup | null>(null)
   const [draftSent, setDraftSent] = useState<string | null>(null)
-  const [notifyingManagerOppId, setNotifyingManagerOppId] = useState<string | null>(null)
+  const [managerDraftOpp, setManagerDraftOpp] = useState<OppGroup | null>(null)
+  const [managerDraftSent, setManagerDraftSent] = useState<string | null>(null)
   const [managerNotifiedOppId, setManagerNotifiedOppId] = useState<string | null>(null)
   const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '', repNotified: '', mgrNotified: '' })
 
@@ -263,10 +264,9 @@ export function Dashboard() {
     }),
     onSuccess: (_data, g) => {
       setManagerNotifiedOppId(g.opportunityId)
-      setNotifyingManagerOppId(null)
+      setManagerDraftSent(g.opportunityId)
       setTimeout(() => setManagerNotifiedOppId(null), 4000)
     },
-    onError: () => setNotifyingManagerOppId(null),
   })
 
   const sendDraft = useMutation({
@@ -511,8 +511,7 @@ export function Dashboard() {
             sfdcLink={sfdcLink}
             onDelete={handleDelete}
             onDraft={setDraftOpp}
-            onNotifyManager={(g) => { setNotifyingManagerOppId(g.opportunityId); notifyManager.mutate(g) }}
-            notifyingManagerOppId={notifyingManagerOppId}
+            onManagerDraft={setManagerDraftOpp}
             managerNotifiedOppId={managerNotifiedOppId}
             confirmDeleteId={confirmDeleteId}
             deletingId={deletingId}
@@ -531,8 +530,7 @@ export function Dashboard() {
               sfdcLink={sfdcLink}
               onDelete={handleDelete}
               onDraft={setDraftOpp}
-              onNotifyManager={(g) => { setNotifyingManagerOppId(g.opportunityId); notifyManager.mutate(g) }}
-              notifyingManagerOppId={notifyingManagerOppId}
+              onManagerDraft={setManagerDraftOpp}
               managerNotifiedOppId={managerNotifiedOppId}
               confirmDeleteId={confirmDeleteId}
               deletingId={deletingId}
@@ -551,8 +549,7 @@ export function Dashboard() {
               sfdcLink={sfdcLink}
               onDelete={handleDelete}
               onDraft={setDraftOpp}
-              onNotifyManager={(g) => { setNotifyingManagerOppId(g.opportunityId); notifyManager.mutate(g) }}
-              notifyingManagerOppId={notifyingManagerOppId}
+              onManagerDraft={setManagerDraftOpp}
               managerNotifiedOppId={managerNotifiedOppId}
               confirmDeleteId={confirmDeleteId}
               deletingId={deletingId}
@@ -582,6 +579,17 @@ export function Dashboard() {
           onClose={() => { setDraftOpp(null); setDraftSent(null); sendDraft.reset() }}
         />
       )}
+
+      {managerDraftOpp && (
+        <ManagerDraftModal
+          opp={managerDraftOpp}
+          sfdcBase={sfdcBase}
+          sending={notifyManager.isPending}
+          sent={managerDraftSent === managerDraftOpp.opportunityId}
+          onSend={() => notifyManager.mutate(managerDraftOpp)}
+          onClose={() => { setManagerDraftOpp(null); setManagerDraftSent(null); notifyManager.reset() }}
+        />
+      )}
     </div>
   )
 }
@@ -600,7 +608,7 @@ function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }
 
 // ── OppSection ────────────────────────────────────────────────────────────────
 
-function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, hint, sfdcLink, onDelete, onDraft, onNotifyManager, notifyingManagerOppId, managerNotifiedOppId, confirmDeleteId, deletingId, oppCounts }: {
+function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, hint, sfdcLink, onDelete, onDraft, onManagerDraft, managerNotifiedOppId, confirmDeleteId, deletingId, oppCounts }: {
   title: string
   groups: OppGroup[]
   expanded: boolean
@@ -611,12 +619,11 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
   sfdcLink: (id: string) => string | null
   onDelete: (id: string) => void
   onDraft: (g: OppGroup) => void
-  onNotifyManager: (g: OppGroup) => void
-  notifyingManagerOppId: string | null
+  onManagerDraft: (g: OppGroup) => void
   managerNotifiedOppId: string | null
   confirmDeleteId: string | null
   deletingId: string | null
-  oppCounts: Record<string, number>
+  oppCounts: Record<string, { rep: number; manager: number }>
 }) {
   return (
     <div className="border-b border-gray-100 last:border-0">
@@ -640,7 +647,6 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                 const isConfirming = confirmDeleteId === g.opportunityId
                 const isDeleting = deletingId === g.opportunityId
                 const counts = oppCounts[g.opportunityId] ?? { rep: 0, manager: 0 }
-                const isNotifyingMgr = notifyingManagerOppId === g.opportunityId
                 const managerNotified = managerNotifiedOppId === g.opportunityId
                 return (
                   <div key={g.opportunityId} className="flex items-start justify-between py-2.5 px-3 rounded-lg border border-gray-100 hover:bg-gray-50">
@@ -685,20 +691,19 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                       </p>
                     </div>
                     <div className="ml-3 flex-shrink-0 flex items-center gap-1">
-                      <button onClick={() => onDraft(g)} className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-brand-600 hover:bg-brand-50" title="Draft message to rep">
-                        <MessageSquare size={11} /> Draft
+                      <button onClick={() => onDraft(g)} className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-brand-600 hover:bg-brand-50" title="Send message to rep">
+                        <MessageSquare size={11} /> Send to rep
                       </button>
                       {g.managerSlackId && (
                         <button
-                          onClick={() => !isNotifyingMgr && !managerNotified && onNotifyManager(g)}
-                          disabled={isNotifyingMgr || managerNotified}
+                          onClick={() => onManagerDraft(g)}
                           className={clsx('flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors',
                             managerNotified ? 'text-green-600 bg-green-50' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
                           )}
-                          title={managerNotified ? 'Manager notified' : `Notify manager (${g.managerName ?? g.managerEmail})`}
+                          title={`Send to manager (${g.managerName ?? g.managerEmail})`}
                         >
-                          {isNotifyingMgr ? <RefreshCw size={11} className="animate-spin" /> : <UserCheck size={11} />}
-                          {managerNotified ? 'Sent' : 'Mgr'}
+                          <UserCheck size={11} />
+                          {managerNotified ? 'Sent to mgr' : 'Send to manager'}
                         </button>
                       )}
                       <button
@@ -770,7 +775,7 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-gray-900">Draft message to rep</h3>
+          <h3 className="font-semibold text-gray-900">Send to rep</h3>
           <button onClick={onClose}><X size={18} className="text-gray-400" /></button>
         </div>
         <div className="mb-4 text-sm text-gray-500">
@@ -799,6 +804,63 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
             <button onClick={onSend} disabled={sending} className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50">
               {sending ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
               {sending ? 'Sending...' : 'Send to rep'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Manager draft modal ───────────────────────────────────────────────────────
+
+function ManagerDraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
+  opp: OppGroup
+  sfdcBase: string
+  sending: boolean
+  sent: boolean
+  onSend: () => void
+  onClose: () => void
+}) {
+  const preview = formatPreview(opp)
+  const link = sfdcBase ? `${sfdcBase}/lightning/r/Opportunity/${opp.opportunityId}/view` : null
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-gray-900">Send to manager</h3>
+          <button onClick={onClose}><X size={18} className="text-gray-400" /></button>
+        </div>
+        <div className="mb-4 text-sm text-gray-500">
+          Sending to: <span className="font-medium text-gray-700">{opp.managerName ?? opp.managerEmail ?? 'Manager'}</span>
+          <span className="text-gray-400 ml-1">re: {opp.ownerName ?? opp.ownerEmail}'s deal</span>
+        </div>
+        <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 mb-4">
+          <p className="text-xs font-medium text-gray-400 uppercase mb-2">Slack message preview</p>
+          <p className="text-sm font-medium text-gray-900 mb-1">
+            🔔 FYI —{' '}
+            {link ? (
+              <a href={link} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline inline-flex items-center gap-0.5">
+                {opp.opportunityName} <ExternalLink size={10} />
+              </a>
+            ) : opp.opportunityName}{' '}
+            needs attention
+          </p>
+          {opp.accountName && <p className="text-xs text-gray-500 mb-2">{opp.accountName}</p>}
+          <p className="text-xs text-gray-500 mb-2">{opp.ownerName ?? opp.ownerEmail}'s deal has been flagged:</p>
+          <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans">{preview}</pre>
+        </div>
+        {sent ? (
+          <div className="flex items-center gap-2 px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+            <CheckCircle size={15} /> Message sent to {opp.managerName ?? opp.managerEmail}
+          </div>
+        ) : (
+          <div className="flex gap-3 justify-end">
+            <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+            <button onClick={onSend} disabled={sending} className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50">
+              {sending ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
+              {sending ? 'Sending...' : 'Send to manager'}
             </button>
           </div>
         )}
