@@ -204,6 +204,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
   }
 
   const runTimestamp = new Date().toISOString()
+  const runAt = new Date(runTimestamp)
 
   await Promise.all([
     db.appSetting.upsert({
@@ -253,6 +254,18 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
           meddpiccStagesActive: meddpiccRequirements.length,
         }),
       },
+    }),
+(db as any).flagSnapshot.createMany({
+      data: [...wouldSend, ...wouldSkip, ...unreachable].map((alert) => ({
+        runAt,
+        opportunityId: alert.opportunityId,
+        alertType: alert.alertType,
+        ownerEmail: alert.ownerEmail,
+        ownerName: alert.ownerName ?? null,
+        managerEmail: alert.managerEmail ?? null,
+        managerName: alert.managerName ?? null,
+      })),
+      skipDuplicates: false,
     }),
   ])
 

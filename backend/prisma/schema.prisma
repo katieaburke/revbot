@@ -261,6 +261,24 @@ model NudgeLog {
   @@map("nudge_logs")
 }
 
+// ─── Flag Snapshots ──────────────────────────────────────────────────────────
+
+model FlagSnapshot {
+  id            String    @id @default(cuid())
+  runAt         DateTime
+  opportunityId String
+  alertType     AlertType
+  ownerEmail    String
+  ownerName     String?
+  managerEmail  String?
+  managerName   String?
+
+  @@index([runAt])
+  @@index([ownerEmail])
+  @@index([managerEmail])
+  @@map("flag_snapshots")
+}
+
 // ─── Admin Users ─────────────────────────────────────────────────────────────
 
 model AdminUser {

@@ -12,6 +12,7 @@ import { CloseDateConfig } from './pages/CloseDateConfig'
 import { StageMismatchConfig } from './pages/StageMismatchConfig'
 import { Settings } from './pages/Settings'
 import { Team } from './pages/Team'
+import { Analytics } from './pages/Analytics'
 
 const qc = new QueryClient()
 
@@ -44,6 +45,7 @@ export default function App() {
             <Route path="/playbook/stage-mismatch" element={<StageMismatchConfig />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/team" element={<Team />} />
+            <Route path="/analytics" element={<Analytics />} />
           </Route>
         </Routes>
       </BrowserRouter>

@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   GitCompare,
   Users,
+  BarChart2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
@@ -48,6 +49,9 @@ export function Layout() {
 
           {/* Notification History */}
           <NavItem to="/notifications" label="Notification History" icon={BellRing} />
+
+          {/* Analytics */}
+          <NavItem to="/analytics" label="Analytics" icon={BarChart2} />
 
           <div className="pt-2 pb-1">
             <div className="h-px bg-gray-100 mx-1" />
