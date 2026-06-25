@@ -4,7 +4,7 @@ import cors from 'cors'
 import { config } from './config'
 import { db } from './db'
 import { initSlack } from './slack/bot'
-import { startWorker, scheduleAlertJob } from './jobs/scheduler'
+import { startWorker, alertQueue } from './jobs/scheduler'
 import authRouter from './api/auth'
 import configRouter from './api/config'
 import notificationsRouter from './api/notifications'
@@ -17,13 +17,17 @@ async function main() {
   // Start BullMQ worker
   startWorker()
 
-  // Schedule default alert job (Mon-Fri 8am, overridden by DB setting)
+  // Clear any previously scheduled repeatable alert jobs — alerts are now sent manually only
   try {
-    const cronSetting = await db.appSetting.findUnique({ where: { key: 'alertCron' } })
-    const cron = cronSetting ? JSON.parse(cronSetting.value) : '0 8 * * 1-5'
-    await scheduleAlertJob(cron)
+    const repeatableJobs = await alertQueue.getRepeatableJobs()
+    for (const job of repeatableJobs) {
+      if (job.name === 'run-alerts') {
+        await alertQueue.removeRepeatableByKey(job.key)
+        console.log(`[Scheduler] Removed repeatable job: ${job.key}`)
+      }
+    }
   } catch (err) {
-    console.warn('⚠️  Could not schedule alert job (DB not ready?):', (err as Error).message)
+    console.warn('⚠️  Could not clear scheduled jobs:', (err as Error).message)
   }
 
   // Express app
