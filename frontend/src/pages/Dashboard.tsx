@@ -783,7 +783,7 @@ function getRepButtons(alerts: DryRunAlert[]): string[] {
     } else if (a.alertType === 'PAST_DUE_RENEWAL') {
       primary = ['Close Renewal']
     } else if (a.alertType === 'STALLED') {
-      primary = ['Update Stage', 'Update Close Date', 'Log Activity']
+      primary = ['Update Stage', 'Update Close Date']
     } else if (a.alertType === 'MEDDPICC_MISSING') {
       primary = ['Update Now']
     } else if (a.alertType === 'NEXT_STEP_MISSING') {

@@ -158,12 +158,6 @@ export async function buildStalledMessage(alert: StalledAlert, isNudge = false):
           action_id: 'update_close_date',
           value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName, alertType: alert.alertType }),
         },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Log Activity' },
-          action_id: 'log_activity',
-          value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName }),
-        },
         snoozeButton(alert.opportunityId, alert.alertType),
         needHelpButton(),
       ],
@@ -446,12 +440,6 @@ export async function buildCombinedMessage(
             style: 'primary',
             action_id: 'update_stage',
             value: JSON.stringify({ oppId, oppName, currentStage: (a.details.stage as string) ?? '' }),
-          },
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Log Activity' },
-            action_id: 'log_activity',
-            value: JSON.stringify({ oppId, oppName }),
           },
         ],
       } as KnownBlock)
