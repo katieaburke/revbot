@@ -99,9 +99,20 @@ function uniqueVals(groups: OppGroup[], key: keyof OppGroup): string[] {
   return Array.from(new Set(groups.map((g) => g[key] as string | null).filter(Boolean) as string[])).sort()
 }
 
+function compareCount(count: number, op: string, val: number): boolean {
+  switch (op) {
+    case '>=': return count >= val
+    case '<=': return count <= val
+    case '=':  return count === val
+    case '>':  return count > val
+    case '<':  return count < val
+    default:   return true
+  }
+}
+
 function applyFilters(
   groups: OppGroup[],
-  filters: { channel: string; fn: string; region: string; owner: string; flagType: string; repNotified: string; mgrNotified: string },
+  filters: { channel: string; fn: string; region: string; owner: string; flagType: string; repOp: string; repVal: string; mgrOp: string; mgrVal: string },
   oppCounts: Record<string, { rep: number; manager: number }>
 ): OppGroup[] {
   return groups.filter((g) => {
@@ -111,10 +122,12 @@ function applyFilters(
     if (filters.owner && g.ownerEmail !== filters.owner) return false
     if (filters.flagType && !g.alerts.some((a) => filters.flagType.split(',').includes(a.alertType))) return false
     const counts = oppCounts[g.opportunityId] ?? { rep: 0, manager: 0 }
-    if (filters.repNotified === 'yes' && counts.rep === 0) return false
-    if (filters.repNotified === 'no' && counts.rep > 0) return false
-    if (filters.mgrNotified === 'yes' && counts.manager === 0) return false
-    if (filters.mgrNotified === 'no' && counts.manager > 0) return false
+    if (filters.repOp && filters.repVal !== '') {
+      if (!compareCount(counts.rep, filters.repOp, parseInt(filters.repVal))) return false
+    }
+    if (filters.mgrOp && filters.mgrVal !== '') {
+      if (!compareCount(counts.manager, filters.mgrOp, parseInt(filters.mgrVal))) return false
+    }
     return true
   })
 }
@@ -197,7 +210,7 @@ export function Dashboard() {
   const [managerDraftOpp, setManagerDraftOpp] = useState<OppGroup | null>(null)
   const [managerDraftSent, setManagerDraftSent] = useState<string | null>(null)
   const [managerNotifiedOppId, setManagerNotifiedOppId] = useState<string | null>(null)
-  const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '', repNotified: '', mgrNotified: '' })
+  const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '', repOp: '', repVal: '', mgrOp: '', mgrVal: '' })
 
   const { data: summary, isLoading } = useQuery<Summary>({
     queryKey: ['summary'],
@@ -450,7 +463,7 @@ export function Dashboard() {
 
             const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || owners.length > 1 || flagOptions.length > 1
             if (!hasFilters) return null
-            const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType || filters.repNotified || filters.mgrNotified
+            const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType || filters.repOp || filters.mgrOp
             return (
               <div className="px-6 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap bg-gray-50">
                 <span className="text-xs font-medium text-gray-500">Filter</span>
@@ -466,16 +479,44 @@ export function Dashboard() {
                     {owners.map(([email, name]) => <option key={email} value={email}>{name}</option>)}
                   </select>
                 )}
-                <select value={filters.repNotified} onChange={(e) => setFilters((f) => ({ ...f, repNotified: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
-                  <option value="">Rep: any</option>
-                  <option value="no">Rep: not yet notified</option>
-                  <option value="yes">Rep: notified 1+×</option>
-                </select>
-                <select value={filters.mgrNotified} onChange={(e) => setFilters((f) => ({ ...f, mgrNotified: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
-                  <option value="">Manager: any</option>
-                  <option value="no">Manager: not yet notified</option>
-                  <option value="yes">Manager: notified</option>
-                </select>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-500 shrink-0">Rep sends</span>
+                  <select value={filters.repOp} onChange={(e) => setFilters((f) => ({ ...f, repOp: e.target.value, repVal: f.repVal || '0' }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                    <option value="">any</option>
+                    <option value="=">= </option>
+                    <option value=">=">≥</option>
+                    <option value="<=">≤</option>
+                    <option value=">"> > </option>
+                    <option value="<"> &lt; </option>
+                  </select>
+                  {filters.repOp && (
+                    <input
+                      type="number" min="0"
+                      value={filters.repVal}
+                      onChange={(e) => setFilters((f) => ({ ...f, repVal: e.target.value }))}
+                      className="w-12 text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 text-center"
+                    />
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-500 shrink-0">Mgr sends</span>
+                  <select value={filters.mgrOp} onChange={(e) => setFilters((f) => ({ ...f, mgrOp: e.target.value, mgrVal: f.mgrVal || '0' }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                    <option value="">any</option>
+                    <option value="=">= </option>
+                    <option value=">=">≥</option>
+                    <option value="<=">≤</option>
+                    <option value=">"> > </option>
+                    <option value="<"> &lt; </option>
+                  </select>
+                  {filters.mgrOp && (
+                    <input
+                      type="number" min="0"
+                      value={filters.mgrVal}
+                      onChange={(e) => setFilters((f) => ({ ...f, mgrVal: e.target.value }))}
+                      className="w-12 text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 text-center"
+                    />
+                  )}
+                </div>
                 {channels.length > 0 && (
                   <select value={filters.channel} onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">All channels</option>
@@ -495,7 +536,7 @@ export function Dashboard() {
                   </select>
                 )}
                 {anyActive && (
-                  <button onClick={() => setFilters({ channel: '', fn: '', region: '', owner: '', flagType: '', repNotified: '', mgrNotified: '' })} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
+                  <button onClick={() => setFilters({ channel: '', fn: '', region: '', owner: '', flagType: '', repOp: '', repVal: '', mgrOp: '', mgrVal: '' })} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
                 )}
               </div>
             )
