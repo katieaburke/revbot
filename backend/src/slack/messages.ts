@@ -90,13 +90,6 @@ export async function buildPastDueMessage(alert: PastDueAlert, isNudge = false):
         type: 'actions',
         block_id: `past_due_${alert.opportunityId}`,
         elements: [
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: 'Close Renewal' },
-            style: 'primary',
-            action_id: 'close_renewal',
-            value: JSON.stringify({ oppId: alert.opportunityId, oppName: alert.opportunityName }),
-          },
           snoozeButton(alert.opportunityId, alert.alertType),
           needHelpButton(),
         ],
@@ -427,17 +420,7 @@ export async function buildCombinedMessage(
       break
     }
     if (a.alertType === AlertType.PAST_DUE_RENEWAL) {
-      blocks.push({
-        type: 'actions',
-        block_id: `renewal_action_${oppId}`,
-        elements: [{
-          type: 'button',
-          text: { type: 'plain_text', text: 'Close Renewal' },
-          style: 'primary',
-          action_id: 'close_renewal',
-          value: JSON.stringify({ oppId, oppName }),
-        }],
-      } as KnownBlock)
+      // No action buttons — closing a renewal must be done in Salesforce
       break
     }
     if (a.alertType === AlertType.STALLED) {
