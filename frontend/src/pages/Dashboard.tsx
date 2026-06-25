@@ -729,6 +729,37 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
   )
 }
 
+// ── Button preview helpers ────────────────────────────────────────────────────
+
+function getRepButtons(alerts: DryRunAlert[]): string[] {
+  // Mirror the primary action buttons from messages.ts per alert type
+  const buttons: string[] = []
+  const seen = new Set<string>()
+  for (const a of alerts) {
+    let primary: string[] = []
+    if (a.alertType === 'PAST_DUE_INITIAL' || a.alertType === 'PAST_DUE_AMENDMENT') {
+      primary = ['Update Close Date']
+    } else if (a.alertType === 'PAST_DUE_RENEWAL') {
+      primary = ['Close Renewal']
+    } else if (a.alertType === 'STALLED') {
+      primary = ['Update Stage', 'Update Close Date', 'Log Activity']
+    } else if (a.alertType === 'MEDDPICC_MISSING') {
+      primary = ['Update Now']
+    } else if (a.alertType === 'NEXT_STEP_MISSING') {
+      primary = ['Update Next Step']
+    } else if (a.alertType === 'CLOSE_DATE_RISK') {
+      primary = ['Update Close Date', 'Update Stage']
+    } else if (a.alertType === 'STAGE_MISMATCH') {
+      primary = ['Open in Salesforce']
+    }
+    for (const b of primary) {
+      if (!seen.has(b)) { seen.add(b); buttons.push(b) }
+    }
+  }
+  buttons.push('Snooze', 'Need Help?')
+  return buttons
+}
+
 // ── Draft modal ───────────────────────────────────────────────────────────────
 
 function formatPreview(opp: OppGroup): string {
@@ -770,6 +801,7 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
 }) {
   const preview = formatPreview(opp)
   const link = sfdcBase ? `${sfdcBase}/lightning/r/Opportunity/${opp.opportunityId}/view` : null
+  const buttons = getRepButtons(opp.alerts)
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -793,6 +825,13 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
           </p>
           {opp.accountName && <p className="text-xs text-gray-500 mb-2">{opp.accountName}</p>}
           <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans">{preview}</pre>
+          <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-gray-200">
+            {buttons.map((b) => (
+              <span key={b} className="px-2.5 py-1 rounded border border-gray-300 text-xs font-medium text-gray-600 bg-white">
+                {b}
+              </span>
+            ))}
+          </div>
         </div>
         {sent ? (
           <div className="flex items-center gap-2 px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
@@ -850,6 +889,11 @@ function ManagerDraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
           {opp.accountName && <p className="text-xs text-gray-500 mb-2">{opp.accountName}</p>}
           <p className="text-xs text-gray-500 mb-2">{opp.ownerName ?? opp.ownerEmail}'s deal has been flagged:</p>
           <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans">{preview}</pre>
+          <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-gray-200">
+            <span className="px-2.5 py-1 rounded border border-gray-300 text-xs font-medium text-gray-600 bg-white">
+              Open in Salesforce
+            </span>
+          </div>
         </div>
         {sent ? (
           <div className="flex items-center gap-2 px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
