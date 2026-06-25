@@ -17,6 +17,15 @@ async function getSfdcBase(): Promise<string> {
   return _sfdcBase
 }
 
+// Reusable footer note for alerts where stage changes are involved
+const SFDC_STAGE_NOTE: KnownBlock = {
+  type: 'context',
+  elements: [{
+    type: 'mrkdwn',
+    text: '⚠️ _Stage changes must be made directly in Salesforce. To close as Lost, use the *Set to Lost* button on the opp (requires loss reason + incumbent vendor). Some stages also have entry criteria, e.g. adding a required contact role._',
+  }],
+}
+
 export function invalidateSfdcBaseCache(): void {
   _sfdcBase = null
 }
@@ -162,6 +171,7 @@ export async function buildStalledMessage(alert: StalledAlert, isNudge = false):
         needHelpButton(),
       ],
     },
+    SFDC_STAGE_NOTE,
   ]
 }
 
@@ -332,6 +342,7 @@ export async function buildStageMismatchMessage(alert: StageMismatchAlert, isNud
         needHelpButton(),
       ],
     },
+    SFDC_STAGE_NOTE,
   ]
 }
 
@@ -518,6 +529,10 @@ export async function buildCombinedMessage(
       break
     }
   }
+
+  // Stage-change note for stalled / stage mismatch alerts
+  const needsStageNote = alerts.some((a) => a.alertType === AlertType.STALLED || a.alertType === AlertType.STAGE_MISMATCH)
+  if (needsStageNote) blocks.push(SFDC_STAGE_NOTE)
 
   // Footer: open in SFDC + snooze + help
   blocks.push({
