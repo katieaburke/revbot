@@ -110,10 +110,12 @@ function compareCount(count: number, op: string, val: number): boolean {
   }
 }
 
+type OppCount = { rep: number; manager: number; lastSentRep?: string; lastSentMgr?: string }
+
 function applyFilters(
   groups: OppGroup[],
   filters: { channel: string; fn: string; region: string; owner: string; flagType: string; repOp: string; repVal: string; mgrOp: string; mgrVal: string },
-  oppCounts: Record<string, { rep: number; manager: number }>
+  oppCounts: Record<string, OppCount>
 ): OppGroup[] {
   return groups.filter((g) => {
     if (filters.channel && g.salesChannel !== filters.channel) return false
@@ -242,7 +244,7 @@ export function Dashboard() {
     return Array.from(ids)
   }, [dryRunResult])
 
-  const { data: oppCounts = {} } = useQuery<Record<string, { rep: number; manager: number }>>({
+  const { data: oppCounts = {} } = useQuery<Record<string, OppCount>>({
     queryKey: ['opp-counts', allDryRunOppIds],
     queryFn: () =>
       allDryRunOppIds.length
@@ -271,6 +273,7 @@ export function Dashboard() {
       opportunityId: g.opportunityId,
       opportunityName: g.opportunityName,
       ownerName: g.ownerName ?? g.ownerEmail,
+      ownerEmail: g.ownerEmail,
       ownerSlackId: g.alerts[0]?.ownerSlackId ?? null,
       managerSlackId: g.managerSlackId,
       alerts: g.alerts.map((a) => ({ alertType: a.alertType, details: a.details })),
@@ -668,8 +671,14 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
   managerNotifiedOppId: string | null
   confirmDeleteId: string | null
   deletingId: string | null
-  oppCounts: Record<string, { rep: number; manager: number }>
+  oppCounts: Record<string, OppCount>
 }) {
+  function fmtDate(iso: string | undefined) {
+    if (!iso) return ''
+    const d = new Date(iso)
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  }
+
   return (
     <div className="border-b border-gray-100 last:border-0">
       <button onClick={onToggle} className="w-full flex items-center justify-between px-6 py-3 hover:bg-gray-50 text-left">
@@ -709,13 +718,13 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                           <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-medium">{g.opportunityType}</span>
                         )}
                         {counts.rep > 0 && (
-                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium" title={`Rep notified ${counts.rep} time${counts.rep === 1 ? '' : 's'}`}>
-                            rep {counts.rep}×
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium" title={`Rep notified ${counts.rep} time${counts.rep === 1 ? '' : 's'}${counts.lastSentRep ? ` · last ${fmtDate(counts.lastSentRep)}` : ''}`}>
+                            rep {counts.rep}×{counts.lastSentRep && <span className="ml-1 opacity-70">· {fmtDate(counts.lastSentRep)}</span>}
                           </span>
                         )}
                         {counts.manager > 0 && (
-                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium" title={`Manager notified ${counts.manager} time${counts.manager === 1 ? '' : 's'}`}>
-                            mgr {counts.manager}×
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium" title={`Manager notified ${counts.manager} time${counts.manager === 1 ? '' : 's'}${counts.lastSentMgr ? ` · last ${fmtDate(counts.lastSentMgr)}` : ''}`}>
+                            mgr {counts.manager}×{counts.lastSentMgr && <span className="ml-1 opacity-70">· {fmtDate(counts.lastSentMgr)}</span>}
                           </span>
                         )}
                       </div>

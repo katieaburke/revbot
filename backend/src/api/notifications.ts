@@ -59,14 +59,20 @@ router.get('/opp-counts', async (req, res) => {
   const rows = await db.notification.groupBy({
     by: ['opportunityId', 'recipientType'],
     _count: { id: true },
+    _max: { sentAt: true },
     where: { opportunityId: { in: ids } },
   })
 
-  const result: Record<string, { rep: number; manager: number }> = {}
+  const result: Record<string, { rep: number; manager: number; lastSentRep?: string; lastSentMgr?: string }> = {}
   for (const row of rows) {
     if (!result[row.opportunityId]) result[row.opportunityId] = { rep: 0, manager: 0 }
-    if (row.recipientType === 'manager') result[row.opportunityId].manager = row._count.id
-    else result[row.opportunityId].rep = row._count.id
+    if (row.recipientType === 'manager') {
+      result[row.opportunityId].manager = row._count.id
+      if (row._max.sentAt) result[row.opportunityId].lastSentMgr = row._max.sentAt.toISOString()
+    } else {
+      result[row.opportunityId].rep = row._count.id
+      if (row._max.sentAt) result[row.opportunityId].lastSentRep = row._max.sentAt.toISOString()
+    }
   }
   res.json(result)
 })
@@ -81,10 +87,11 @@ router.get('/last-dry-run', async (_req, res) => {
 // Notify a deal owner's manager about flagged alerts
 router.post('/notify-manager', async (req, res) => {
   try {
-    const { opportunityId, opportunityName, ownerName, ownerSlackId, managerSlackId, alerts } = req.body as {
+    const { opportunityId, opportunityName, ownerName, ownerEmail, ownerSlackId, managerSlackId, alerts } = req.body as {
       opportunityId: string
       opportunityName: string
       ownerName: string
+      ownerEmail?: string
       ownerSlackId: string | null
       managerSlackId: string
       alerts: { alertType: string; details: Record<string, unknown> }[]
@@ -95,7 +102,15 @@ router.post('/notify-manager', async (req, res) => {
     const ts = await sendDm(managerSlackId, blocks, `FYI: ${opportunityName} needs attention`)
 
     // Record notification so counters stay accurate
-    const repUser = ownerSlackId ? await db.user.findUnique({ where: { slackUserId: ownerSlackId } }) : null
+    // Try slackUserId first, then fall back to email in case slackUserId isn't synced
+    const repUser = await db.user.findFirst({
+      where: {
+        OR: [
+          ...(ownerSlackId ? [{ slackUserId: ownerSlackId }] : []),
+          ...(ownerEmail ? [{ slackEmail: ownerEmail }] : []),
+        ],
+      },
+    })
     if (repUser) {
       await db.notification.create({
         data: {
@@ -155,7 +170,10 @@ router.post('/send-draft', async (req, res) => {
     const ts = await sendDm(ownerSlackId, blocks, `Action needed: ${opportunityName}`)
 
     // Record each alert type as a notification
-    const owner = await db.user.findFirst({ where: { slackUserId: ownerSlackId } })
+    // Try slackUserId first, then fall back to email in case slackUserId isn't synced
+    const owner = await db.user.findFirst({
+      where: { OR: [{ slackUserId: ownerSlackId }, { slackEmail: ownerEmail }] },
+    })
     if (owner) {
       for (const a of alerts) {
         await db.notification.create({
