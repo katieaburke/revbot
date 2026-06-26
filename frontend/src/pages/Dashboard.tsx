@@ -279,6 +279,7 @@ export function Dashboard() {
       setManagerNotifiedOppId(g.opportunityId)
       setManagerDraftSent(g.opportunityId)
       setTimeout(() => setManagerNotifiedOppId(null), 4000)
+      qc.invalidateQueries({ queryKey: ['opp-counts'] })
     },
   })
 
@@ -290,7 +291,10 @@ export function Dashboard() {
       ownerEmail: g.ownerEmail,
       alerts: g.alerts.map((a) => ({ alertType: a.alertType, details: a.details })),
     }),
-    onSuccess: (_data, g) => setDraftSent(g.opportunityId),
+    onSuccess: (_data, g) => {
+      setDraftSent(g.opportunityId)
+      qc.invalidateQueries({ queryKey: ['opp-counts'] })
+    },
   })
 
   const deleteOpp = useMutation({
