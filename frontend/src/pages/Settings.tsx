@@ -6,7 +6,7 @@ import { RefreshCw, Copy, CheckCircle, FlaskConical, X } from 'lucide-react'
 
 interface AppSettings {
   alertCron: string
-  cooldownHours: number
+  cooldownBusinessDays: number
   snoozeDays: number
   sfdcInstanceUrl: string
   extensionApiKey?: string
@@ -97,8 +97,8 @@ export function Settings() {
             <input {...register('alertCron')} className="input w-full" placeholder="0 8 * * 1-5" />
           </Field>
 
-          <Field label="Cooldown (hours)" hint="Minimum hours before re-notifying for the same opp+type">
-            <input {...register('cooldownHours', { valueAsNumber: true })} type="number" min={1} className="input w-40" />
+          <Field label="Cooldown (business days)" hint="Minimum business days before re-notifying for the same opp+type (default: 3, weekends don't count)">
+            <input {...register('cooldownBusinessDays', { valueAsNumber: true })} type="number" min={1} className="input w-40" placeholder="3" />
           </Field>
 
           <Field label="Default snooze (days)" hint="How many days the snooze button suppresses a notification">

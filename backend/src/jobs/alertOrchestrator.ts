@@ -17,7 +17,7 @@ import type { NextStepAlert } from '../alerts/nextStep'
 import type { CloseDateRiskAlert } from '../alerts/closeDate'
 import type { StageMismatchAlert } from '../alerts/stageMismatch'
 
-const COOLDOWN_BUSINESS_DAYS = 3
+const DEFAULT_COOLDOWN_BUSINESS_DAYS = 3
 
 /** Count weekdays (Mon–Fri) that have fully elapsed since `from`. */
 function businessDaysSince(from: Date): number {
@@ -67,7 +67,7 @@ export interface DryRunResult {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType): Promise<{ skip: boolean; reason?: string }> {
+async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cooldownBusinessDays: number): Promise<{ skip: boolean; reason?: string }> {
   const recent = await db.notification.findFirst({
     where: {
       opportunityId: oppId,
@@ -85,9 +85,9 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType): Pro
 
   if (recent.status === NotificationStatus.SENT) {
     const bdSince = businessDaysSince(recent.sentAt)
-    if (bdSince < COOLDOWN_BUSINESS_DAYS) {
+    if (bdSince < cooldownBusinessDays) {
       const dayLabel = bdSince === 1 ? '1 business day' : `${bdSince} business days`
-      return { skip: true, reason: `Sent ${dayLabel} ago (cooldown: ${COOLDOWN_BUSINESS_DAYS} business days)` }
+      return { skip: true, reason: `Sent ${dayLabel} ago (cooldown: ${cooldownBusinessDays} business days)` }
     }
   }
 
@@ -109,12 +109,13 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
     db.meddpiccStageRequirement.findMany({ where: { enabled: true } }),
     db.closeDateRiskRule.findMany({ where: { enabled: true } }),
     db.stageMismatchRule.findMany(),
-    db.appSetting.findMany({ where: { key: { in: ['pastDueBufferDays', 'nextStepBufferDays'] } } }),
+    db.appSetting.findMany({ where: { key: { in: ['pastDueBufferDays', 'nextStepBufferDays', 'cooldownBusinessDays'] } } }),
   ])
 
   const settingMap = Object.fromEntries(bufferSettings.map((s) => [s.key, JSON.parse(s.value)]))
   const pastDueBufferDays = Number(settingMap.pastDueBufferDays ?? 0)
   const nextStepBufferDays = Number(settingMap.nextStepBufferDays ?? 0)
+  const cooldownBusinessDays = Number(settingMap.cooldownBusinessDays ?? DEFAULT_COOLDOWN_BUSINESS_DAYS)
 
   return {
     opps,
@@ -124,6 +125,7 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
     meddpiccRequirements,
     closeDateRiskRules,
     stageMismatchRules,
+    cooldownBusinessDays,
     pastDueAlerts: evaluatePastDue(opps, pastDueBufferDays),
     stalledAlerts: evaluateStalled(opps, stallRules, gongActivity, stallThresholds),
     meddpiccAlerts: evaluateMeddpicc(opps, meddpiccRequirements),
@@ -138,7 +140,7 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
 export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise<DryRunResult> {
   console.log('[DryRun] Starting dry run evaluation...')
 
-  const { opps, pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stageMismatchAlerts, stallRules, stallThresholds, meddpiccRequirements } = await evaluate(opts)
+  const { opps, pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stageMismatchAlerts, stallRules, stallThresholds, meddpiccRequirements, cooldownBusinessDays } = await evaluate(opts)
 
   const oppById = new Map(opps.map((o) => [o.Id, o]))
 
@@ -155,7 +157,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
 
 
     const [{ skip, reason }, ownerSlackId, managerSlackId] = await Promise.all([
-      isSnoozedOrRecentlySent(alert.opportunityId, alertType),
+      isSnoozedOrRecentlySent(alert.opportunityId, alertType, cooldownBusinessDays),
       resolveSlackUserId(alert.ownerEmail),
       managerEmail ? resolveSlackUserId(managerEmail) : Promise.resolve(null),
     ])
@@ -304,13 +306,13 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
   let skipped = 0
   let errors = 0
 
-  const { pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stageMismatchAlerts } = await evaluate(opts)
+  const { pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stageMismatchAlerts, cooldownBusinessDays } = await evaluate(opts)
 
   console.log(`[AlertJob] Found: ${pastDueAlerts.length} past due, ${stalledAlerts.length} stalled, ${meddpiccAlerts.length} MEDDPICC, ${nextStepAlerts.length} missing next step, ${closeDateRiskAlerts.length} close date risk, ${stageMismatchAlerts.length} stage mismatch`)
 
   for (const alert of pastDueAlerts) {
     try {
-      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, alert.alertType)
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, alert.alertType, cooldownBusinessDays)
       if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
@@ -343,7 +345,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
 
   for (const alert of stalledAlerts) {
     try {
-      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.STALLED)
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.STALLED, cooldownBusinessDays)
       if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
@@ -377,7 +379,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
 
   for (const alert of meddpiccAlerts) {
     try {
-      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.MEDDPICC_MISSING)
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.MEDDPICC_MISSING, cooldownBusinessDays)
       if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
@@ -410,7 +412,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
 
   for (const alert of nextStepAlerts) {
     try {
-      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.NEXT_STEP_MISSING)
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.NEXT_STEP_MISSING, cooldownBusinessDays)
       if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
@@ -443,7 +445,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
 
   for (const alert of closeDateRiskAlerts) {
     try {
-      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.CLOSE_DATE_RISK)
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.CLOSE_DATE_RISK, cooldownBusinessDays)
       if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
@@ -476,7 +478,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
 
   for (const alert of stageMismatchAlerts) {
     try {
-      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.STAGE_MISMATCH)
+      const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, AlertType.STAGE_MISMATCH, cooldownBusinessDays)
       if (skip) { skipped++; continue }
 
       const slackUserId = await resolveSlackUserId(alert.ownerEmail)
