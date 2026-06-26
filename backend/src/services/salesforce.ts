@@ -201,21 +201,12 @@ export async function fetchOpenOpportunities(): Promise<SfdcOpportunity[]> {
   return records
 }
 
-/** Get the best available connection for a user — their own token if connected, otherwise the RevOps service account. */
-export async function getConnectionForUserOrService(userId: string): Promise<jsforce.Connection> {
-  try {
-    return await getConnectionForUser(userId)
-  } catch {
-    return getServiceConnection()
-  }
-}
-
 export async function updateOpportunity(
   userId: string,
   opportunityId: string,
   fields: Record<string, unknown>
 ): Promise<void> {
-  const conn = await getConnectionForUserOrService(userId)
+  const conn = await getConnectionForUser(userId)
   await conn.sobject('Opportunity').update({ Id: opportunityId, ...fields })
   await conn.sobject('Task').create({
     WhatId: opportunityId,

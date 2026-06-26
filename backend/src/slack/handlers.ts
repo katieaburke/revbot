@@ -125,6 +125,23 @@ export function registerHandlers(app: App) {
       sfdcFieldMap: Record<MeddpiccField, string>
     }
 
+    const { connected } = await requireSfdcUser(body.user.id, client as App['client'])
+    if (!connected) {
+      const token = jwt.sign({ slackUserId: body.user.id, redirect: 'meddpicc', oppId }, config.JWT_SECRET, { expiresIn: '1h' })
+      await client.views.open({
+        trigger_id: (body as BlockAction).trigger_id,
+        view: {
+          type: 'modal',
+          title: { type: 'plain_text', text: 'Connect Salesforce' },
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `To update this deal in Salesforce, please <${config.APP_URL}/auth/sfdc/start?state=${token}|connect your Salesforce account> — this only takes a minute and is a one-time step.` },
+          }],
+        },
+      })
+      return
+    }
+
     const inputBlocks = missingFields.map((field) => ({
       type: 'input',
       block_id: `meddpicc_${field}`,
@@ -201,6 +218,23 @@ export function registerHandlers(app: App) {
     await ack()
     const action = (body as BlockAction).actions[0] as { value: string }
     const { oppId, oppName, currentStage } = JSON.parse(action.value)
+
+    const { connected } = await requireSfdcUser(body.user.id, client as App['client'])
+    if (!connected) {
+      const token = jwt.sign({ slackUserId: body.user.id, redirect: 'stage', oppId }, config.JWT_SECRET, { expiresIn: '1h' })
+      await client.views.open({
+        trigger_id: (body as BlockAction).trigger_id,
+        view: {
+          type: 'modal',
+          title: { type: 'plain_text', text: 'Connect Salesforce' },
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `To update this deal in Salesforce, please <${config.APP_URL}/auth/sfdc/start?state=${token}|connect your Salesforce account> — this only takes a minute and is a one-time step.` },
+          }],
+        },
+      })
+      return
+    }
 
     // Fetch available stages from config
     const stageConfig = await db.meddpiccStageRequirement.findMany({ select: { stageName: true } })
@@ -362,8 +396,8 @@ export function registerHandlers(app: App) {
       })
 
       // Log an activity note
-      const { getConnectionForUserOrService } = await import('../services/salesforce') as typeof import('../services/salesforce')
-      const conn = await getConnectionForUserOrService(user.id)
+      const { getConnectionForUser } = await import('../services/salesforce') as typeof import('../services/salesforce')
+      const conn = await getConnectionForUser(user.id)
       await conn.sobject('Task').create({
         WhatId: oppId,
         Subject: `${typeLabel} — closed via Beacon`,
@@ -490,6 +524,23 @@ export function registerHandlers(app: App) {
     const action = (body as BlockAction).actions[0] as { value: string }
     const { oppId, oppName } = JSON.parse(action.value)
 
+    const { connected } = await requireSfdcUser(body.user.id, client as App['client'])
+    if (!connected) {
+      const token = jwt.sign({ slackUserId: body.user.id, redirect: 'next_step', oppId }, config.JWT_SECRET, { expiresIn: '1h' })
+      await client.views.open({
+        trigger_id: (body as BlockAction).trigger_id,
+        view: {
+          type: 'modal',
+          title: { type: 'plain_text', text: 'Connect Salesforce' },
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `To update this deal in Salesforce, please <${config.APP_URL}/auth/sfdc/start?state=${token}|connect your Salesforce account> — this only takes a minute and is a one-time step.` },
+          }],
+        },
+      })
+      return
+    }
+
     await client.views.open({
       trigger_id: (body as BlockAction).trigger_id,
       view: {
@@ -577,6 +628,23 @@ export function registerHandlers(app: App) {
     const action = (body as BlockAction).actions[0] as { value: string }
     const { oppId, oppName } = JSON.parse(action.value)
 
+    const { connected } = await requireSfdcUser(body.user.id, client as App['client'])
+    if (!connected) {
+      const token = jwt.sign({ slackUserId: body.user.id, redirect: 'activity', oppId }, config.JWT_SECRET, { expiresIn: '1h' })
+      await client.views.open({
+        trigger_id: (body as BlockAction).trigger_id,
+        view: {
+          type: 'modal',
+          title: { type: 'plain_text', text: 'Connect Salesforce' },
+          blocks: [{
+            type: 'section',
+            text: { type: 'mrkdwn', text: `To log activity in Salesforce, please <${config.APP_URL}/auth/sfdc/start?state=${token}|connect your Salesforce account> — this only takes a minute and is a one-time step.` },
+          }],
+        },
+      })
+      return
+    }
+
     await client.views.open({
       trigger_id: (body as BlockAction).trigger_id,
       view: {
@@ -629,8 +697,8 @@ export function registerHandlers(app: App) {
 
     try {
       // Create a Task in SFDC
-      const { getConnectionForUserOrService } = await import('../services/salesforce')
-      const conn = await getConnectionForUserOrService(user.id)
+      const { getConnectionForUser } = await import('../services/salesforce')
+      const conn = await getConnectionForUser(user.id)
       await conn.sobject('Task').create({
         WhatId: oppId,
         Subject: `${activityType} - Beacon`,
