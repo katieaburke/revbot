@@ -255,6 +255,23 @@ export function Dashboard() {
 
   const sfdcBase = settings?.sfdcInstanceUrl?.replace(/\/$/, '') ?? ''
 
+  // Move an opp from wouldSend → wouldSkip in the current dry run result
+  function moveOppToSkipped(oppId: string, skipReason: string) {
+    setDryRunOverride((prev) => {
+      const base = prev ?? lastDryRun
+      if (!base) return prev
+      const moving = base.wouldSend
+        .filter((a) => a.opportunityId === oppId)
+        .map((a) => ({ ...a, wouldSkip: true, skipReason }))
+      if (!moving.length) return prev
+      return {
+        ...base,
+        wouldSend: base.wouldSend.filter((a) => a.opportunityId !== oppId),
+        wouldSkip: [...base.wouldSkip, ...moving],
+      }
+    })
+  }
+
   const dryRun = useMutation({
     mutationFn: () => api.post('/notifications/dry-run').then((r) => r.data as DryRunResult),
     onSuccess: (data) => {
@@ -283,6 +300,7 @@ export function Dashboard() {
       setManagerDraftSent(g.opportunityId)
       setTimeout(() => setManagerNotifiedOppId(null), 4000)
       qc.invalidateQueries({ queryKey: ['opp-counts'] })
+      moveOppToSkipped(g.opportunityId, 'Recently notified')
     },
   })
 
@@ -297,6 +315,7 @@ export function Dashboard() {
     onSuccess: (_data, g) => {
       setDraftSent(g.opportunityId)
       qc.invalidateQueries({ queryKey: ['opp-counts'] })
+      moveOppToSkipped(g.opportunityId, 'Recently notified')
     },
   })
 
