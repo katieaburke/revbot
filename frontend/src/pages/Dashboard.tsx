@@ -816,21 +816,22 @@ function getRepButtons(alerts: DryRunAlert[]): string[] {
 
 // ── Draft modal ───────────────────────────────────────────────────────────────
 
+const MEDDPICC_FIELD_LABELS: Record<string, string> = {
+  metrics: 'Metrics', economicBuyer: 'Economic Buyer', decisionCriteria: 'Decision Criteria',
+  decisionProcess: 'Decision Process', paperProcess: 'Paper Process', identifyPain: 'Identify Pain',
+  champion: 'Champion', competition: 'Competition', budget: 'Budget', authority: 'Authority',
+  need: 'Need', timing: 'Timing',
+}
+
 function formatPreview(opp: OppGroup): string {
   const lines: string[] = []
   for (const a of opp.alerts) {
     const d = a.details
     if (a.alertType === 'MEDDPICC_MISSING') {
       const fields = (d.missingFields as string[] | undefined) ?? []
-      const labels: Record<string, string> = {
-        metrics: 'Metrics', economicBuyer: 'Economic Buyer', decisionCriteria: 'Decision Criteria',
-        decisionProcess: 'Decision Process', paperProcess: 'Paper Process', identifyPain: 'Identify Pain',
-        champion: 'Champion', competition: 'Competition', budget: 'Budget', authority: 'Authority',
-        need: 'Need', timing: 'Timing',
-      }
-      lines.push(`📋 Missing fields: ${fields.map((f) => labels[f] ?? f).join(', ')}`)
+      lines.push(`📋 Missing MEDDPICC/BANT: ${fields.map((f) => MEDDPICC_FIELD_LABELS[f] ?? f).join(', ')}`)
     } else if (a.alertType === 'STALLED') {
-      const reasons = (d.triggeredBy as Array<{ type: string; days?: number; threshold?: number }> | undefined) ?? []
+      const reasons = (d.triggeredBy as Array<{ type: string; days?: number; threshold?: number; phrases?: string[] }> | undefined) ?? []
       for (const r of reasons) {
         if (r.type === 'deal_age') lines.push(`🔴 Deal open for ${r.days} days (threshold: ${r.threshold}d)`)
         else if (r.type === 'stage_duration') lines.push(`🔴 In current stage for ${r.days} days (threshold: ${r.threshold}d)`)
@@ -838,8 +839,27 @@ function formatPreview(opp: OppGroup): string {
         else if (r.type === 'single_threaded') lines.push(`⚠️ Single-threaded deal`)
         else if (r.type === 'red_flag') lines.push(`🚩 Gong risk phrases detected`)
       }
-    } else if (a.alertType.startsWith('PAST_DUE')) {
-      lines.push(`📅 Past due: booking date was ${d.bookingDate} (${d.daysOverdue} days ago)`)
+      lines.push(`This opportunity may be at the right stage with a longer sales cycle — if everything is on track, just snooze to your next step date.`)
+    } else if (a.alertType === 'PAST_DUE_RENEWAL') {
+      lines.push(`🔁 Renewal past due: booking date was ${d.bookingDate} (${d.daysOverdue} days ago)`)
+    } else if (a.alertType === 'PAST_DUE_INITIAL' || a.alertType === 'PAST_DUE_AMENDMENT') {
+      const label = a.alertType === 'PAST_DUE_AMENDMENT' ? 'Amendment' : 'Opportunity'
+      lines.push(`📅 ${label} past due: close date was ${d.bookingDate} (${d.daysOverdue} days ago)`)
+    } else if (a.alertType === 'NEXT_STEP_MISSING') {
+      const issues = (d.issues as string[] | undefined) ?? []
+      for (const issue of issues) {
+        if (issue === 'missing_text') lines.push(`📌 Next step description is blank`)
+        if (issue === 'missing_date') lines.push(`📌 Next step date is not set`)
+        if (issue === 'past_date') lines.push(`⏰ Next step date (${d.nextStepDate ?? 'unknown'}) is in the past`)
+      }
+    } else if (a.alertType === 'CLOSE_DATE_RISK') {
+      const days = d.daysUntilClose as number
+      const daysText = days === 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`
+      lines.push(`⚠️ Close date is ${daysText} (${d.closeDate}) but deal is still in ${d.stage}`)
+    } else if (a.alertType === 'STAGE_MISMATCH') {
+      const keywords = (d.matchedKeywords as string[] | undefined) ?? []
+      lines.push(`🔀 Potential stage mismatch — next step mentions "${keywords.join('", "')}" but deal is in ${d.stage}`)
+      lines.push(`Is the stage up to date? Please advance in Salesforce if the deal has progressed.`)
     }
   }
   return lines.join('\n')
