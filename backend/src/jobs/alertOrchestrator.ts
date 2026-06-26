@@ -17,7 +17,22 @@ import type { NextStepAlert } from '../alerts/nextStep'
 import type { CloseDateRiskAlert } from '../alerts/closeDate'
 import type { StageMismatchAlert } from '../alerts/stageMismatch'
 
-const COOLDOWN_HOURS = 24
+const COOLDOWN_BUSINESS_DAYS = 3
+
+/** Count weekdays (Mon–Fri) that have fully elapsed since `from`. */
+function businessDaysSince(from: Date): number {
+  const now = new Date()
+  let count = 0
+  const cursor = new Date(from)
+  cursor.setHours(0, 0, 0, 0)
+  cursor.setDate(cursor.getDate() + 1) // start counting from the next calendar day
+  while (cursor <= now) {
+    const day = cursor.getDay()
+    if (day !== 0 && day !== 6) count++ // skip Sunday (0) and Saturday (6)
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return count
+}
 
 // ─── Dry run result types ──────────────────────────────────────────────────
 
@@ -69,9 +84,10 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType): Pro
   }
 
   if (recent.status === NotificationStatus.SENT) {
-    const hoursSince = (Date.now() - recent.sentAt.getTime()) / (1000 * 60 * 60)
-    if (hoursSince < COOLDOWN_HOURS) {
-      return { skip: true, reason: `Already sent ${Math.round(hoursSince)}h ago (cooldown: ${COOLDOWN_HOURS}h)` }
+    const bdSince = businessDaysSince(recent.sentAt)
+    if (bdSince < COOLDOWN_BUSINESS_DAYS) {
+      const dayLabel = bdSince === 1 ? '1 business day' : `${bdSince} business days`
+      return { skip: true, reason: `Sent ${dayLabel} ago (cooldown: ${COOLDOWN_BUSINESS_DAYS} business days)` }
     }
   }
 
