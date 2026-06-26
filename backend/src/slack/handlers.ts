@@ -362,8 +362,8 @@ export function registerHandlers(app: App) {
       })
 
       // Log an activity note
-      const { getConnectionForUser } = await import('../services/salesforce') as typeof import('../services/salesforce')
-      const conn = await getConnectionForUser(user.id)
+      const { getConnectionForUserOrService } = await import('../services/salesforce') as typeof import('../services/salesforce')
+      const conn = await getConnectionForUserOrService(user.id)
       await conn.sobject('Task').create({
         WhatId: oppId,
         Subject: `${typeLabel} — closed via Beacon`,
@@ -629,9 +629,8 @@ export function registerHandlers(app: App) {
 
     try {
       // Create a Task in SFDC
-      const jsforce = await import('jsforce')
-      const { getConnectionForUser } = await import('../services/salesforce')
-      const conn = await getConnectionForUser(user.id)
+      const { getConnectionForUserOrService } = await import('../services/salesforce')
+      const conn = await getConnectionForUserOrService(user.id)
       await conn.sobject('Task').create({
         WhatId: oppId,
         Subject: `${activityType} - Beacon`,
