@@ -26,6 +26,15 @@ const SFDC_STAGE_NOTE: KnownBlock = {
   }],
 }
 
+// Disclosure for zombie pipeline / stalled alerts — the deal may simply have a longer cycle
+const STALLED_DISCLOSURE: KnownBlock = {
+  type: 'context',
+  elements: [{
+    type: 'mrkdwn',
+    text: '_This opportunity may be at the right stage and simply have a longer sales cycle — if everything is on track, no action needed. Just snooze this notification to your next step date so we know it\'s being worked._',
+  }],
+}
+
 export function invalidateSfdcBaseCache(): void {
   _sfdcBase = null
 }
@@ -143,6 +152,7 @@ export async function buildStalledMessage(alert: StalledAlert, isNudge = false):
         text: `${prefix}🔴 *Stalled Deal — ${link}*\nCurrently in *${alert.stage}*\n\n${reasonLines}`,
       },
     },
+    STALLED_DISCLOSURE,
     {
       type: 'actions',
       block_id: `stalled_${alert.opportunityId}`,
@@ -358,6 +368,7 @@ export async function buildCombinedMessage(
     } else if (a.alertType === AlertType.STALLED) {
       const reasons = (a.details.triggeredBy as Array<{ type: string; days?: number; threshold?: number; phrases?: string[] }> | undefined) ?? []
       for (const r of reasons) summarySections.push(`🔴 ${stalledReasonText(r as StalledReason)}`)
+      summarySections.push(`_This opportunity may be at the right stage and simply have a longer sales cycle — if everything is on track, just snooze this to your next step date._`)
     } else if (a.alertType === AlertType.PAST_DUE_RENEWAL) {
       const days = a.details.daysOverdue as number
       const date = a.details.bookingDate as string
@@ -555,6 +566,7 @@ export async function buildManagerAlertMessage(
     } else if (a.alertType === AlertType.STALLED) {
       const reasons = (a.details.triggeredBy as Array<{ type: string; days?: number; threshold?: number; phrases?: string[] }> | undefined) ?? []
       for (const r of reasons) summarySections.push(`🔴 ${stalledReasonText(r as StalledReason)}`)
+      summarySections.push(`_Note: this deal may simply have a longer cycle — flagging for visibility._`)
     } else if (a.alertType === AlertType.PAST_DUE_RENEWAL) {
       const days = a.details.daysOverdue as number
       const date = a.details.bookingDate as string
