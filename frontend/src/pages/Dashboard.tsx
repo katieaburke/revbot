@@ -110,7 +110,7 @@ function compareCount(count: number, op: string, val: number): boolean {
   }
 }
 
-type OppCount = { rep: number; manager: number; lastSentRep?: string; lastSentMgr?: string }
+type OppCount = { rep: number; manager: number; lastSentRep?: string; lastSentMgr?: string; snoozedRepUntil?: string; snoozedMgrUntil?: string }
 
 type Filters = {
   channel: string; fn: string; region: string; owner: string; flagType: string
@@ -780,9 +780,19 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                             rep {counts.rep}×{counts.lastSentRep && <span className="ml-1 opacity-70">· {fmtDate(counts.lastSentRep)}</span>}
                           </span>
                         )}
+                        {counts.snoozedRepUntil && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 font-medium" title={`Rep snoozed until ${new Date(counts.snoozedRepUntil).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`}>
+                            😴 rep snoozed · {fmtDate(counts.snoozedRepUntil)}
+                          </span>
+                        )}
                         {counts.manager > 0 && (
                           <span className="text-xs px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 font-medium" title={`Manager notified ${counts.manager} time${counts.manager === 1 ? '' : 's'}${counts.lastSentMgr ? ` · last ${fmtDate(counts.lastSentMgr)}` : ''}`}>
                             mgr {counts.manager}×{counts.lastSentMgr && <span className="ml-1 opacity-70">· {fmtDate(counts.lastSentMgr)}</span>}
+                          </span>
+                        )}
+                        {counts.snoozedMgrUntil && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 font-medium" title={`Manager snoozed until ${new Date(counts.snoozedMgrUntil).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}`}>
+                            😴 mgr snoozed · {fmtDate(counts.snoozedMgrUntil)}
                           </span>
                         )}
                       </div>

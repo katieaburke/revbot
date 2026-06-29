@@ -56,14 +56,27 @@ router.get('/opp-counts', async (req, res) => {
   const ids = oppIds ? oppIds.split(',').filter(Boolean) : []
   if (!ids.length) return res.json({})
 
-  const rows = await db.notification.groupBy({
-    by: ['opportunityId', 'recipientType'],
-    _count: { id: true },
-    _max: { sentAt: true },
-    where: { opportunityId: { in: ids } },
-  })
+  const [rows, snoozes] = await Promise.all([
+    db.notification.groupBy({
+      by: ['opportunityId', 'recipientType'],
+      _count: { id: true },
+      _max: { sentAt: true },
+      where: { opportunityId: { in: ids } },
+    }),
+    // Active snoozes only (snoozedUntil in the future)
+    db.notification.findMany({
+      where: {
+        opportunityId: { in: ids },
+        status: 'SNOOZED',
+        snoozedUntil: { gt: new Date() },
+      },
+      orderBy: { snoozedUntil: 'desc' },
+      select: { opportunityId: true, recipientType: true, snoozedUntil: true },
+    }),
+  ])
 
-  const result: Record<string, { rep: number; manager: number; lastSentRep?: string; lastSentMgr?: string }> = {}
+  const result: Record<string, { rep: number; manager: number; lastSentRep?: string; lastSentMgr?: string; snoozedRepUntil?: string; snoozedMgrUntil?: string }> = {}
+
   for (const row of rows) {
     if (!result[row.opportunityId]) result[row.opportunityId] = { rep: 0, manager: 0 }
     if (row.recipientType === 'manager') {
@@ -74,6 +87,17 @@ router.get('/opp-counts', async (req, res) => {
       if (row._max.sentAt) result[row.opportunityId].lastSentRep = row._max.sentAt.toISOString()
     }
   }
+
+  // Layer in snooze info (first match per opp+type wins since ordered by snoozedUntil desc)
+  for (const s of snoozes) {
+    if (!result[s.opportunityId]) result[s.opportunityId] = { rep: 0, manager: 0 }
+    if (s.recipientType === 'manager' && !result[s.opportunityId].snoozedMgrUntil) {
+      result[s.opportunityId].snoozedMgrUntil = s.snoozedUntil!.toISOString()
+    } else if (s.recipientType !== 'manager' && !result[s.opportunityId].snoozedRepUntil) {
+      result[s.opportunityId].snoozedRepUntil = s.snoozedUntil!.toISOString()
+    }
+  }
+
   res.json(result)
 })
 
