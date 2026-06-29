@@ -112,17 +112,35 @@ function compareCount(count: number, op: string, val: number): boolean {
 
 type OppCount = { rep: number; manager: number; lastSentRep?: string; lastSentMgr?: string }
 
-function applyFilters(
-  groups: OppGroup[],
-  filters: { channel: string; fn: string; region: string; owner: string; flagType: string; repOp: string; repVal: string; mgrOp: string; mgrVal: string },
-  oppCounts: Record<string, OppCount>
-): OppGroup[] {
+type Filters = {
+  channel: string; fn: string; region: string; owner: string; flagType: string
+  dealType: string
+  nameOp: string; nameText: string
+  repOp: string; repVal: string; mgrOp: string; mgrVal: string
+}
+
+const EMPTY_FILTERS: Filters = {
+  channel: '', fn: '', region: '', owner: '', flagType: '',
+  dealType: '',
+  nameOp: 'contains', nameText: '',
+  repOp: '', repVal: '', mgrOp: '', mgrVal: '',
+}
+
+function applyFilters(groups: OppGroup[], filters: Filters, oppCounts: Record<string, OppCount>): OppGroup[] {
   return groups.filter((g) => {
     if (filters.channel && g.salesChannel !== filters.channel) return false
     if (filters.fn && g.salesFunction !== filters.fn) return false
     if (filters.region && g.salesRegion !== filters.region) return false
     if (filters.owner && g.ownerEmail !== filters.owner) return false
     if (filters.flagType && !g.alerts.some((a) => filters.flagType.split(',').includes(a.alertType))) return false
+    if (filters.dealType && g.opportunityType !== filters.dealType) return false
+    if (filters.nameText) {
+      const hay = g.opportunityName.toLowerCase()
+      const needle = filters.nameText.toLowerCase()
+      const contains = hay.includes(needle)
+      if (filters.nameOp === 'contains' && !contains) return false
+      if (filters.nameOp === 'excludes' && contains) return false
+    }
     const counts = oppCounts[g.opportunityId] ?? { rep: 0, manager: 0 }
     if (filters.repOp && filters.repVal !== '') {
       if (!compareCount(counts.rep, filters.repOp, parseInt(filters.repVal))) return false
@@ -212,7 +230,7 @@ export function Dashboard() {
   const [managerDraftOpp, setManagerDraftOpp] = useState<OppGroup | null>(null)
   const [managerDraftSent, setManagerDraftSent] = useState<string | null>(null)
   const [managerNotifiedOppId, setManagerNotifiedOppId] = useState<string | null>(null)
-  const [filters, setFilters] = useState({ channel: '', fn: '', region: '', owner: '', flagType: '', repOp: '', repVal: '', mgrOp: '', mgrVal: '' })
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS)
 
   const { data: summary, isLoading } = useQuery<Summary>({
     queryKey: ['summary'],
@@ -471,6 +489,7 @@ export function Dashboard() {
             const channels = uniqueVals(allGroups, 'salesChannel')
             const fns = uniqueVals(allGroups, 'salesFunction')
             const regions = uniqueVals(allGroups, 'salesRegion')
+            const dealTypes = uniqueVals(allGroups, 'opportunityType')
             // unique owners: [{email, name}] sorted by name/email
             const ownerMap = new Map<string, string>()
             for (const g of allGroups) ownerMap.set(g.ownerEmail, g.ownerName ?? g.ownerEmail)
@@ -487,9 +506,9 @@ export function Dashboard() {
             }
             const flagOptions = Array.from(flagLabelToTypes.entries()).sort((a, b) => a[0].localeCompare(b[0]))
 
-            const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || owners.length > 1 || flagOptions.length > 1
+            const hasFilters = channels.length > 0 || fns.length > 0 || regions.length > 0 || dealTypes.length > 1 || owners.length > 1 || flagOptions.length > 1
             if (!hasFilters) return null
-            const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType || filters.repOp || filters.mgrOp
+            const anyActive = filters.channel || filters.fn || filters.region || filters.owner || filters.flagType || filters.dealType || filters.nameText || filters.repOp || filters.mgrOp
             return (
               <div className="px-6 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap bg-gray-50">
                 <span className="text-xs font-medium text-gray-500">Filter</span>
@@ -499,12 +518,32 @@ export function Dashboard() {
                     {flagOptions.map(([label, types]) => <option key={label} value={types.join(',')}>{label}</option>)}
                   </select>
                 )}
+                {dealTypes.length > 1 && (
+                  <select value={filters.dealType} onChange={(e) => setFilters((f) => ({ ...f, dealType: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                    <option value="">All deal types</option>
+                    {dealTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                )}
                 {owners.length > 1 && (
                   <select value={filters.owner} onChange={(e) => setFilters((f) => ({ ...f, owner: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">All owners</option>
                     {owners.map(([email, name]) => <option key={email} value={email}>{name}</option>)}
                   </select>
                 )}
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-500 shrink-0">Opp name</span>
+                  <select value={filters.nameOp} onChange={(e) => setFilters((f) => ({ ...f, nameOp: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                    <option value="contains">contains</option>
+                    <option value="excludes">excludes</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={filters.nameText}
+                    onChange={(e) => setFilters((f) => ({ ...f, nameText: e.target.value }))}
+                    placeholder="search…"
+                    className="w-28 text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700"
+                  />
+                </div>
                 <div className="flex items-center gap-1">
                   <span className="text-xs text-gray-500 shrink-0">Rep sends</span>
                   <select value={filters.repOp} onChange={(e) => setFilters((f) => ({ ...f, repOp: e.target.value, repVal: f.repVal || '0' }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
@@ -562,7 +601,7 @@ export function Dashboard() {
                   </select>
                 )}
                 {anyActive && (
-                  <button onClick={() => setFilters({ channel: '', fn: '', region: '', owner: '', flagType: '', repOp: '', repVal: '', mgrOp: '', mgrVal: '' })} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
+                  <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-xs text-gray-400 hover:text-gray-700 underline">Clear</button>
                 )}
               </div>
             )
