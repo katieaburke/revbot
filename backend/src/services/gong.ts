@@ -5,6 +5,7 @@ import { redis } from '../redis'
 const GONG_BASE = 'https://api.gong.io/v2'
 const CACHE_TTL_SECONDS = 60 * 60 // 1 hour — Gong rate limits: 3 req/s, 10k req/day
 const CACHE_KEY = 'gong:call_index'
+const CACHE_KEY_RAW = 'gong:calls_raw'
 
 // ─── Raw Gong API types ────────────────────────────────────────────────────
 
@@ -62,6 +63,13 @@ interface GongExtensiveResponse {
 }
 
 // ─── Derived types used by alert evaluators ────────────────────────────────
+
+export interface GongAccountActivity {
+  sfdcAccountId: string
+  lastCallDate: string | null
+  totalCalls: number
+  contactEmailsOnCalls: Set<string>  // external participant emails seen on calls
+}
 
 export interface GongOpportunityActivity {
   sfdcOpportunityId: string
@@ -148,6 +156,32 @@ async function fetchAllCallsExtensive(
   return calls
 }
 
+// ─── Shared raw call cache helper ──────────────────────────────────────────
+
+// Fetches all Gong calls for the lookback window, caching raw results in Redis.
+// Both the opportunity index and account index read from this shared cache.
+async function getCachedCalls(lookbackDays = 90): Promise<GongExtensiveCall[]> {
+  const cached = await redis.get(CACHE_KEY_RAW)
+  if (cached) {
+    return JSON.parse(cached) as GongExtensiveCall[]
+  }
+
+  const client = makeClient()
+  const toDate = new Date()
+  const fromDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
+
+  let calls: GongExtensiveCall[] = []
+  try {
+    calls = await fetchAllCallsExtensive(client, fromDate, toDate)
+  } catch (err) {
+    console.error('[Gong] Failed to fetch calls:', err)
+    return []
+  }
+
+  await redis.set(CACHE_KEY_RAW, JSON.stringify(calls), 'EX', CACHE_TTL_SECONDS)
+  return calls
+}
+
 // ─── Build the opportunity index ───────────────────────────────────────────
 
 // Returns a map of SFDC Opportunity ID → activity summary
@@ -173,17 +207,7 @@ export async function buildOpportunityActivityIndex(
     return map
   }
 
-  const client = makeClient()
-  const toDate = new Date()
-  const fromDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
-
-  let calls: GongExtensiveCall[] = []
-  try {
-    calls = await fetchAllCallsExtensive(client, fromDate, toDate)
-  } catch (err) {
-    console.error('[Gong] Failed to fetch calls:', err)
-    return new Map()
-  }
+  const calls = await getCachedCalls(lookbackDays)
 
   // Index calls by SFDC opportunity ID
   const callsByOpp = new Map<string, GongExtensiveCall[]>()
@@ -256,6 +280,75 @@ export async function buildOpportunityActivityIndex(
 // Force-invalidate the cache (e.g. after admin triggers a manual alert run)
 export async function invalidateGongCache(): Promise<void> {
   await redis.del(CACHE_KEY)
+  await redis.del(CACHE_KEY_RAW)
+}
+
+// ─── Build the account activity index ──────────────────────────────────────
+
+// Returns a map of SFDC Account ID → activity summary
+// Uses the shared raw call cache to avoid redundant Gong API calls.
+export async function buildAccountActivityIndex(
+  accountIds: string[],
+  lookbackDays = 90
+): Promise<Map<string, GongAccountActivity>> {
+  if (accountIds.length === 0) return new Map()
+
+  const calls = await getCachedCalls(lookbackDays)
+
+  // Index calls by SFDC account ID (objectType === 'Account')
+  const callsByAccount = new Map<string, GongExtensiveCall[]>()
+
+  for (const call of calls) {
+    for (const party of call.parties ?? []) {
+      for (const ctx of party.context ?? []) {
+        if (ctx.system !== 'Salesforce' && ctx.system !== 'salesforce') continue
+        for (const obj of ctx.objects ?? []) {
+          if (obj.objectType !== 'Account') continue
+          const accountId = obj.objectId
+          if (!callsByAccount.has(accountId)) callsByAccount.set(accountId, [])
+          callsByAccount.get(accountId)!.push(call)
+        }
+      }
+    }
+  }
+
+  // Build activity summaries
+  const index = new Map<string, GongAccountActivity>()
+
+  for (const [accountId, accountCalls] of callsByAccount.entries()) {
+    // Deduplicate calls by ID
+    const uniqueCalls = Array.from(new Map(accountCalls.map((c) => [c.metaData.id, c])).values())
+
+    // Last call date
+    const sorted = [...uniqueCalls].sort(
+      (a, b) => new Date(b.metaData.started).getTime() - new Date(a.metaData.started).getTime()
+    )
+    const lastCallDate = sorted[0]?.metaData.started ?? null
+
+    // External participant emails
+    const externalEmails = new Set<string>()
+    for (const call of uniqueCalls) {
+      for (const party of call.parties ?? []) {
+        if (!party.userId && party.emailAddress) {
+          externalEmails.add(party.emailAddress.toLowerCase())
+        }
+      }
+    }
+
+    index.set(accountId, {
+      sfdcAccountId: accountId,
+      lastCallDate,
+      totalCalls: uniqueCalls.length,
+      contactEmailsOnCalls: externalEmails,
+    })
+  }
+
+  // Filter to only requested account IDs
+  for (const key of Array.from(index.keys())) {
+    if (!accountIds.includes(key)) index.delete(key)
+  }
+
+  return index
 }
 
 // ─── Derived signal helpers (used by stalled evaluator) ───────────────────

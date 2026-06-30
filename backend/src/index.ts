@@ -10,6 +10,7 @@ import configRouter from './api/config'
 import notificationsRouter from './api/notifications'
 import extensionRouter from './api/extension'
 import analyticsRouter from './api/analytics'
+import accountsRouter from './api/accounts'
 
 async function main() {
   // Init Slack (optional — skipped if tokens not set)
@@ -49,6 +50,7 @@ async function main() {
   app.use('/api/notifications', notificationsRouter)
   app.use('/api/extension', extensionRouter)
   app.use('/api/analytics', analyticsRouter)
+  app.use('/api/accounts', accountsRouter)
 
   app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
 

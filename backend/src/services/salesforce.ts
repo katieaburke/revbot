@@ -232,3 +232,43 @@ export async function updateMeddpiccFields(
 export async function updateStage(userId: string, oppId: string, newStage: string): Promise<void> {
   return updateOpportunity(userId, oppId, { StageName: newStage })
 }
+
+export interface SfdcAccount {
+  Id: string
+  Name: string
+  Account_Stage__c: string | null
+  Prospecting_Status__c: string | null
+  Target_Prospecting_Date__c: string | null
+  Date_to_Re_engage__c: string | null
+  End_of_competitor_engagement__c: string | null
+  Last_Rep_Communication_Date__c: string | null
+  OwnerId: string
+  Owner: { Id: string; Name: string; Email: string }
+  RecordType?: { Name: string; DeveloperName: string } | null
+  // Contacts subquery for Gong matching
+  Contacts?: { totalSize: number; records: Array<{ Id: string; Email: string | null; Name: string }> } | null
+}
+
+export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterprise'): Promise<SfdcAccount[]> {
+  const conn = await getServiceConnection()
+  const rtFilter = recordTypeDeveloperName ? `AND RecordType.DeveloperName = '${recordTypeDeveloperName}'` : ''
+  let result = await conn.query<SfdcAccount>(`
+    SELECT Id, Name, Account_Stage__c, Prospecting_Status__c,
+           Target_Prospecting_Date__c, Date_to_Re_engage__c,
+           End_of_competitor_engagement__c, Last_Rep_Communication_Date__c,
+           OwnerId, Owner.Id, Owner.Name, Owner.Email,
+           RecordType.Name, RecordType.DeveloperName,
+           (SELECT Id, Email, Name FROM Contacts LIMIT 10)
+    FROM Account
+    WHERE Account_Stage__c = 'Prospect'
+    ${rtFilter}
+    ORDER BY Name ASC
+  `)
+  const records = [...result.records]
+  while (!result.done && result.nextRecordsUrl) {
+    result = await conn.queryMore<SfdcAccount>(result.nextRecordsUrl)
+    records.push(...result.records)
+  }
+  console.log(`[SFDC] Fetched ${records.length} prospect accounts`)
+  return records
+}

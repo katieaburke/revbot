@@ -20,7 +20,7 @@ import clsx from 'clsx'
 import { useState } from 'react'
 import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
-const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch']
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts']
 
 export function Layout() {
   const location = useLocation()
@@ -102,9 +102,7 @@ export function Layout() {
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Accounts
               </p>
-              <div className="px-3 py-1.5 text-xs text-gray-400 italic">
-                Coming soon
-              </div>
+              <NavItem to="/playbook/accounts" label="Prospecting Hygiene" icon={Building2} />
 
             </div>
           )}

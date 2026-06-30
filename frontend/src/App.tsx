@@ -13,6 +13,7 @@ import { StageMismatchConfig } from './pages/StageMismatchConfig'
 import { Settings } from './pages/Settings'
 import { Team } from './pages/Team'
 import { Analytics } from './pages/Analytics'
+import { ProspectingHygiene } from './pages/ProspectingHygiene'
 
 const qc = new QueryClient()
 
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="/next-step" element={<NextStepConfig />} />
             <Route path="/close-date-risk" element={<CloseDateConfig />} />
             <Route path="/playbook/stage-mismatch" element={<StageMismatchConfig />} />
+            <Route path="/playbook/accounts" element={<ProspectingHygiene />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/team" element={<Team />} />
             <Route path="/analytics" element={<Analytics />} />
