@@ -15,6 +15,7 @@ import {
   Save,
   Workflow,
   Send,
+  X,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -132,6 +133,7 @@ export function ProspectingHygiene() {
 
   const [lastSentAccountId, setLastSentAccountId] = useState<string | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
+  const [previewFlag, setPreviewFlag] = useState<ProspectingFlag | null>(null)
 
   const notifyBdr = useMutation({
     mutationFn: (flag: ProspectingFlag) =>
@@ -506,7 +508,7 @@ export function ProspectingHygiene() {
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No stale prospecting accounts</div>
                 ) : (
                   filteredStale.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={(f) => notifyBdr.mutate(f)} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={setPreviewFlag} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
                   ))
                 )}
               </div>
@@ -534,7 +536,7 @@ export function ProspectingHygiene() {
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No accounts to promote</div>
                 ) : (
                   filteredShouldPromote.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={(f) => notifyBdr.mutate(f)} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={setPreviewFlag} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
                   ))
                 )}
               </div>
@@ -547,6 +549,21 @@ export function ProspectingHygiene() {
             </div>
           )}
         </>
+      )}
+
+      {/* BDR message preview modal */}
+      {previewFlag && (
+        <BdrMessagePreview
+          flag={previewFlag}
+          sfdcBase={sfdcBase}
+          isPending={notifyBdr.isPending}
+          onConfirm={() => {
+            notifyBdr.mutate(previewFlag, {
+              onSuccess: () => setPreviewFlag(null),
+            })
+          }}
+          onClose={() => setPreviewFlag(null)}
+        />
       )}
     </div>
   )
@@ -688,11 +705,148 @@ function AccountRow({
   )
 }
 
+// ── BdrMessagePreview ─────────────────────────────────────────────────────────
+
+function BdrMessagePreview({
+  flag,
+  sfdcBase,
+  isPending,
+  onConfirm,
+  onClose,
+}: {
+  flag: ProspectingFlag
+  sfdcBase: string
+  isPending: boolean
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  const bdrFirstName = flag.bdrName?.split(' ')[0] ?? 'there'
+  const isStale = flag.flagType === 'STALE_PROSPECTING'
+  const staleDays = flag.daysSinceLastRepContact ?? flag.daysSinceLastGongCall
+
+  const headerText = isStale
+    ? `👋 Hey ${bdrFirstName}, *${flag.accountName}* has gone stale in prospecting`
+    : `👋 Hey ${bdrFirstName}, *${flag.accountName}* looks ready to move to Prospecting`
+
+  const bodyText = isStale
+    ? staleDays !== null
+      ? `This account has been in *Prospecting* status for *${staleDays} days* without any rep communication or Gong call activity. Could you resume outreach or update the status?`
+      : `This account has been in *Prospecting* status with no recent rep communication or Gong calls. Could you resume outreach or update the status?`
+    : `This account is in *Planned* status but has had recent activity${flag.gongTotalCalls > 0 ? ` (${flag.gongTotalCalls} Gong call${flag.gongTotalCalls !== 1 ? 's' : ''}, last ${fmtDate(flag.gongLastCallDate)})` : ''}. Should the status be updated to Prospecting?`
+
+  const fields: { label: string; value: string }[] = []
+  if (flag.lastRepCommunicationDate) fields.push({ label: 'Last rep contact', value: `${fmtDate(flag.lastRepCommunicationDate)}${flag.daysSinceLastRepContact !== null ? ` (${flag.daysSinceLastRepContact}d ago)` : ''}` })
+  if (flag.gongLastCallDate) fields.push({ label: 'Last Gong call', value: `${fmtDate(flag.gongLastCallDate)}${flag.daysSinceLastGongCall !== null ? ` (${flag.daysSinceLastGongCall}d ago)` : ''}` })
+  if (flag.targetProspectingDate) fields.push({ label: 'Target prospecting date', value: fmtDate(flag.targetProspectingDate) })
+  if (flag.ownerName) fields.push({ label: 'Account owner', value: flag.ownerName })
+
+  const accountUrl = `${sfdcBase}/lightning/r/Account/${flag.accountId}/view`
+
+  // Render mrkdwn bold (*text*) as <strong>
+  function renderMrkdwn(text: string) {
+    const parts = text.split(/(\*[^*]+\*)/g)
+    return parts.map((p, i) =>
+      p.startsWith('*') && p.endsWith('*')
+        ? <strong key={i}>{p.slice(1, -1)}</strong>
+        : <span key={i}>{p}</span>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+
+        {/* Modal header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Draft Slack message</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              To: <span className="font-medium">{flag.bdrName ?? flag.bdrEmail}</span>
+              {flag.bdrEmail && <span className="text-gray-400"> ({flag.bdrEmail})</span>}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Slack message preview */}
+        <div className="px-6 py-5">
+          <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 space-y-3 font-sans text-sm">
+
+            {/* Bot name */}
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white text-xs font-bold shrink-0">R</div>
+              <span className="font-bold text-gray-900 text-sm">RevBot</span>
+              <span className="text-xs text-gray-400">App</span>
+            </div>
+
+            {/* Header block */}
+            <p className="text-gray-900 leading-snug">{renderMrkdwn(headerText)}</p>
+
+            {/* Body block */}
+            <p className="text-gray-700 leading-snug">{renderMrkdwn(bodyText)}</p>
+
+            {/* Fields */}
+            {fields.length > 0 && (
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 pt-1">
+                {fields.map(({ label, value }) => (
+                  <div key={label}>
+                    <p className="text-xs font-bold text-gray-700">{label}</p>
+                    <p className="text-xs text-gray-600">{value}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Button */}
+            <div className="pt-1">
+              <a
+                href={accountUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 rounded text-xs font-medium text-gray-700 hover:bg-gray-50"
+              >
+                View in Salesforce →
+              </a>
+            </div>
+
+            {/* Context footer */}
+            <p className="text-xs text-gray-400">Sent via RevBot · {flag.prospectingStatus ?? 'Unknown'} status</p>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isPending}
+            className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50"
+          >
+            {isPending ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
+            Send to {flag.bdrName?.split(' ')[0] ?? 'BDR'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── GongFlowStatus ────────────────────────────────────────────────────────────
 
 function GongFlowStatus({ stats }: { stats: ProspectingFlag['gongFlowStats'] }) {
-  // null = API unavailable — show nothing rather than mislead
-  if (stats === null) return null
+  // null = Gong Engage Flows API unavailable on this plan
+  if (stats === null) {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-gray-300 mt-1">
+        <Workflow size={11} className="shrink-0" />
+        <span>Gong flows unavailable</span>
+      </div>
+    )
+  }
 
   const { activeWithOverdue, activeOnTrack, completedSinceTarget } = stats
   const totalActive = activeWithOverdue + activeOnTrack
