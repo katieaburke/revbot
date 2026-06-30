@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAdmin } from '../middleware/adminAuth'
-import { fetchProspectAccounts, getSfdcInstanceUrl } from '../services/salesforce'
+import { fetchProspectAccounts, getSfdcInstanceUrl, updateProspectAccount } from '../services/salesforce'
 import { buildAccountActivityIndex, buildFlowContactIndex } from '../services/gong'
 import { evaluateProspectingHygiene, type ProspectingFlagType } from '../alerts/prospecting'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
@@ -55,19 +55,10 @@ router.get('/prospecting-hygiene', async (_req, res) => {
 // Does NOT create a Notification record — this is a one-off hygiene nudge.
 router.post('/notify-bdr', async (req, res) => {
   const {
-    accountId,
-    accountName,
-    flagType,
-    bdrEmail,
-    bdrName,
-    ownerName,
-    prospectingStatus,
-    daysSinceLastRepContact,
-    daysSinceLastGongCall,
-    gongTotalCalls,
-    lastRepCommunicationDate,
-    gongLastCallDate,
-    targetProspectingDate,
+    accountId, accountName, flagType, bdrEmail, bdrName, ownerName,
+    prospectingStatus, prospectingPauseReason,
+    daysSinceLastRepContact, daysSinceLastGongCall, gongTotalCalls,
+    lastRepCommunicationDate, gongLastCallDate, targetProspectingDate, reEngageDate,
   } = req.body as {
     accountId: string
     accountName: string
@@ -76,19 +67,20 @@ router.post('/notify-bdr', async (req, res) => {
     bdrName: string | null
     ownerName: string | null
     prospectingStatus: string | null
+    prospectingPauseReason: string | null
     daysSinceLastRepContact: number | null
     daysSinceLastGongCall: number | null
     gongTotalCalls: number
     lastRepCommunicationDate: string | null
     gongLastCallDate: string | null
     targetProspectingDate: string | null
+    reEngageDate: string | null
   }
 
   if (!bdrEmail) {
     return res.status(400).json({ error: 'No BDR email provided — account may not have a BDR assigned.' })
   }
 
-  // Resolve Slack user ID for the BDR
   const slackUserId = await resolveSlackUserId(bdrEmail)
   if (!slackUserId) {
     return res.status(404).json({ error: `Could not find Slack user for ${bdrEmail}. Make sure they're in the workspace.` })
@@ -96,12 +88,13 @@ router.post('/notify-bdr', async (req, res) => {
 
   const sfdcInstanceUrl = await getSfdcInstanceUrl()
   const accountUrl = `${sfdcInstanceUrl.replace(/\/$/, '')}/lightning/r/Account/${accountId}/view`
-
   const bdrFirstName = bdrName?.split(' ')[0] ?? 'there'
 
+  // SFDC date-only fields are YYYY-MM-DD — format without UTC conversion
   function fmtDate(iso: string | null): string {
     if (!iso) return '—'
-    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(iso + 'T12:00:00') : new Date(iso)
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   }
 
   function daysStr(days: number | null): string {
@@ -126,32 +119,17 @@ router.post('/notify-bdr', async (req, res) => {
   }
 
   const fields: { type: 'mrkdwn'; text: string }[] = []
-
-  if (lastRepCommunicationDate) {
-    fields.push({ type: 'mrkdwn', text: `*Last rep contact*\n${fmtDate(lastRepCommunicationDate)}${daysStr(daysSinceLastRepContact)}` })
-  }
-  if (gongLastCallDate) {
-    fields.push({ type: 'mrkdwn', text: `*Last Gong call*\n${fmtDate(gongLastCallDate)}${daysStr(daysSinceLastGongCall)}` })
-  }
-  if (targetProspectingDate) {
-    fields.push({ type: 'mrkdwn', text: `*Target prospecting date*\n${fmtDate(targetProspectingDate)}` })
-  }
-  if (ownerName) {
-    fields.push({ type: 'mrkdwn', text: `*Account owner*\n${ownerName}` })
-  }
+  if (lastRepCommunicationDate) fields.push({ type: 'mrkdwn', text: `*Last rep contact*\n${fmtDate(lastRepCommunicationDate)}${daysStr(daysSinceLastRepContact)}` })
+  if (gongLastCallDate) fields.push({ type: 'mrkdwn', text: `*Last Gong call*\n${fmtDate(gongLastCallDate)}${daysStr(daysSinceLastGongCall)}` })
+  if (targetProspectingDate) fields.push({ type: 'mrkdwn', text: `*Target prospecting date*\n${fmtDate(targetProspectingDate)}` })
+  if (reEngageDate) fields.push({ type: 'mrkdwn', text: `*Date to re-engage*\n${fmtDate(reEngageDate)}` })
+  if (prospectingPauseReason) fields.push({ type: 'mrkdwn', text: `*Hold reason*\n${prospectingPauseReason}` })
+  if (ownerName) fields.push({ type: 'mrkdwn', text: `*Account owner*\n${ownerName}` })
 
   const blocks: KnownBlock[] = [
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: headerText },
-    },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: bodyText },
-    },
-    ...(fields.length > 0
-      ? [{ type: 'section' as const, fields }]
-      : []),
+    { type: 'section', text: { type: 'mrkdwn', text: headerText } },
+    { type: 'section', text: { type: 'mrkdwn', text: bodyText } },
+    ...(fields.length > 0 ? [{ type: 'section' as const, fields }] : []),
     {
       type: 'actions',
       elements: [
@@ -161,24 +139,24 @@ router.post('/notify-bdr', async (req, res) => {
           url: accountUrl,
           action_id: 'view_account_sfdc',
         },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Update status →', emoji: true },
+          url: accountUrl,
+          action_id: 'update_status_sfdc',
+          style: 'primary',
+        },
       ],
     },
     {
       type: 'context',
-      elements: [
-        {
-          type: 'mrkdwn',
-          text: `Sent via RevBot · ${prospectingStatus ?? 'Unknown'} status`,
-        },
-      ],
+      elements: [{ type: 'mrkdwn', text: `Sent via RevBot · ${prospectingStatus ?? 'Unknown'} status` }],
     },
   ]
 
   const plainText = `${flagType === 'STALE_PROSPECTING' ? '⚠️' : '✅'} ${accountName}: ${flagType === 'STALE_PROSPECTING' ? 'stale in prospecting' : 'ready to move to Prospecting'}`
-
   await sendDm(slackUserId, blocks, plainText)
 
-  // Log the send to AppSetting for audit trail (lightweight — no Notification record needed)
   await db.appSetting.upsert({
     where: { key: `bdrNudge:last:${accountId}` },
     create: { key: `bdrNudge:last:${accountId}`, value: JSON.stringify({ sentAt: new Date().toISOString(), bdrEmail, flagType }) },
@@ -186,6 +164,23 @@ router.post('/notify-bdr', async (req, res) => {
   })
 
   return res.json({ ok: true, sentTo: bdrEmail })
+})
+
+// PATCH /api/accounts/:accountId
+// Update editable prospecting fields directly from Beacon (writes back to Salesforce).
+router.patch('/:accountId', async (req, res) => {
+  const { accountId } = req.params
+  const { Prospecting_Status__c, Target_Prospecting_Date__c, Prospecting_Pause_Reason__c } = req.body as {
+    Prospecting_Status__c?: string | null
+    Target_Prospecting_Date__c?: string | null
+    Prospecting_Pause_Reason__c?: string | null
+  }
+  try {
+    await updateProspectAccount(accountId, { Prospecting_Status__c, Target_Prospecting_Date__c, Prospecting_Pause_Reason__c })
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ error: String(err) })
+  }
 })
 
 export default router

@@ -16,6 +16,8 @@ import {
   Workflow,
   Send,
   X,
+  Pencil,
+  Check,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -33,6 +35,7 @@ interface ProspectingFlag {
   bdrEmail: string | null
   bdrName: string | null
   prospectingStatus: string | null
+  prospectingPauseReason: string | null
   lastRepCommunicationDate: string | null
   targetProspectingDate: string | null
   reEngageDate: string | null
@@ -71,7 +74,10 @@ interface AppSettings {
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '—'
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  // SFDC date-only fields (YYYY-MM-DD) parse as UTC midnight → off-by-one in negative-offset timezones.
+  // Treat them as local noon to guarantee the correct calendar date everywhere.
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(iso + 'T12:00:00') : new Date(iso)
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 function daysAgoLabel(days: number | null): string | null {
@@ -145,12 +151,14 @@ export function ProspectingHygiene() {
         bdrName: flag.bdrName,
         ownerName: flag.ownerName,
         prospectingStatus: flag.prospectingStatus,
+        prospectingPauseReason: flag.prospectingPauseReason,
         daysSinceLastRepContact: flag.daysSinceLastRepContact,
         daysSinceLastGongCall: flag.daysSinceLastGongCall,
         gongTotalCalls: flag.gongTotalCalls,
         lastRepCommunicationDate: flag.lastRepCommunicationDate,
         gongLastCallDate: flag.gongLastCallDate,
         targetProspectingDate: flag.targetProspectingDate,
+        reEngageDate: flag.reEngageDate,
       }),
     onMutate: (flag) => {
       setLastSentAccountId(flag.accountId)
@@ -569,6 +577,16 @@ export function ProspectingHygiene() {
   )
 }
 
+const PROSPECTING_STATUSES = ['Planned', 'Prospecting', 'Paused', 'Success', 'Nurturing']
+const PAUSE_REASONS = [
+  'Timing (populate "date to re-engage")',
+  'Unresponsive',
+  'Decision on parent',
+  'Decision on child',
+  'Company no longer exists (acquisition, insolvent)',
+  'Not ICP',
+]
+
 // ── AccountRow ────────────────────────────────────────────────────────────────
 
 function AccountRow({
@@ -584,6 +602,40 @@ function AccountRow({
   sendPending: boolean
   lastSentAccountId: string | null
 }) {
+  const qc = useQueryClient()
+  const [editMode, setEditMode] = useState(false)
+  const [editStatus, setEditStatus] = useState(flag.prospectingStatus ?? '')
+  const [editDate, setEditDate] = useState(flag.targetProspectingDate ?? '')
+  const [editPauseReason, setEditPauseReason] = useState(flag.prospectingPauseReason ?? '')
+
+  const saveEdit = useMutation({
+    mutationFn: () => api.patch(`/accounts/${flag.accountId}`, {
+      Prospecting_Status__c: editStatus || null,
+      Target_Prospecting_Date__c: editDate || null,
+      Prospecting_Pause_Reason__c: editStatus === 'Paused' ? (editPauseReason || null) : null,
+    }),
+    onSuccess: () => {
+      // Optimistically update the cached scan data
+      qc.setQueryData<HygieneResult>(['prospecting-hygiene'], (old) => {
+        if (!old) return old
+        return {
+          ...old,
+          flags: old.flags.map((f) =>
+            f.accountId === flag.accountId
+              ? {
+                  ...f,
+                  prospectingStatus: editStatus || f.prospectingStatus,
+                  targetProspectingDate: editDate || f.targetProspectingDate,
+                  prospectingPauseReason: editStatus === 'Paused' ? editPauseReason : null,
+                }
+              : f
+          ),
+        }
+      })
+      setEditMode(false)
+    },
+  })
+
   const accountLink = `${sfdcBase}/lightning/r/Account/${flag.accountId}/view`
   const visibleEmails = flag.contactEmails.slice(0, 2)
   const extraEmailCount = flag.contactEmails.length - 2
@@ -619,6 +671,13 @@ function AccountRow({
                 {flag.recordTypeName}
               </span>
             )}
+            <button
+              onClick={() => { setEditMode((e) => !e); setEditStatus(flag.prospectingStatus ?? ''); setEditDate(flag.targetProspectingDate ?? ''); setEditPauseReason(flag.prospectingPauseReason ?? '') }}
+              className="text-gray-400 hover:text-brand-600 ml-1"
+              title="Edit status / date"
+            >
+              <Pencil size={11} />
+            </button>
           </div>
 
           {/* Owner + BDR */}
@@ -631,12 +690,68 @@ function AccountRow({
             )}
           </div>
 
+          {/* Inline edit form */}
+          {editMode && (
+            <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex flex-wrap items-end gap-3">
+              <div>
+                <label className="block text-[10px] font-semibold text-blue-700 mb-1 uppercase tracking-wide">Status</label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="text-xs border border-blue-300 rounded-lg px-2 py-1.5 bg-white text-gray-800"
+                >
+                  <option value="">— unchanged —</option>
+                  {PROSPECTING_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              {editStatus === 'Paused' && (
+                <div>
+                  <label className="block text-[10px] font-semibold text-blue-700 mb-1 uppercase tracking-wide">Hold reason</label>
+                  <select
+                    value={editPauseReason}
+                    onChange={(e) => setEditPauseReason(e.target.value)}
+                    className="text-xs border border-blue-300 rounded-lg px-2 py-1.5 bg-white text-gray-800 max-w-xs"
+                  >
+                    <option value="">— none —</option>
+                    {PAUSE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block text-[10px] font-semibold text-blue-700 mb-1 uppercase tracking-wide">Target prospecting date</label>
+                <input
+                  type="date"
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  className="text-xs border border-blue-300 rounded-lg px-2 py-1.5 bg-white text-gray-800"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => saveEdit.mutate()}
+                  disabled={saveEdit.isPending}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {saveEdit.isPending ? <RefreshCw size={11} className="animate-spin" /> : <Check size={11} />}
+                  Save to Salesforce
+                </button>
+                <button onClick={() => setEditMode(false)} className="text-xs text-blue-500 hover:text-blue-700">Cancel</button>
+              </div>
+              {saveEdit.isError && (
+                <p className="w-full text-xs text-red-600 mt-1">Save failed — check your Salesforce connection</p>
+              )}
+            </div>
+          )}
+
           {/* Key dates grid */}
           <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs mb-2">
             <DateField label="Last rep contact" value={flag.lastRepCommunicationDate} daysAgo={flag.daysSinceLastRepContact} warn={flag.daysSinceLastRepContact === null || flag.daysSinceLastRepContact > 14} />
             <DateField label="Target prospecting date" value={flag.targetProspectingDate} />
             <DateField label="Re-engage date" value={flag.reEngageDate} />
             <DateField label="Competitor contract end" value={flag.competitorEndDate} />
+            {flag.prospectingPauseReason && (
+              <DateField label="Hold reason" value={flag.prospectingPauseReason} isText />
+            )}
           </div>
 
           {/* Gong calls + contacts */}
@@ -738,6 +853,8 @@ function BdrMessagePreview({
   if (flag.lastRepCommunicationDate) fields.push({ label: 'Last rep contact', value: `${fmtDate(flag.lastRepCommunicationDate)}${flag.daysSinceLastRepContact !== null ? ` (${flag.daysSinceLastRepContact}d ago)` : ''}` })
   if (flag.gongLastCallDate) fields.push({ label: 'Last Gong call', value: `${fmtDate(flag.gongLastCallDate)}${flag.daysSinceLastGongCall !== null ? ` (${flag.daysSinceLastGongCall}d ago)` : ''}` })
   if (flag.targetProspectingDate) fields.push({ label: 'Target prospecting date', value: fmtDate(flag.targetProspectingDate) })
+  if (flag.reEngageDate) fields.push({ label: 'Date to re-engage', value: fmtDate(flag.reEngageDate) })
+  if (flag.prospectingPauseReason) fields.push({ label: 'Hold reason', value: flag.prospectingPauseReason })
   if (flag.ownerName) fields.push({ label: 'Account owner', value: flag.ownerName })
 
   const accountUrl = `${sfdcBase}/lightning/r/Account/${flag.accountId}/view`
@@ -799,8 +916,8 @@ function BdrMessagePreview({
               </div>
             )}
 
-            {/* Button */}
-            <div className="pt-1">
+            {/* Buttons */}
+            <div className="flex items-center gap-2 pt-1 flex-wrap">
               <a
                 href={accountUrl}
                 target="_blank"
@@ -808,6 +925,14 @@ function BdrMessagePreview({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 rounded text-xs font-medium text-gray-700 hover:bg-gray-50"
               >
                 View in Salesforce →
+              </a>
+              <a
+                href={accountUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-brand-500 text-white rounded text-xs font-medium hover:bg-brand-600"
+              >
+                Update status →
               </a>
             </div>
 
@@ -888,13 +1013,14 @@ function GongFlowStatus({ stats }: { stats: ProspectingFlag['gongFlowStats'] }) 
 
 // ── DateField ─────────────────────────────────────────────────────────────────
 
-function DateField({ label, value, daysAgo, warn }: { label: string; value: string | null | undefined; daysAgo?: number | null; warn?: boolean }) {
+function DateField({ label, value, daysAgo, warn, isText }: { label: string; value: string | null | undefined; daysAgo?: number | null; warn?: boolean; isText?: boolean }) {
+  if (!value) return null
   return (
     <div className="flex items-center gap-1.5">
-      <Calendar size={11} className="text-gray-400 shrink-0" />
+      {!isText && <Calendar size={11} className="text-gray-400 shrink-0" />}
       <span className="text-gray-500">{label}:</span>
-      <span className={clsx('font-medium', value ? (warn ? 'text-red-600' : 'text-gray-800') : 'text-gray-400')}>
-        {fmtDate(value)}
+      <span className={clsx('font-medium', warn ? 'text-red-600' : 'text-gray-800')}>
+        {isText ? value : fmtDate(value)}
       </span>
       {daysAgo !== null && daysAgo !== undefined && (
         <span className="text-gray-400">({daysAgoLabel(daysAgo)})</span>

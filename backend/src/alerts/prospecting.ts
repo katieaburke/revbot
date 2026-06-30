@@ -13,6 +13,7 @@ export interface ProspectingFlag {
   bdrEmail: string | null
   bdrName: string | null
   prospectingStatus: string | null
+  prospectingPauseReason: string | null
   lastRepCommunicationDate: string | null
   targetProspectingDate: string | null
   reEngageDate: string | null
@@ -120,6 +121,7 @@ export function evaluateProspectingHygiene(
       bdrEmail: acct.BDR_Assigned__r?.Email ?? null,
       bdrName: acct.BDR_Assigned__r?.Name ?? null,
       prospectingStatus: acct.Prospecting_Status__c,
+      prospectingPauseReason: acct.Prospecting_Pause_Reason__c ?? null,
       lastRepCommunicationDate: acct.Last_Rep_Communication_Date__c ?? null,
       targetProspectingDate: acct.Target_Prospecting_Date__c ?? null,
       reEngageDate: acct.Date_to_Re_engage__c ?? null,

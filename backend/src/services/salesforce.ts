@@ -238,6 +238,7 @@ export interface SfdcAccount {
   Name: string
   Account_Stage__c: string | null
   Prospecting_Status__c: string | null
+  Prospecting_Pause_Reason__c: string | null
   Target_Prospecting_Date__c: string | null
   Date_to_Re_engage__c: string | null
   End_of_competitor_engagement__c: string | null
@@ -256,7 +257,7 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
   const conn = await getServiceConnection()
   const rtFilter = recordTypeDeveloperName ? `AND RecordType.DeveloperName = '${recordTypeDeveloperName}'` : ''
   let result = await conn.query<SfdcAccount>(`
-    SELECT Id, Name, Account_Stage__c, Prospecting_Status__c,
+    SELECT Id, Name, Account_Stage__c, Prospecting_Status__c, Prospecting_Pause_Reason__c,
            Target_Prospecting_Date__c, Date_to_Re_engage__c,
            End_of_competitor_engagement__c, Last_Rep_Communication_Date__c,
            OwnerId, Owner.Id, Owner.Name, Owner.Email,
@@ -276,4 +277,23 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
   }
   console.log(`[SFDC] Fetched ${records.length} prospect accounts`)
   return records
+}
+
+// Update editable prospecting fields on an Account record
+export async function updateProspectAccount(
+  accountId: string,
+  fields: Partial<{
+    Prospecting_Status__c: string | null
+    Target_Prospecting_Date__c: string | null
+    Prospecting_Pause_Reason__c: string | null
+  }>
+): Promise<void> {
+  const conn = await getServiceConnection()
+  // Build update payload — include only fields that were explicitly passed
+  const payload: Record<string, string | null> = { Id: accountId }
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) payload[k] = v ?? null
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await conn.sobject('Account').update(payload as any)
 }
