@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 import {
   Play, RefreshCw, AlertCircle, Clock, CheckCircle, FlaskConical,
   ChevronDown, ChevronUp, ExternalLink, Trash2, MessageSquare, X, Send,
-  Briefcase, Building2, UserCheck,
+  Briefcase, Building2, UserCheck, BellOff,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -17,6 +17,8 @@ interface Summary {
   resolved: number
   byType: { alertType: string; _count: { id: number } }[]
 }
+
+type SkipType = 'cooldown' | 'snoozed_owner' | 'snoozed_revops'
 
 interface DryRunAlert {
   alertType: string
@@ -35,7 +37,15 @@ interface DryRunAlert {
   managerSlackId: string | null
   wouldSkip: boolean
   skipReason?: string
+  skipType?: SkipType
   details: Record<string, unknown>
+}
+
+interface ResolvedItem {
+  opportunityId: string
+  opportunityName: string
+  alertType: string
+  resolveReason: 'opp_closed' | 'flag_cleared'
 }
 
 interface DryRunResult {
@@ -44,6 +54,7 @@ interface DryRunResult {
   wouldSend: DryRunAlert[]
   wouldSkip: DryRunAlert[]
   unreachable: DryRunAlert[]
+  resolved: ResolvedItem[]
   stallRulesActive: number
   meddpiccStagesActive: number
 }
@@ -91,6 +102,23 @@ function groupByOpp(alerts: DryRunAlert[]): OppGroup[] {
       })
     }
     map.get(a.opportunityId)!.alerts.push(a)
+  }
+  return Array.from(map.values())
+}
+
+interface ResolvedGroup {
+  opportunityId: string
+  opportunityName: string
+  items: ResolvedItem[]
+}
+
+function groupResolvedByOpp(items: ResolvedItem[]): ResolvedGroup[] {
+  const map = new Map<string, ResolvedGroup>()
+  for (const item of items) {
+    if (!map.has(item.opportunityId)) {
+      map.set(item.opportunityId, { opportunityId: item.opportunityId, opportunityName: item.opportunityName, items: [] })
+    }
+    map.get(item.opportunityId)!.items.push(item)
   }
   return Array.from(map.values())
 }
@@ -222,7 +250,8 @@ export function Dashboard() {
   const qc = useQueryClient()
   const [dryRunOverride, setDryRunOverride] = useState<DryRunResult | null>(null)
   const [dryRunError, setDryRunError] = useState<string | null>(null)
-  const [expandedSection, setExpandedSection] = useState<'wouldSend' | 'wouldSkip' | 'unreachable' | null>('wouldSend')
+  const [expandedSection, setExpandedSection] = useState<'wouldSend' | 'cooldown' | 'snoozed_owner' | 'snoozed_revops' | 'unreachable' | 'resolved' | null>('wouldSend')
+  const [snoozeOpenOppId, setSnoozeOpenOppId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [draftOpp, setDraftOpp] = useState<OppGroup | null>(null)
@@ -258,6 +287,7 @@ export function Dashboard() {
       ...dryRunResult.wouldSend.map((a) => a.opportunityId),
       ...dryRunResult.wouldSkip.map((a) => a.opportunityId),
       ...dryRunResult.unreachable.map((a) => a.opportunityId),
+      ...(dryRunResult.resolved ?? []).map((r) => r.opportunityId),
     ])
     return Array.from(ids)
   }, [dryRunResult])
@@ -274,13 +304,13 @@ export function Dashboard() {
   const sfdcBase = settings?.sfdcInstanceUrl?.replace(/\/$/, '') ?? ''
 
   // Move an opp from wouldSend → wouldSkip in the current dry run result
-  function moveOppToSkipped(oppId: string, skipReason: string) {
+  function moveOppToSkipped(oppId: string, skipReason: string, skipType?: SkipType) {
     setDryRunOverride((prev) => {
       const base = prev ?? lastDryRun
       if (!base) return prev
       const moving = base.wouldSend
         .filter((a) => a.opportunityId === oppId)
-        .map((a) => ({ ...a, wouldSkip: true, skipReason }))
+        .map((a) => ({ ...a, wouldSkip: true, skipReason, skipType: skipType ?? a.skipType }))
       if (!moving.length) return prev
       return {
         ...base,
@@ -334,6 +364,24 @@ export function Dashboard() {
       setDraftSent(g.opportunityId)
       qc.invalidateQueries({ queryKey: ['opp-counts'] })
       moveOppToSkipped(g.opportunityId, 'Recently notified')
+    },
+  })
+
+  const revopsSnooze = useMutation({
+    mutationFn: ({ g, snoozeDays }: { g: OppGroup; snoozeDays: number }) =>
+      api.post('/notifications/revops-snooze', {
+        opportunityId: g.opportunityId,
+        opportunityName: g.opportunityName,
+        alertTypes: g.alerts.map((a) => a.alertType),
+        ownerSlackId: g.alerts[0]?.ownerSlackId ?? null,
+        ownerEmail: g.ownerEmail,
+        snoozeDays,
+      }).then((r) => r.data as { snoozedUntil: string }),
+    onSuccess: (data, { g }) => {
+      setSnoozeOpenOppId(null)
+      const until = new Date(data.snoozedUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      moveOppToSkipped(g.opportunityId, `RevOps snoozed until ${until}`, 'snoozed_revops')
+      qc.invalidateQueries({ queryKey: ['opp-counts'] })
     },
   })
 
@@ -471,10 +519,15 @@ export function Dashboard() {
                 )}
               </p>
             </div>
-            <div className="flex gap-4 text-xs font-medium">
+            <div className="flex gap-4 text-xs font-medium flex-wrap">
               <span className="text-green-700">{groupByOpp(dryRunResult.wouldSend).length} would send</span>
-              <span className="text-gray-500">{groupByOpp(dryRunResult.wouldSkip).length} skipped</span>
+              <span className="text-gray-500">{groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'cooldown')).length} cooldown</span>
+              <span className="text-amber-600">{groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_revops')).length} snoozed (RevOps)</span>
+              <span className="text-amber-600">{groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_owner')).length} snoozed (owner)</span>
               <span className="text-orange-600">{groupByOpp(dryRunResult.unreachable).length} unreachable</span>
+              {(dryRunResult.resolved ?? []).length > 0 && (
+                <span className="text-emerald-600">{groupResolvedByOpp(dryRunResult.resolved ?? []).length} resolved</span>
+              )}
             </div>
           </div>
 
@@ -627,6 +680,10 @@ export function Dashboard() {
             confirmDeleteId={confirmDeleteId}
             deletingId={deletingId}
             oppCounts={oppCounts}
+            onSnooze={(g, days) => revopsSnooze.mutate({ g, snoozeDays: days })}
+            snoozeOpenOppId={snoozeOpenOppId}
+            setSnoozeOpenOppId={setSnoozeOpenOppId}
+            snoozePending={revopsSnooze.isPending}
           />
 
           {dryRunResult.unreachable.length > 0 && (
@@ -649,14 +706,15 @@ export function Dashboard() {
             />
           )}
 
-          {dryRunResult.wouldSkip.length > 0 && (
+          {dryRunResult.wouldSkip.some(a => a.skipType === 'snoozed_revops') && (
             <OppSection
-              title="Skipped (cooldown / snoozed)"
-              groups={applyFilters(groupByOpp(dryRunResult.wouldSkip), filters, oppCounts)}
-              expanded={expandedSection === 'wouldSkip'}
-              onToggle={() => setExpandedSection(expandedSection === 'wouldSkip' ? null : 'wouldSkip')}
+              title="Snoozed by RevOps"
+              groups={applyFilters(groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_revops')), filters, oppCounts)}
+              expanded={expandedSection === 'snoozed_revops'}
+              onToggle={() => setExpandedSection(expandedSection === 'snoozed_revops' ? null : 'snoozed_revops')}
               emptyText=""
-              badgeClass="bg-gray-100 text-gray-500"
+              badgeClass="bg-amber-100 text-amber-700"
+              hint="Manually snoozed from this dashboard"
               sfdcLink={sfdcLink}
               onDelete={handleDelete}
               onDraft={setDraftOpp}
@@ -665,6 +723,55 @@ export function Dashboard() {
               confirmDeleteId={confirmDeleteId}
               deletingId={deletingId}
               oppCounts={oppCounts}
+            />
+          )}
+
+          {dryRunResult.wouldSkip.some(a => a.skipType === 'snoozed_owner') && (
+            <OppSection
+              title="Snoozed by owner"
+              groups={applyFilters(groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_owner')), filters, oppCounts)}
+              expanded={expandedSection === 'snoozed_owner'}
+              onToggle={() => setExpandedSection(expandedSection === 'snoozed_owner' ? null : 'snoozed_owner')}
+              emptyText=""
+              badgeClass="bg-amber-100 text-amber-700"
+              hint="Rep snoozed via Slack"
+              sfdcLink={sfdcLink}
+              onDelete={handleDelete}
+              onDraft={setDraftOpp}
+              onManagerDraft={setManagerDraftOpp}
+              managerNotifiedOppId={managerNotifiedOppId}
+              confirmDeleteId={confirmDeleteId}
+              deletingId={deletingId}
+              oppCounts={oppCounts}
+            />
+          )}
+
+          {dryRunResult.wouldSkip.some(a => a.skipType === 'cooldown' || !a.skipType) && (
+            <OppSection
+              title="Cooldown"
+              groups={applyFilters(groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'cooldown' || !a.skipType)), filters, oppCounts)}
+              expanded={expandedSection === 'cooldown'}
+              onToggle={() => setExpandedSection(expandedSection === 'cooldown' ? null : 'cooldown')}
+              emptyText=""
+              badgeClass="bg-gray-100 text-gray-500"
+              hint="Notification sent, not yet resolved, within cooldown window"
+              sfdcLink={sfdcLink}
+              onDelete={handleDelete}
+              onDraft={setDraftOpp}
+              onManagerDraft={setManagerDraftOpp}
+              managerNotifiedOppId={managerNotifiedOppId}
+              confirmDeleteId={confirmDeleteId}
+              deletingId={deletingId}
+              oppCounts={oppCounts}
+            />
+          )}
+
+          {(dryRunResult.resolved ?? []).length > 0 && (
+            <ResolvedSection
+              groups={groupResolvedByOpp(dryRunResult.resolved ?? [])}
+              expanded={expandedSection === 'resolved'}
+              onToggle={() => setExpandedSection(expandedSection === 'resolved' ? null : 'resolved')}
+              sfdcLink={sfdcLink}
             />
           )}
         </div>
@@ -719,7 +826,14 @@ function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }
 
 // ── OppSection ────────────────────────────────────────────────────────────────
 
-function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, hint, sfdcLink, onDelete, onDraft, onManagerDraft, managerNotifiedOppId, confirmDeleteId, deletingId, oppCounts }: {
+const SNOOZE_OPTIONS = [
+  { label: '3 days', days: 3 },
+  { label: '1 week', days: 7 },
+  { label: '2 weeks', days: 14 },
+  { label: '1 month', days: 30 },
+]
+
+function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, hint, sfdcLink, onDelete, onDraft, onManagerDraft, managerNotifiedOppId, confirmDeleteId, deletingId, oppCounts, onSnooze, snoozeOpenOppId, setSnoozeOpenOppId, snoozePending }: {
   title: string
   groups: OppGroup[]
   expanded: boolean
@@ -735,6 +849,10 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
   confirmDeleteId: string | null
   deletingId: string | null
   oppCounts: Record<string, OppCount>
+  onSnooze?: (g: OppGroup, days: number) => void
+  snoozeOpenOppId?: string | null
+  setSnoozeOpenOppId?: (id: string | null) => void
+  snoozePending?: boolean
 }) {
   function fmtDate(iso: string | undefined) {
     if (!iso) return ''
@@ -833,6 +951,32 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                           {managerNotified ? 'Sent to mgr' : 'Send to manager'}
                         </button>
                       )}
+                      {onSnooze && setSnoozeOpenOppId && (
+                        <div className="relative">
+                          <button
+                            onClick={() => setSnoozeOpenOppId(snoozeOpenOppId === g.opportunityId ? null : g.opportunityId)}
+                            disabled={snoozePending}
+                            className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-gray-500 hover:text-amber-700 hover:bg-amber-50 transition-colors"
+                            title="Snooze this opp (no message sent)"
+                          >
+                            <BellOff size={11} /> Snooze
+                          </button>
+                          {snoozeOpenOppId === g.opportunityId && (
+                            <div className="absolute right-0 top-7 z-20 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[120px]">
+                              <p className="px-3 py-1 text-xs font-medium text-gray-400 uppercase tracking-wide">Snooze for</p>
+                              {SNOOZE_OPTIONS.map((opt) => (
+                                <button
+                                  key={opt.days}
+                                  onClick={() => { onSnooze(g, opt.days); setSnoozeOpenOppId(null) }}
+                                  className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-amber-50 hover:text-amber-800"
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       <button
                         onClick={() => onDelete(g.opportunityId)}
                         disabled={isDeleting}
@@ -850,6 +994,73 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
               })}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── ResolvedSection ───────────────────────────────────────────────────────────
+
+function ResolvedSection({ groups, expanded, onToggle, sfdcLink }: {
+  groups: ResolvedGroup[]
+  expanded: boolean
+  onToggle: () => void
+  sfdcLink: (id: string) => string | null
+}) {
+  return (
+    <div className="border-b border-gray-100 last:border-0">
+      <button onClick={onToggle} className="w-full flex items-center justify-between px-6 py-3 hover:bg-gray-50 text-left">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">{groups.length}</span>
+          <span className="text-sm font-medium text-gray-800">Resolved this scan</span>
+          <span className="text-xs text-gray-400">Flags cleared or opp closed since last run</span>
+        </div>
+        {expanded ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+      </button>
+
+      {expanded && (
+        <div className="px-6 pb-4">
+          <div className="space-y-2">
+            {groups.map((g) => {
+              const link = sfdcLink(g.opportunityId)
+              const closedCount = g.items.filter((i) => i.resolveReason === 'opp_closed').length
+              const clearedCount = g.items.filter((i) => i.resolveReason === 'flag_cleared').length
+              return (
+                <div key={g.opportunityId} className="flex items-start justify-between py-2.5 px-3 rounded-lg border border-emerald-100 bg-emerald-50/40">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                      {link ? (
+                        <a href={link} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-gray-900 hover:text-brand-600 flex items-center gap-1">
+                          {g.opportunityName}
+                          <ExternalLink size={11} className="text-gray-400" />
+                        </a>
+                      ) : (
+                        <span className="text-sm font-medium text-gray-900">{g.opportunityName}</span>
+                      )}
+                      {closedCount > 0 && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-medium">
+                          ✓ Opp closed ({closedCount} alert{closedCount !== 1 ? 's' : ''})
+                        </span>
+                      )}
+                      {clearedCount > 0 && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">
+                          ✓ Flag cleared ({clearedCount} alert{clearedCount !== 1 ? 's' : ''})
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {g.items.map((item, i) => (
+                        <span key={i} className="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                          {alertTypeLabel[item.alertType] ?? item.alertType}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>

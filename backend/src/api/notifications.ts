@@ -231,6 +231,53 @@ router.delete('/sfdc-opportunity/:id', async (req, res) => {
   }
 })
 
+// RevOps snooze an opp from the dashboard (no Slack message sent)
+router.post('/revops-snooze', async (req, res) => {
+  try {
+    const { opportunityId, opportunityName, alertTypes, ownerSlackId, ownerEmail, snoozeDays } = req.body as {
+      opportunityId: string
+      opportunityName: string
+      alertTypes: string[]
+      ownerSlackId?: string | null
+      ownerEmail?: string
+      snoozeDays: number
+    }
+
+    const snoozedUntil = new Date()
+    snoozedUntil.setDate(snoozedUntil.getDate() + snoozeDays)
+
+    // Find the opp owner user to use as ownerId (fall back to any revops user)
+    const owner = await db.user.findFirst({
+      where: {
+        OR: [
+          ...(ownerSlackId ? [{ slackUserId: ownerSlackId }] : []),
+          ...(ownerEmail ? [{ slackEmail: ownerEmail }] : []),
+          { isRevOps: true },
+        ],
+      },
+    })
+    if (!owner) return res.status(400).json({ error: 'No user found to attach snooze to' })
+
+    for (const alertType of alertTypes) {
+      await db.notification.create({
+        data: {
+          opportunityId,
+          opportunityName,
+          ownerId: owner.id,
+          alertType: alertType as AlertType,
+          alertDetails: { _source: 'revops_snooze' } as never,
+          status: 'SNOOZED',
+          snoozedUntil,
+        },
+      })
+    }
+
+    res.json({ ok: true, snoozedUntil: snoozedUntil.toISOString() })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
 // RevOps manually nudge an opportunity owner
 const nudgeSchema = z.object({
   opportunityId: z.string(),

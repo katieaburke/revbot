@@ -36,6 +36,8 @@ function businessDaysSince(from: Date): number {
 
 // ─── Dry run result types ──────────────────────────────────────────────────
 
+export type SkipType = 'cooldown' | 'snoozed_owner' | 'snoozed_revops'
+
 export interface DryRunAlert {
   alertType: AlertType
   opportunityId: string
@@ -53,7 +55,15 @@ export interface DryRunAlert {
   managerSlackId: string | null
   wouldSkip: boolean           // already snoozed or in cooldown
   skipReason?: string
+  skipType?: SkipType
   details: Record<string, unknown>
+}
+
+export interface ResolvedNotification {
+  opportunityId: string
+  opportunityName: string
+  alertType: AlertType
+  resolveReason: 'opp_closed' | 'flag_cleared'
 }
 
 export interface DryRunResult {
@@ -61,13 +71,14 @@ export interface DryRunResult {
   wouldSend: DryRunAlert[]
   wouldSkip: DryRunAlert[]
   unreachable: DryRunAlert[]  // no Slack ID found for owner
+  resolved: ResolvedNotification[]
   stallRulesActive: number
   meddpiccStagesActive: number
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cooldownBusinessDays: number): Promise<{ skip: boolean; reason?: string }> {
+async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cooldownBusinessDays: number): Promise<{ skip: boolean; reason?: string; skipType?: SkipType }> {
   const recent = await db.notification.findFirst({
     where: {
       opportunityId: oppId,
@@ -80,14 +91,25 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cool
   if (!recent) return { skip: false }
 
   if (recent.status === NotificationStatus.SNOOZED && recent.snoozedUntil && recent.snoozedUntil > new Date()) {
-    return { skip: true, reason: `Snoozed until ${recent.snoozedUntil.toLocaleDateString()}` }
+    const details = recent.alertDetails as Record<string, unknown> | null
+    const isRevopsSnooze = details?._source === 'revops_snooze'
+    const until = recent.snoozedUntil.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    return {
+      skip: true,
+      reason: isRevopsSnooze ? `RevOps snoozed until ${until}` : `Snoozed by owner until ${until}`,
+      skipType: isRevopsSnooze ? 'snoozed_revops' : 'snoozed_owner',
+    }
   }
 
   if (recent.status === NotificationStatus.SENT) {
     const bdSince = businessDaysSince(recent.sentAt)
     if (bdSince < cooldownBusinessDays) {
       const dayLabel = bdSince === 1 ? '1 business day' : `${bdSince} business days`
-      return { skip: true, reason: `Sent ${dayLabel} ago (cooldown: ${cooldownBusinessDays} business days)` }
+      return {
+        skip: true,
+        reason: `Sent ${dayLabel} ago (cooldown: ${cooldownBusinessDays} business days)`,
+        skipType: 'cooldown',
+      }
     }
   }
 
@@ -143,12 +165,12 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
 async function autoResolveStale(
   openOppIds: Set<string>,
   currentAlerts: Array<{ opportunityId: string; alertType: AlertType }>
-): Promise<number> {
+): Promise<ResolvedNotification[]> {
   const currentFlagKeys = new Set(currentAlerts.map((a) => `${a.opportunityId}:${a.alertType}`))
 
   const active = await db.notification.findMany({
     where: { status: { in: ['SENT', 'SNOOZED'] } },
-    select: { id: true, opportunityId: true, alertType: true },
+    select: { id: true, opportunityId: true, opportunityName: true, alertType: true },
   })
 
   const toResolve = active.filter((n) => {
@@ -165,7 +187,12 @@ async function autoResolveStale(
     console.log(`[AutoResolve] Resolved ${toResolve.length} stale notifications`)
   }
 
-  return toResolve.length
+  return toResolve.map((n) => ({
+    opportunityId: n.opportunityId,
+    opportunityName: n.opportunityName,
+    alertType: n.alertType as AlertType,
+    resolveReason: !openOppIds.has(n.opportunityId) ? 'opp_closed' : 'flag_cleared',
+  }))
 }
 
 // ─── Dry run ───────────────────────────────────────────────────────────────
@@ -189,7 +216,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
     const managerName = opp?.Owner?.Manager?.Name ?? null
 
 
-    const [{ skip, reason }, ownerSlackId, managerSlackId] = await Promise.all([
+    const [{ skip, reason, skipType }, ownerSlackId, managerSlackId] = await Promise.all([
       isSnoozedOrRecentlySent(alert.opportunityId, alertType, cooldownBusinessDays),
       resolveSlackUserId(alert.ownerEmail),
       managerEmail ? resolveSlackUserId(managerEmail) : Promise.resolve(null),
@@ -212,6 +239,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
       managerSlackId,
       wouldSkip: skip,
       skipReason: reason,
+      skipType,
       details: alert as unknown as Record<string, unknown>,
     }
 
@@ -242,7 +270,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
     ...closeDateRiskAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.CLOSE_DATE_RISK })),
     ...stageMismatchAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.STAGE_MISMATCH })),
   ]
-  await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts)
+  const resolved = await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts)
 
   // Save summary for playbook pages to display
   // Count ALL flagged opps (would send + skipped + unreachable) so sidebar shows
@@ -301,6 +329,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
           wouldSend,
           wouldSkip,
           unreachable,
+          resolved,
           stallRulesActive: stallRules.length + stallThresholds.length,
           meddpiccStagesActive: meddpiccRequirements.length,
         }),
@@ -312,6 +341,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
           wouldSend,
           wouldSkip,
           unreachable,
+          resolved,
           stallRulesActive: stallRules.length + stallThresholds.length,
           meddpiccStagesActive: meddpiccRequirements.length,
         }),
@@ -336,6 +366,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
     wouldSend,
     wouldSkip,
     unreachable,
+    resolved,
     stallRulesActive: stallRules.length + stallThresholds.length,
     meddpiccStagesActive: meddpiccRequirements.length,
   }
