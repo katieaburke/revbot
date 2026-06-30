@@ -245,11 +245,14 @@ export interface SfdcAccount {
   OwnerId: string
   Owner: { Id: string; Name: string; Email: string }
   RecordType?: { Name: string; DeveloperName: string } | null
+  // BDR assigned (User lookup)
+  BDR_Assigned__c?: string | null
+  BDR_Assigned__r?: { Id: string; Name: string; Email: string } | null
   // Contacts subquery for Gong matching
   Contacts?: { totalSize: number; records: Array<{ Id: string; Email: string | null; Name: string }> } | null
 }
 
-export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterprise'): Promise<SfdcAccount[]> {
+export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterprise_Account_Record'): Promise<SfdcAccount[]> {
   const conn = await getServiceConnection()
   const rtFilter = recordTypeDeveloperName ? `AND RecordType.DeveloperName = '${recordTypeDeveloperName}'` : ''
   let result = await conn.query<SfdcAccount>(`
@@ -257,10 +260,12 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
            Target_Prospecting_Date__c, Date_to_Re_engage__c,
            End_of_competitor_engagement__c, Last_Rep_Communication_Date__c,
            OwnerId, Owner.Id, Owner.Name, Owner.Email,
+           BDR_Assigned__c, BDR_Assigned__r.Id, BDR_Assigned__r.Name, BDR_Assigned__r.Email,
            RecordType.Name, RecordType.DeveloperName,
            (SELECT Id, Email, Name FROM Contacts LIMIT 10)
     FROM Account
     WHERE Account_Stage__c = 'Prospect'
+    AND Target_Prospecting_Date__c != null
     ${rtFilter}
     ORDER BY Name ASC
   `)

@@ -13,6 +13,8 @@ import {
   Building2,
   Settings,
   Save,
+  Workflow,
+  Send,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -27,6 +29,8 @@ interface ProspectingFlag {
   recordTypeName: string | null
   ownerEmail: string
   ownerName: string | null
+  bdrEmail: string | null
+  bdrName: string | null
   prospectingStatus: string | null
   lastRepCommunicationDate: string | null
   targetProspectingDate: string | null
@@ -37,6 +41,11 @@ interface ProspectingFlag {
   gongTotalCalls: number
   daysSinceLastGongCall: number | null
   contactEmails: string[]
+  gongFlowStats: {
+    activeWithOverdue: number
+    activeOnTrack: number
+    completedSinceTarget: number
+  } | null
 }
 
 interface HygieneResult {
@@ -75,14 +84,17 @@ function daysAgoLabel(days: number | null): string | null {
 
 export function ProspectingHygiene() {
   const qc = useQueryClient()
-  const [ownerFilter, setOwnerFilter] = useState('')
+  const [bdrFilter, setBdrFilter] = useState('')
+  const [monthFilter, setMonthFilter] = useState('')          // "YYYY-MM" or ""
+  const [dateCompare, setDateCompare] = useState<'before' | 'after' | ''>('')  // before/after filter mode
+  const [dateFilterValue, setDateFilterValue] = useState('') // ISO date string "YYYY-MM-DD"
   const [staleOpen, setStaleOpen] = useState(true)
   const [shouldPromoteOpen, setShouldPromoteOpen] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [savedSettings, setSavedSettings] = useState(false)
 
   // Local editable state for settings
-  const [recordTypeFilter, setRecordTypeFilter] = useState('Enterprise')
+  const [recordTypeFilter, setRecordTypeFilter] = useState('Enterprise_Account_Record')
   const [staleThresholdDays, setStaleThresholdDays] = useState('14')
   const [recentActivityDays, setRecentActivityDays] = useState('14')
 
@@ -118,6 +130,35 @@ export function ProspectingHygiene() {
     },
   })
 
+  const [lastSentAccountId, setLastSentAccountId] = useState<string | null>(null)
+  const [sendError, setSendError] = useState<string | null>(null)
+
+  const notifyBdr = useMutation({
+    mutationFn: (flag: ProspectingFlag) =>
+      api.post('/accounts/notify-bdr', {
+        accountId: flag.accountId,
+        accountName: flag.accountName,
+        flagType: flag.flagType,
+        bdrEmail: flag.bdrEmail,
+        bdrName: flag.bdrName,
+        ownerName: flag.ownerName,
+        prospectingStatus: flag.prospectingStatus,
+        daysSinceLastRepContact: flag.daysSinceLastRepContact,
+        daysSinceLastGongCall: flag.daysSinceLastGongCall,
+        gongTotalCalls: flag.gongTotalCalls,
+        lastRepCommunicationDate: flag.lastRepCommunicationDate,
+        gongLastCallDate: flag.gongLastCallDate,
+        targetProspectingDate: flag.targetProspectingDate,
+      }),
+    onMutate: (flag) => {
+      setLastSentAccountId(flag.accountId)
+      setSendError(null)
+    },
+    onError: (err: { response?: { data?: { error?: string } }; message?: string }) => {
+      setSendError(err.response?.data?.error ?? err.message ?? 'Failed to send')
+    },
+  })
+
   const { data, isFetching, isError, error, refetch, isFetched } = useQuery<HygieneResult>({
     queryKey: ['prospecting-hygiene'],
     queryFn: () => api.get('/accounts/prospecting-hygiene').then((r) => r.data),
@@ -136,20 +177,47 @@ export function ProspectingHygiene() {
     [data]
   )
 
-  const owners = useMemo(() => {
+  const bdrs = useMemo(() => {
     if (!data) return []
-    const ownerMap = new Map<string, string>()
-    for (const f of data.flags) ownerMap.set(f.ownerEmail, f.ownerName ?? f.ownerEmail)
-    return Array.from(ownerMap.entries()).sort((a, b) => a[1].localeCompare(b[1]))
+    const bdrMap = new Map<string, string>()
+    for (const f of data.flags) {
+      if (f.bdrEmail) bdrMap.set(f.bdrEmail, f.bdrName ?? f.bdrEmail)
+    }
+    return Array.from(bdrMap.entries()).sort((a, b) => a[1].localeCompare(b[1]))
   }, [data])
 
-  function applyOwnerFilter(flags: ProspectingFlag[]) {
-    if (!ownerFilter) return flags
-    return flags.filter((f) => f.ownerEmail === ownerFilter)
+  // Unique sorted months (YYYY-MM) from target prospecting dates across all flags
+  const availableMonths = useMemo(() => {
+    if (!data) return []
+    const months = new Set<string>()
+    for (const f of data.flags) {
+      if (f.targetProspectingDate) {
+        months.add(f.targetProspectingDate.slice(0, 7)) // "YYYY-MM"
+      }
+    }
+    return Array.from(months).sort()
+  }, [data])
+
+  function applyFilters(flags: ProspectingFlag[]) {
+    return flags.filter((f) => {
+      if (bdrFilter && f.bdrEmail !== bdrFilter) return false
+      if (monthFilter) {
+        const fm = f.targetProspectingDate?.slice(0, 7) ?? ''
+        if (fm !== monthFilter) return false
+      }
+      if (dateCompare && dateFilterValue) {
+        const target = f.targetProspectingDate ? new Date(f.targetProspectingDate).getTime() : null
+        const threshold = new Date(dateFilterValue).getTime()
+        if (target === null) return false
+        if (dateCompare === 'before' && target >= threshold) return false
+        if (dateCompare === 'after' && target <= threshold) return false
+      }
+      return true
+    })
   }
 
-  const filteredStale = applyOwnerFilter(staleFlags)
-  const filteredShouldPromote = applyOwnerFilter(shouldPromoteFlags)
+  const filteredStale = applyFilters(staleFlags)
+  const filteredShouldPromote = applyFilters(shouldPromoteFlags)
 
   return (
     <div className="p-8 max-w-5xl">
@@ -158,7 +226,7 @@ export function ProspectingHygiene() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-semibold text-gray-900">Prospecting Hygiene</h2>
-          <p className="text-sm text-gray-500 mt-1">Enterprise accounts in Prospect stage</p>
+          <p className="text-sm text-gray-500 mt-1">Enterprise accounts in Prospect stage with a target prospecting date</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -203,7 +271,7 @@ export function ProspectingHygiene() {
                 type="text"
                 value={recordTypeFilter}
                 onChange={(e) => setRecordTypeFilter(e.target.value)}
-                placeholder="Enterprise"
+                placeholder="Enterprise_Account_Record"
                 className="input w-56"
               />
             </div>
@@ -293,6 +361,14 @@ export function ProspectingHygiene() {
         </div>
       )}
 
+      {/* Send error */}
+      {sendError && (
+        <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 flex items-center justify-between">
+          <span><strong>Send failed:</strong> {sendError}</span>
+          <button onClick={() => setSendError(null)} className="text-red-400 hover:text-red-600 text-xs ml-4">Dismiss</button>
+        </div>
+      )}
+
       {/* Empty / not yet scanned */}
       {!isFetching && !data && !isError && (
         <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-sm text-gray-400">
@@ -333,24 +409,80 @@ export function ProspectingHygiene() {
             </div>
           </div>
 
-          {/* Scanned at + owner filter */}
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          {/* Filters + scanned at */}
+          <div className="mb-4 bg-white border border-gray-200 rounded-xl px-4 py-3 space-y-3">
+            <div className="flex items-center gap-4 flex-wrap">
+
+              {/* BDR filter */}
+              {bdrs.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-medium text-gray-500">BDR</span>
+                  <select
+                    value={bdrFilter}
+                    onChange={(e) => setBdrFilter(e.target.value)}
+                    className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700"
+                  >
+                    <option value="">All</option>
+                    {bdrs.map(([email, name]) => (
+                      <option key={email} value={email}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Month filter */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-gray-500">Target month</span>
+                <select
+                  value={monthFilter}
+                  onChange={(e) => setMonthFilter(e.target.value)}
+                  className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700"
+                >
+                  <option value="">All</option>
+                  {availableMonths.map((ym) => {
+                    const [year, month] = ym.split('-')
+                    const label = new Date(Number(year), Number(month) - 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+                    return <option key={ym} value={ym}>{label}</option>
+                  })}
+                </select>
+              </div>
+
+              {/* Before / after date filter */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-gray-500">Target date</span>
+                <select
+                  value={dateCompare}
+                  onChange={(e) => { setDateCompare(e.target.value as 'before' | 'after' | ''); setDateFilterValue('') }}
+                  className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700"
+                >
+                  <option value="">Any</option>
+                  <option value="before">Before</option>
+                  <option value="after">After</option>
+                </select>
+                <input
+                  type="date"
+                  value={dateFilterValue}
+                  onChange={(e) => setDateFilterValue(e.target.value)}
+                  disabled={!dateCompare}
+                  className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+              </div>
+
+              {/* Clear all */}
+              {(bdrFilter || monthFilter || dateCompare || dateFilterValue) && (
+                <button
+                  onClick={() => { setBdrFilter(''); setMonthFilter(''); setDateCompare(''); setDateFilterValue('') }}
+                  className="text-xs text-brand-600 hover:underline ml-auto"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
+
             <p className="text-xs text-gray-400">
               Scanned {new Date(data.scannedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               {' · '}stale: {data.config.staleThresholdDays}d · recent: {data.config.recentActivityDays}d
             </p>
-            {owners.length > 1 && (
-              <select
-                value={ownerFilter}
-                onChange={(e) => setOwnerFilter(e.target.value)}
-                className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700"
-              >
-                <option value="">All owners</option>
-                {owners.map(([email, name]) => (
-                  <option key={email} value={email}>{name}</option>
-                ))}
-              </select>
-            )}
           </div>
 
           {/* Stale Prospecting */}
@@ -374,7 +506,7 @@ export function ProspectingHygiene() {
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No stale prospecting accounts</div>
                 ) : (
                   filteredStale.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={(f) => notifyBdr.mutate(f)} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
                   ))
                 )}
               </div>
@@ -402,7 +534,7 @@ export function ProspectingHygiene() {
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No accounts to promote</div>
                 ) : (
                   filteredShouldPromote.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={(f) => notifyBdr.mutate(f)} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
                   ))
                 )}
               </div>
@@ -422,10 +554,24 @@ export function ProspectingHygiene() {
 
 // ── AccountRow ────────────────────────────────────────────────────────────────
 
-function AccountRow({ flag, sfdcBase }: { flag: ProspectingFlag; sfdcBase: string }) {
+function AccountRow({
+  flag,
+  sfdcBase,
+  onSendToBdr,
+  sendPending,
+  lastSentAccountId,
+}: {
+  flag: ProspectingFlag
+  sfdcBase: string
+  onSendToBdr: (flag: ProspectingFlag) => void
+  sendPending: boolean
+  lastSentAccountId: string | null
+}) {
   const accountLink = `${sfdcBase}/lightning/r/Account/${flag.accountId}/view`
   const visibleEmails = flag.contactEmails.slice(0, 2)
   const extraEmailCount = flag.contactEmails.length - 2
+  const isSending = sendPending && lastSentAccountId === flag.accountId
+  const justSent = !sendPending && lastSentAccountId === flag.accountId
 
   const statusBadgeClass =
     flag.flagType === 'STALE_PROSPECTING'
@@ -458,8 +604,15 @@ function AccountRow({ flag, sfdcBase }: { flag: ProspectingFlag; sfdcBase: strin
             )}
           </div>
 
-          {/* Owner */}
-          <p className="text-xs text-gray-500 mb-2">{flag.ownerName ?? flag.ownerEmail}</p>
+          {/* Owner + BDR */}
+          <div className="flex items-center gap-3 mb-2">
+            <p className="text-xs text-gray-500">AE: {flag.ownerName ?? flag.ownerEmail}</p>
+            {flag.bdrEmail ? (
+              <p className="text-xs text-gray-500">BDR: {flag.bdrName ?? flag.bdrEmail}</p>
+            ) : (
+              <p className="text-xs text-gray-400 italic">No BDR assigned</p>
+            )}
+          </div>
 
           {/* Key dates grid */}
           <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs mb-2">
@@ -469,8 +622,8 @@ function AccountRow({ flag, sfdcBase }: { flag: ProspectingFlag; sfdcBase: strin
             <DateField label="Competitor contract end" value={flag.competitorEndDate} />
           </div>
 
-          {/* Gong + contacts */}
-          <div className="flex items-center gap-4 flex-wrap text-xs">
+          {/* Gong calls + contacts */}
+          <div className="flex items-center gap-4 flex-wrap text-xs mb-1.5">
             <div className="flex items-center gap-1.5">
               <Phone size={11} className="text-gray-400 shrink-0" />
               <span className="text-gray-500">Gong:</span>
@@ -501,8 +654,80 @@ function AccountRow({ flag, sfdcBase }: { flag: ProspectingFlag; sfdcBase: strin
               </div>
             )}
           </div>
+
+          {/* Gong flow enrollment */}
+          <GongFlowStatus stats={flag.gongFlowStats} />
+        </div>
+
+        {/* Send to BDR button */}
+        <div className="shrink-0 pt-0.5">
+          {flag.bdrEmail ? (
+            <button
+              onClick={() => onSendToBdr(flag)}
+              disabled={isSending || justSent}
+              className={clsx(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+                justSent
+                  ? 'bg-green-50 text-green-700 border-green-200'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-200 disabled:opacity-50'
+              )}
+            >
+              {isSending ? (
+                <RefreshCw size={11} className="animate-spin" />
+              ) : (
+                <Send size={11} />
+              )}
+              {justSent ? 'Sent!' : 'Send to BDR'}
+            </button>
+          ) : (
+            <span className="text-xs text-gray-300 px-3 py-1.5">No BDR</span>
+          )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── GongFlowStatus ────────────────────────────────────────────────────────────
+
+function GongFlowStatus({ stats }: { stats: ProspectingFlag['gongFlowStats'] }) {
+  // null = API unavailable — show nothing rather than mislead
+  if (stats === null) return null
+
+  const { activeWithOverdue, activeOnTrack, completedSinceTarget } = stats
+  const totalActive = activeWithOverdue + activeOnTrack
+  const hasAny = totalActive > 0 || completedSinceTarget > 0
+
+  if (!hasAny) {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-gray-400 mt-1">
+        <Workflow size={11} className="shrink-0" />
+        <span>No contacts in Gong flows</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap mt-1">
+      <Workflow size={11} className="text-gray-400 shrink-0" />
+
+      {activeWithOverdue > 0 && (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-red-50 border border-red-200 rounded text-xs text-red-700 font-medium">
+          ⚠ {activeWithOverdue} active · overdue step{activeWithOverdue !== 1 ? 's' : ''}
+        </span>
+      )}
+
+      {activeOnTrack > 0 && (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-700 font-medium">
+          ✓ {activeOnTrack} active · on track
+        </span>
+      )}
+
+      {completedSinceTarget > 0 && (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded text-xs text-gray-600 font-medium">
+          ✓ {completedSinceTarget} completed flow{completedSinceTarget !== 1 ? 's' : ''} since target date
+        </span>
+      )}
     </div>
   )
 }

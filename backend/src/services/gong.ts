@@ -6,6 +6,8 @@ const GONG_BASE = 'https://api.gong.io/v2'
 const CACHE_TTL_SECONDS = 60 * 60 // 1 hour — Gong rate limits: 3 req/s, 10k req/day
 const CACHE_KEY = 'gong:call_index'
 const CACHE_KEY_RAW = 'gong:calls_raw'
+const CACHE_KEY_FLOWS = 'gong:flow_contacts'
+const FLOW_CACHE_TTL_SECONDS = 30 * 60 // 30 min — flow enrollments change less often
 
 // ─── Raw Gong API types ────────────────────────────────────────────────────
 
@@ -60,6 +62,48 @@ interface GongExtensiveResponse {
     currentPageSize: number
     cursor?: string
   }
+}
+
+// ─── Gong Engage flow types ────────────────────────────────────────────────
+
+interface GongFlow {
+  id: string
+  name: string
+  status?: string  // may include 'ACTIVE', 'INACTIVE', etc.
+}
+
+interface GongFlowsResponse {
+  flows: GongFlow[]
+  records?: { totalRecords?: number; cursor?: string }
+}
+
+interface GongFlowContact {
+  emailAddress?: string
+  status?: string           // 'ACTIVE', 'COMPLETED', 'STOPPED', 'BOUNCED', etc.
+  // Gong may use various names for the next step due date
+  nextStepDueDate?: string | null
+  nextTouchpointDate?: string | null
+  dueDate?: string | null
+  scheduledDate?: string | null
+  // Completion timestamp
+  completedAt?: string | null
+  completedDate?: string | null
+  endedAt?: string | null
+}
+
+interface GongFlowContactsResponse {
+  contacts: GongFlowContact[]
+  records?: { cursor?: string }
+}
+
+export interface GongFlowEnrollment {
+  flowId: string
+  flowName: string
+  status: string
+  // When the next step is due (null if none / completed)
+  nextStepDueDate: string | null
+  // When this contact completed the flow (null if still active)
+  completedAt: string | null
 }
 
 // ─── Derived types used by alert evaluators ────────────────────────────────
@@ -281,6 +325,114 @@ export async function buildOpportunityActivityIndex(
 export async function invalidateGongCache(): Promise<void> {
   await redis.del(CACHE_KEY)
   await redis.del(CACHE_KEY_RAW)
+  await redis.del(CACHE_KEY_FLOWS)
+}
+
+// ─── Build the flow contact index ──────────────────────────────────────────
+
+// Returns a map of contact email (lowercase) → active flow enrollments.
+// Returns null if the Gong Engage Flows API is unavailable (plan/permission issue).
+// Results are cached in Redis for 30 minutes.
+export async function buildFlowContactIndex(
+  emailAddresses: string[]
+): Promise<Map<string, GongFlowEnrollment[]> | null> {
+  if (emailAddresses.length === 0) return new Map()
+
+  const normalizedEmails = emailAddresses.map((e) => e.toLowerCase())
+
+  // Check Redis cache
+  const cached = await redis.get(CACHE_KEY_FLOWS)
+  if (cached) {
+    const parsed = JSON.parse(cached) as Array<[string, GongFlowEnrollment[]]>
+    const fullMap = new Map<string, GongFlowEnrollment[]>(parsed)
+    const result = new Map<string, GongFlowEnrollment[]>()
+    for (const email of normalizedEmails) {
+      const enrollments = fullMap.get(email)
+      if (enrollments?.length) result.set(email, enrollments)
+    }
+    return result
+  }
+
+  const client = makeClient()
+
+  try {
+    // Fetch all flows (paginated)
+    const allFlows: GongFlow[] = []
+    let flowCursor: string | undefined
+    do {
+      const res = await client.get<GongFlowsResponse>('/flows', {
+        params: flowCursor ? { cursor: flowCursor } : {},
+      })
+      allFlows.push(...(res.data.flows ?? []))
+      flowCursor = res.data.records?.cursor
+    } while (flowCursor)
+
+    // Build email → active enrollments index
+    const emailToFlows = new Map<string, GongFlowEnrollment[]>()
+
+    for (const flow of allFlows) {
+      try {
+        let contactCursor: string | undefined
+        do {
+          const res = await client.get<GongFlowContactsResponse>(`/flows/${flow.id}/contacts`, {
+            params: contactCursor ? { cursor: contactCursor } : {},
+          })
+          for (const contact of res.data.contacts ?? []) {
+            if (!contact.emailAddress) continue
+            const status = contact.status ?? 'UNKNOWN'
+            const statusUp = status.toUpperCase()
+
+            // Include active enrollments and completed ones (for "completed since target date" metric)
+            const isActive = ['ACTIVE', 'IN_PROGRESS', 'ENROLLED'].includes(statusUp)
+            const isCompleted = statusUp === 'COMPLETED'
+            if (!isActive && !isCompleted) continue
+
+            // Resolve next step due date — Gong may use different field names
+            const nextStepDueDate =
+              contact.nextStepDueDate ?? contact.nextTouchpointDate ?? contact.dueDate ?? contact.scheduledDate ?? null
+
+            // Resolve completion timestamp
+            const completedAt =
+              contact.completedAt ?? contact.completedDate ?? contact.endedAt ?? null
+
+            const email = contact.emailAddress.toLowerCase()
+            if (!emailToFlows.has(email)) emailToFlows.set(email, [])
+            emailToFlows.get(email)!.push({
+              flowId: flow.id,
+              flowName: flow.name,
+              status,
+              nextStepDueDate,
+              completedAt,
+            })
+          }
+          contactCursor = res.data.records?.cursor
+        } while (contactCursor)
+      } catch (err) {
+        // Skip individual flows we can't read (permission/not-found)
+        console.warn(`[Gong] Skipping flow ${flow.id} (${flow.name}):`, String(err))
+      }
+    }
+
+    // Cache the full index
+    await redis.set(
+      CACHE_KEY_FLOWS,
+      JSON.stringify(Array.from(emailToFlows.entries())),
+      'EX',
+      FLOW_CACHE_TTL_SECONDS
+    )
+
+    // Return filtered result for requested emails
+    const result = new Map<string, GongFlowEnrollment[]>()
+    for (const email of normalizedEmails) {
+      const enrollments = emailToFlows.get(email)
+      if (enrollments?.length) result.set(email, enrollments)
+    }
+    return result
+  } catch (err) {
+    // Gong Engage Flows API may not be available on all plans
+    console.error('[Gong] Flows API unavailable:', String(err))
+    return null
+  }
 }
 
 // ─── Build the account activity index ──────────────────────────────────────
