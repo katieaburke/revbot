@@ -1,4 +1,5 @@
 import type { App, BlockAction, ViewSubmitAction } from '@slack/bolt'
+import type { KnownBlock } from '@slack/web-api'
 import { db } from '../db'
 import { updateCloseDate, updateMeddpiccFields, updateStage, updateOpportunity } from '../services/salesforce'
 import { config } from '../config'
@@ -620,6 +621,210 @@ export function registerHandlers(app: App) {
   // ── Open in Salesforce (URL button — just needs ack) ──────────────────────
 
   app.action('open_sfdc', async ({ ack }) => { await ack() })
+
+  // ── Update Prospecting Fields (BDR hygiene nudge) ──────────────────────────
+
+  const PROSPECTING_STATUSES = ['Planned', 'Prospecting', 'Paused', 'Nurturing', 'Success']
+  const PAUSE_REASONS = ['Budget constraints', 'Evaluating competitors', 'No budget cycle', 'Not a priority', 'Timing not right', 'Not ICP']
+
+  app.action('update_status_sfdc', async ({ ack, body, client }) => {
+    await ack()
+    const action = (body as BlockAction).actions[0] as { value: string }
+    const { accountId, accountName, prospectingStatus, prospectingPauseReason, reEngageDate, competitor, competitorEndDate } = JSON.parse(action.value) as {
+      accountId: string
+      accountName: string
+      prospectingStatus: string | null
+      prospectingPauseReason: string | null
+      reEngageDate: string | null
+      competitor: string | null
+      competitorEndDate: string | null
+    }
+
+    // channel + message ts so we can update the original message after submit
+    const channel = (body as { channel?: { id?: string } }).channel?.id
+    const messageTs = (body as { message?: { ts?: string } }).message?.ts
+
+    const statusOptions = PROSPECTING_STATUSES.map((s) => ({
+      text: { type: 'plain_text' as const, text: s },
+      value: s,
+    }))
+    const pauseOptions = PAUSE_REASONS.map((r) => ({
+      text: { type: 'plain_text' as const, text: r },
+      value: r,
+    }))
+
+    await client.views.open({
+      trigger_id: (body as BlockAction).trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'submit_prospecting_update',
+        private_metadata: JSON.stringify({ accountId, accountName, slackUserId: body.user.id, channel, messageTs }),
+        title: { type: 'plain_text', text: 'Update Account' },
+        submit: { type: 'plain_text', text: 'Save to Salesforce' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: `Updating prospecting fields for *${accountName}*` },
+          },
+          {
+            type: 'input',
+            block_id: 'prospecting_status',
+            label: { type: 'plain_text', text: 'Prospecting Status' },
+            element: {
+              type: 'static_select',
+              action_id: 'value',
+              ...(prospectingStatus ? { initial_option: { text: { type: 'plain_text' as const, text: prospectingStatus }, value: prospectingStatus } } : {}),
+              options: statusOptions,
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'pause_reason',
+            label: { type: 'plain_text', text: 'Hold reason' },
+            hint: { type: 'plain_text', text: 'Set this if moving to Paused' },
+            optional: true,
+            element: {
+              type: 'static_select',
+              action_id: 'value',
+              placeholder: { type: 'plain_text', text: 'Select a reason' },
+              ...(prospectingPauseReason ? { initial_option: { text: { type: 'plain_text' as const, text: prospectingPauseReason }, value: prospectingPauseReason } } : {}),
+              options: pauseOptions,
+            },
+          },
+          {
+            type: 'input',
+            block_id: 're_engage_date',
+            label: { type: 'plain_text', text: 'Date to re-engage' },
+            hint: { type: 'plain_text', text: 'Set if pausing or deferring outreach' },
+            optional: true,
+            element: {
+              type: 'datepicker',
+              action_id: 'date_value',
+              placeholder: { type: 'plain_text', text: 'Select a date' },
+              ...(reEngageDate ? { initial_date: reEngageDate } : {}),
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'competitor',
+            label: { type: 'plain_text', text: 'Incumbent vendor' },
+            optional: true,
+            element: {
+              type: 'plain_text_input',
+              action_id: 'value',
+              placeholder: { type: 'plain_text', text: 'e.g. Salesforce, HubSpot' },
+              ...(competitor ? { initial_value: competitor } : {}),
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'competitor_end_date',
+            label: { type: 'plain_text', text: 'Vendor contract end date' },
+            optional: true,
+            element: {
+              type: 'datepicker',
+              action_id: 'date_value',
+              placeholder: { type: 'plain_text', text: 'Select a date' },
+              ...(competitorEndDate ? { initial_date: competitorEndDate } : {}),
+            },
+          },
+        ],
+      },
+    })
+  })
+
+  app.view('submit_prospecting_update', async ({ ack, view, client }) => {
+    await ack()
+    const { accountId, accountName, slackUserId, channel, messageTs } = JSON.parse(view.private_metadata) as {
+      accountId: string
+      accountName: string
+      slackUserId: string
+      channel: string | null
+      messageTs: string | null
+    }
+
+    const status = view.state.values.prospecting_status?.value?.selected_option?.value ?? null
+    const pauseReason = view.state.values.pause_reason?.value?.selected_option?.value ?? null
+    const reEngageDate = view.state.values.re_engage_date?.date_value?.selected_date ?? null
+    const competitor = view.state.values.competitor?.value?.value?.trim() || null
+    const competitorEndDate = view.state.values.competitor_end_date?.date_value?.selected_date ?? null
+
+    try {
+      const { updateProspectAccount } = await import('../services/salesforce')
+
+      await updateProspectAccount(accountId, {
+        ...(status !== null ? { Prospecting_Status__c: status } : {}),
+        // Clear hold reason if not paused, set it if paused
+        ...(status && status !== 'Paused' ? { Prospecting_Pause_Reason__c: null } : {}),
+        ...(status === 'Paused' && pauseReason ? { Prospecting_Pause_Reason__c: pauseReason } : {}),
+        ...(reEngageDate !== null ? { Date_to_Re_engage__c: reEngageDate } : {}),
+        ...(competitor !== null ? { Competitor__c: competitor } : {}),
+        ...(competitorEndDate !== null ? { End_of_competitor_engagement__c: competitorEndDate } : {}),
+      })
+
+      // Build confirmation summary
+      const updatedLines: string[] = []
+      if (status) updatedLines.push(`• *Status* → ${status}`)
+      if (status === 'Paused' && pauseReason) updatedLines.push(`• *Hold reason* → ${pauseReason}`)
+      if (reEngageDate) updatedLines.push(`• *Date to re-engage* → ${reEngageDate}`)
+      if (competitor) updatedLines.push(`• *Incumbent vendor* → ${competitor}`)
+      if (competitorEndDate) updatedLines.push(`• *Vendor contract end* → ${competitorEndDate}`)
+
+      await client.chat.postMessage({
+        channel: slackUserId,
+        text: `✅ *${accountName}* updated in Salesforce`,
+        blocks: [
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: `✅ *${accountName}* updated in Salesforce:\n${updatedLines.join('\n')}` },
+          },
+        ],
+      })
+
+      // Update original nudge message to reflect it's been actioned
+      if (channel && messageTs) {
+        try {
+          const updatedBySlackUser = await client.users.info({ user: slackUserId })
+          const updatedByName = (updatedBySlackUser.user as { real_name?: string })?.real_name ?? 'BDR'
+          const updatedAt = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+          // Fetch the original message blocks and append an "Updated" context block
+          const history = await client.conversations.history({
+            channel,
+            latest: messageTs,
+            inclusive: true,
+            limit: 1,
+          })
+          const originalMsg = history.messages?.[0]
+          if (originalMsg?.blocks) {
+            // Replace the actions block with a "done" context block
+            const updatedBlocks = (originalMsg.blocks as KnownBlock[]).map((b) =>
+              b.type === 'actions'
+                ? {
+                    type: 'context' as const,
+                    elements: [{ type: 'mrkdwn' as const, text: `✅ Updated by *${updatedByName}* · ${updatedAt}` }],
+                  }
+                : b
+            )
+            await client.chat.update({
+              channel,
+              ts: messageTs,
+              blocks: updatedBlocks,
+              text: `Updated by ${updatedByName}`,
+            })
+          }
+        } catch {
+          // Non-fatal — message update failed but SFDC write succeeded
+        }
+      }
+    } catch (err) {
+      await client.chat.postMessage({
+        channel: slackUserId,
+        text: `❌ Failed to update Salesforce: ${(err as Error).message}`,
+      })
+    }
+  })
 
   // ── Log Activity (for stalled) ─────────────────────────────────────────────
 

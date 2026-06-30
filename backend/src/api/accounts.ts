@@ -168,10 +168,16 @@ router.post('/notify-bdr', async (req, res) => {
       elements: [
         {
           type: 'button',
-          text: { type: 'plain_text', text: 'Update in Salesforce →', emoji: true },
-          url: accountUrl,
+          text: { type: 'plain_text', text: 'Update Fields →', emoji: true },
           action_id: 'update_status_sfdc',
+          value: JSON.stringify({ accountId, accountName, prospectingStatus, prospectingPauseReason, reEngageDate, competitor, competitorEndDate }),
           style: 'primary',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Open in Salesforce', emoji: true },
+          url: accountUrl,
+          action_id: 'open_sfdc',
         },
       ],
     },

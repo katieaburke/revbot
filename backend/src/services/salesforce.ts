@@ -242,6 +242,7 @@ export interface SfdcAccount {
   Target_Prospecting_Date__c: string | null
   Date_to_Re_engage__c: string | null
   End_of_competitor_engagement__c: string | null
+  Competitor__c: string | null
   Last_Rep_Communication_Date__c: string | null
   OwnerId: string
   Owner: { Id: string; Name: string; Email: string }
@@ -259,7 +260,7 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
   let result = await conn.query<SfdcAccount>(`
     SELECT Id, Name, Account_Stage__c, Prospecting_Status__c, Prospecting_Pause_Reason__c,
            Target_Prospecting_Date__c, Date_to_Re_engage__c,
-           End_of_competitor_engagement__c, Last_Rep_Communication_Date__c,
+           End_of_competitor_engagement__c, Competitor__c, Last_Rep_Communication_Date__c,
            OwnerId, Owner.Id, Owner.Name, Owner.Email,
            BDR_Assigned__c, BDR_Assigned__r.Id, BDR_Assigned__r.Name, BDR_Assigned__r.Email,
            RecordType.Name, RecordType.DeveloperName,
@@ -286,6 +287,9 @@ export async function updateProspectAccount(
     Prospecting_Status__c: string | null
     Target_Prospecting_Date__c: string | null
     Prospecting_Pause_Reason__c: string | null
+    Date_to_Re_engage__c: string | null
+    Competitor__c: string | null
+    End_of_competitor_engagement__c: string | null
   }>
 ): Promise<void> {
   const conn = await getServiceConnection()
