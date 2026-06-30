@@ -23,7 +23,7 @@ import clsx from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type ProspectingFlagType = 'STALE_PROSPECTING' | 'SHOULD_BE_PROSPECTING'
+type ProspectingFlagType = 'STALE_PROSPECTING' | 'SHOULD_BE_PROSPECTING' | 'STALE_TARGET_DATE'
 
 interface ProspectingFlag {
   flagType: ProspectingFlagType
@@ -120,6 +120,7 @@ export function ProspectingHygiene() {
   const [dateFilterValue, setDateFilterValue] = useState('') // ISO date string "YYYY-MM-DD"
   const [staleOpen, setStaleOpen] = useState(true)
   const [shouldPromoteOpen, setShouldPromoteOpen] = useState(true)
+  const [staleTargetOpen, setStaleTargetOpen] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [savedSettings, setSavedSettings] = useState(false)
 
@@ -224,6 +225,10 @@ export function ProspectingHygiene() {
     () => (data?.flags ?? []).filter((f) => f.flagType === 'SHOULD_BE_PROSPECTING'),
     [data]
   )
+  const staleTargetFlags = useMemo(
+    () => (data?.flags ?? []).filter((f) => f.flagType === 'STALE_TARGET_DATE'),
+    [data]
+  )
 
   const bdrs = useMemo(() => {
     if (!data) return []
@@ -266,6 +271,7 @@ export function ProspectingHygiene() {
 
   const filteredStale = applyFilters(staleFlags)
   const filteredShouldPromote = applyFilters(shouldPromoteFlags)
+  const filteredStaleTarget = applyFilters(staleTargetFlags)
 
   return (
     <div className="p-8 max-w-5xl">
@@ -589,6 +595,32 @@ export function ProspectingHygiene() {
             )}
           </div>
 
+          {/* Stale Target Date */}
+          {filteredStaleTarget.length > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mt-4">
+              <button
+                onClick={() => setStaleTargetOpen((o) => !o)}
+                className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 text-left border-b border-gray-100"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                    {filteredStaleTarget.length}
+                  </span>
+                  <span className="text-sm font-semibold text-gray-800">Target Date Needs Update</span>
+                  <span className="text-xs text-gray-400">Active outreach but target prospecting date is older than the 1st of last month</span>
+                </div>
+                {staleTargetOpen ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+              </button>
+              {staleTargetOpen && (
+                <div className="divide-y divide-gray-100">
+                  {filteredStaleTarget.map((flag) => (
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={setPreviewFlag} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} nudgeEntry={data.nudgeLog?.[flag.accountId] ?? null} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {isFetched && data.flags.length === 0 && (
             <div className="mt-4 px-4 py-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700 text-center">
               ✓ No hygiene issues found — all accounts look good!
@@ -687,6 +719,8 @@ function AccountRow({
   const statusBadgeClass =
     flag.flagType === 'STALE_PROSPECTING'
       ? 'bg-red-50 text-red-700'
+      : flag.flagType === 'STALE_TARGET_DATE'
+      ? 'bg-amber-50 text-amber-700'
       : 'bg-blue-50 text-blue-700'
 
   return (
@@ -897,24 +931,36 @@ function BdrMessagePreview({
 }) {
   const bdrFirstName = flag.bdrName?.split(' ')[0] ?? 'there'
   const isStale = flag.flagType === 'STALE_PROSPECTING'
+  const isStaleTarget = flag.flagType === 'STALE_TARGET_DATE'
   const staleDays = flag.daysSinceLastRepContact ?? flag.daysSinceLastGongCall
 
   const headerText = isStale
     ? `👋 Hey ${bdrFirstName}, *${flag.accountName}* has gone stale in prospecting`
+    : isStaleTarget
+    ? `👋 Hey ${bdrFirstName}, *${flag.accountName}*'s target date needs updating`
     : `👋 Hey ${bdrFirstName}, *${flag.accountName}* looks ready to move to Prospecting`
 
   const situationText = isStale
     ? staleDays !== null
       ? `This account has been in *Prospecting* status for *${staleDays} days* with no rep communication or Gong call activity.`
       : `This account has been in *Prospecting* status with no recent activity on record.`
+    : isStaleTarget
+    ? `This account has recent outreach activity${flag.gongTotalCalls > 0 ? ` (${flag.gongTotalCalls} Gong call${flag.gongTotalCalls !== 1 ? 's' : ''}, last ${fmtDate(flag.gongLastCallDate)})` : ''} but the target prospecting date (*${fmtDate(flag.targetProspectingDate)}*) hasn't been updated.`
     : `This account is in *Planned* status but has had recent outreach activity${flag.gongTotalCalls > 0 ? ` (${flag.gongTotalCalls} Gong call${flag.gongTotalCalls !== 1 ? 's' : ''}, last ${fmtDate(flag.gongLastCallDate)})` : ''}.`
 
-  const updateLines = [
-    '• *Prospecting Status* — move to Prospecting, Paused, or Nurturing as appropriate',
-    '• *Date to re-engage* — set if pausing or deferring',
-    '• *Hold reason* — set if pausing',
-    '• *Incumbent vendor* & *contract end date* — fill in if you\'ve identified competitive info',
-  ]
+  const updateLines = isStaleTarget
+    ? [
+        '• *Target prospecting date* — update to reflect your current timeline',
+        '• *Prospecting Status* — update if the status has changed',
+        '• *Date to re-engage* — set if pausing or deferring',
+        '• *Incumbent vendor* & *contract end date* — fill in if you\'ve identified competitive info',
+      ]
+    : [
+        '• *Prospecting Status* — move to Prospecting, Paused, or Nurturing as appropriate',
+        '• *Date to re-engage* — set if pausing or deferring',
+        '• *Hold reason* — set if pausing',
+        '• *Incumbent vendor* & *contract end date* — fill in if you\'ve identified competitive info',
+      ]
 
   const currentFields: { label: string; value: string }[] = []
   if (flag.lastRepCommunicationDate) currentFields.push({ label: 'Last rep contact', value: `${fmtDate(flag.lastRepCommunicationDate)}${flag.daysSinceLastRepContact !== null ? ` (${flag.daysSinceLastRepContact}d ago)` : ''}` })

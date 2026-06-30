@@ -127,18 +127,28 @@ router.post('/notify-bdr', async (req, res) => {
     situationText = staleDays !== null
       ? `This account has been in *Prospecting* status for *${staleDays} days* with no rep communication or Gong call activity.`
       : `This account has been in *Prospecting* status with no recent activity on record.`
+  } else if (flagType === 'STALE_TARGET_DATE') {
+    headerText = `👋 Hey ${bdrFirstName}, *${accountName}*'s target date needs updating`
+    situationText = `This account has recent outreach activity${gongTotalCalls > 0 ? ` (${gongTotalCalls} Gong call${gongTotalCalls !== 1 ? 's' : ''}, last ${fmtDate(gongLastCallDate)})` : ''} but the target prospecting date (*${fmtDate(targetProspectingDate)}*) hasn't been updated.`
   } else {
     headerText = `👋 Hey ${bdrFirstName}, *${accountName}* looks ready to move to Prospecting`
     situationText = `This account is in *Planned* status but has had recent outreach activity${gongTotalCalls > 0 ? ` (${gongTotalCalls} Gong call${gongTotalCalls !== 1 ? 's' : ''}, last ${fmtDate(gongLastCallDate)})` : ''}.`
   }
 
   // ── What to update ──────────────────────────────────────────────────────────
-  const updateLines = [
-    `• *Prospecting Status* — move to Prospecting, Paused, or Nurturing as appropriate`,
-    `• *Date to re-engage* — set if pausing or deferring`,
-    `• *Hold reason* — set if pausing`,
-    `• *Incumbent vendor* & *contract end date* — fill in if you've identified competitive info`,
-  ]
+  const updateLines = flagType === 'STALE_TARGET_DATE'
+    ? [
+        `• *Target prospecting date* — update to reflect your current timeline`,
+        `• *Prospecting Status* — update if the status has changed`,
+        `• *Date to re-engage* — set if pausing or deferring`,
+        `• *Incumbent vendor* & *contract end date* — fill in if you've identified competitive info`,
+      ]
+    : [
+        `• *Prospecting Status* — move to Prospecting, Paused, or Nurturing as appropriate`,
+        `• *Date to re-engage* — set if pausing or deferring`,
+        `• *Hold reason* — set if pausing`,
+        `• *Incumbent vendor* & *contract end date* — fill in if you've identified competitive info`,
+      ]
   const updateText = `Please update the following in Salesforce:\n${updateLines.join('\n')}`
 
   // ── Current values (what we already know) ──────────────────────────────────

@@ -1,7 +1,7 @@
 import type { SfdcAccount } from '../services/salesforce'
 import type { GongAccountActivity, GongFlowEnrollment } from '../services/gong'
 
-export type ProspectingFlagType = 'STALE_PROSPECTING' | 'SHOULD_BE_PROSPECTING'
+export type ProspectingFlagType = 'STALE_PROSPECTING' | 'SHOULD_BE_PROSPECTING' | 'STALE_TARGET_DATE'
 
 export interface ProspectingFlag {
   flagType: ProspectingFlagType
@@ -18,6 +18,7 @@ export interface ProspectingFlag {
   targetProspectingDate: string | null
   reEngageDate: string | null
   competitorEndDate: string | null
+  competitor: string | null
   daysSinceLastRepContact: number | null
   gongLastCallDate: string | null
   gongTotalCalls: number
@@ -126,6 +127,7 @@ export function evaluateProspectingHygiene(
       targetProspectingDate: acct.Target_Prospecting_Date__c ?? null,
       reEngageDate: acct.Date_to_Re_engage__c ?? null,
       competitorEndDate: acct.End_of_competitor_engagement__c ?? null,
+      competitor: acct.Competitor__c ?? null,
       daysSinceLastRepContact,
       gongLastCallDate,
       gongTotalCalls: activity?.totalCalls ?? 0,
@@ -155,6 +157,28 @@ export function evaluateProspectingHygiene(
       const targetDateIsFuture = targetDate !== null && targetDate > now
       if (hasAnyRecentActivity && !reEngageIsFuture && !targetDateIsFuture) {
         flags.push({ ...base, flagType: 'SHOULD_BE_PROSPECTING' })
+      }
+    }
+
+    // Flag 3: Has recent activity but target prospecting date is before the 1st of last month
+    // i.e. they're actively working the account but haven't updated the target date in 30+ days
+    {
+      const hasAnyRecentActivity = hasRecentRepContact || hasRecentGongCall
+      const nowDate = new Date(now)
+      const firstOfPrevMonth = new Date(nowDate.getFullYear(), nowDate.getMonth() - 1, 1)
+      const targetDateMs = acct.Target_Prospecting_Date__c
+        ? new Date(acct.Target_Prospecting_Date__c).getTime()
+        : null
+      const targetIsStale = targetDateMs !== null && targetDateMs < firstOfPrevMonth.getTime()
+
+      // Only flag active statuses — skip Paused/Nurturing/Success
+      const isActiveStatus = status === 'Prospecting' || status === 'Planned'
+
+      // Don't double-flag an account already caught by Flag 1 (stale prospecting)
+      const alreadyStale = status === 'Prospecting' && !(hasRecentRepContact || hasRecentGongCall)
+
+      if (hasAnyRecentActivity && targetIsStale && isActiveStatus && !alreadyStale) {
+        flags.push({ ...base, flagType: 'STALE_TARGET_DATE' })
       }
     }
   }
