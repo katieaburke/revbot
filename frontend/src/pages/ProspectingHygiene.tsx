@@ -53,15 +53,37 @@ interface ProspectingFlag {
   } | null
 }
 
+interface NudgeEntry {
+  sentAt: string
+  bdrEmail: string
+  flagType: string
+}
+
 interface HygieneResult {
   scannedAt: string
   totalAccounts: number
   flags: ProspectingFlag[]
+  nudgeLog: Record<string, NudgeEntry>
   config: {
     recordTypeFilter: string
     staleThresholdDays: number
     recentActivityDays: number
   }
+}
+
+function businessDaysSince(isoDate: string): number {
+  const from = new Date(isoDate)
+  const now = new Date()
+  let count = 0
+  const cursor = new Date(from)
+  cursor.setHours(0, 0, 0, 0)
+  cursor.setDate(cursor.getDate() + 1)
+  while (cursor <= now) {
+    const day = cursor.getDay()
+    if (day !== 0 && day !== 6) count++
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return count
 }
 
 interface AppSettings {
@@ -166,6 +188,19 @@ export function ProspectingHygiene() {
     onMutate: (flag) => {
       setLastSentAccountId(flag.accountId)
       setSendError(null)
+    },
+    onSuccess: (_data, flag) => {
+      // Optimistically write nudge log into cache so cooldown kicks in immediately
+      qc.setQueryData<HygieneResult>(['prospecting-hygiene'], (old) => {
+        if (!old) return old
+        return {
+          ...old,
+          nudgeLog: {
+            ...old.nudgeLog,
+            [flag.accountId]: { sentAt: new Date().toISOString(), bdrEmail: flag.bdrEmail ?? '', flagType: flag.flagType },
+          },
+        }
+      })
     },
     onError: (err: { response?: { data?: { error?: string } }; message?: string }) => {
       setSendError(err.response?.data?.error ?? err.message ?? 'Failed to send')
@@ -519,7 +554,7 @@ export function ProspectingHygiene() {
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No stale prospecting accounts</div>
                 ) : (
                   filteredStale.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={setPreviewFlag} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={setPreviewFlag} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} nudgeEntry={data.nudgeLog?.[flag.accountId] ?? null} />
                   ))
                 )}
               </div>
@@ -547,7 +582,7 @@ export function ProspectingHygiene() {
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No accounts to promote</div>
                 ) : (
                   filteredShouldPromote.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={setPreviewFlag} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} onSendToBdr={setPreviewFlag} sendPending={notifyBdr.isPending} lastSentAccountId={lastSentAccountId} nudgeEntry={data.nudgeLog?.[flag.accountId] ?? null} />
                   ))
                 )}
               </div>
@@ -598,12 +633,14 @@ function AccountRow({
   onSendToBdr,
   sendPending,
   lastSentAccountId,
+  nudgeEntry,
 }: {
   flag: ProspectingFlag
   sfdcBase: string
   onSendToBdr: (flag: ProspectingFlag) => void
   sendPending: boolean
   lastSentAccountId: string | null
+  nudgeEntry: NudgeEntry | null
 }) {
   const qc = useQueryClient()
   const [editMode, setEditMode] = useState(false)
@@ -644,6 +681,8 @@ function AccountRow({
   const extraEmailCount = flag.contactEmails.length - 2
   const isSending = sendPending && lastSentAccountId === flag.accountId
   const justSent = !sendPending && lastSentAccountId === flag.accountId
+  const nudgeBdSince = nudgeEntry ? businessDaysSince(nudgeEntry.sentAt) : null
+  const inCooldown = nudgeBdSince !== null && nudgeBdSince < 3
 
   const statusBadgeClass =
     flag.flagType === 'STALE_PROSPECTING'
@@ -795,25 +834,43 @@ function AccountRow({
         </div>
 
         {/* Send to BDR button */}
-        <div className="shrink-0 pt-0.5">
+        <div className="shrink-0 pt-0.5 flex flex-col items-end gap-1">
           {flag.bdrEmail ? (
-            <button
-              onClick={() => onSendToBdr(flag)}
-              disabled={isSending || justSent}
-              className={clsx(
-                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
-                justSent
-                  ? 'bg-green-50 text-green-700 border-green-200'
-                  : 'bg-white text-gray-600 border-gray-200 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-200 disabled:opacity-50'
+            <>
+              <button
+                onClick={() => onSendToBdr(flag)}
+                disabled={isSending || justSent || inCooldown}
+                title={inCooldown ? `Cooldown active — sent ${nudgeBdSince} business day${nudgeBdSince === 1 ? '' : 's'} ago (3 bd cooldown)` : undefined}
+                className={clsx(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+                  justSent
+                    ? 'bg-green-50 text-green-700 border-green-200'
+                    : inCooldown
+                    ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-200 disabled:opacity-50'
+                )}
+              >
+                {isSending ? (
+                  <RefreshCw size={11} className="animate-spin" />
+                ) : (
+                  <Send size={11} />
+                )}
+                {justSent ? 'Sent!' : 'Send to BDR'}
+              </button>
+              {/* Last sent / cooldown badge */}
+              {nudgeEntry && (
+                <span className={clsx(
+                  'text-[10px] font-medium px-1.5 py-0.5 rounded-full',
+                  inCooldown
+                    ? 'bg-blue-50 text-blue-500'
+                    : 'bg-gray-100 text-gray-400'
+                )}>
+                  {inCooldown
+                    ? `cooldown · ${nudgeBdSince} bd ago`
+                    : `sent ${nudgeBdSince! >= 1 ? `${nudgeBdSince} bd ago` : 'today'}`}
+                </span>
               )}
-            >
-              {isSending ? (
-                <RefreshCw size={11} className="animate-spin" />
-              ) : (
-                <Send size={11} />
-              )}
-              {justSent ? 'Sent!' : 'Send to BDR'}
-            </button>
+            </>
           ) : (
             <span className="text-xs text-gray-300 px-3 py-1.5">No BDR</span>
           )}

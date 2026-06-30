@@ -39,10 +39,21 @@ router.get('/prospecting-hygiene', async (_req, res) => {
 
     const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowIndex)
 
+    // Load nudge log for all accounts so the UI can show last-sent + cooldown state
+    const nudgeSettings = await db.appSetting.findMany({
+      where: { key: { startsWith: 'bdrNudge:last:' } },
+    })
+    const nudgeLog: Record<string, { sentAt: string; bdrEmail: string; flagType: string }> = {}
+    for (const s of nudgeSettings) {
+      const accountId = s.key.replace('bdrNudge:last:', '')
+      try { nudgeLog[accountId] = JSON.parse(s.value) } catch { /* skip malformed */ }
+    }
+
     res.json({
       scannedAt: new Date().toISOString(),
       totalAccounts: accounts.length,
       flags,
+      nudgeLog,
       config: { recordTypeFilter, staleThresholdDays, recentActivityDays },
     })
   } catch (err) {
@@ -58,7 +69,8 @@ router.post('/notify-bdr', async (req, res) => {
     accountId, accountName, flagType, bdrEmail, bdrName, ownerName,
     prospectingStatus, prospectingPauseReason,
     daysSinceLastRepContact, daysSinceLastGongCall, gongTotalCalls,
-    lastRepCommunicationDate, gongLastCallDate, targetProspectingDate, reEngageDate,
+    lastRepCommunicationDate, gongLastCallDate, targetProspectingDate,
+    reEngageDate, competitorEndDate, competitor,
   } = req.body as {
     accountId: string
     accountName: string
@@ -75,6 +87,8 @@ router.post('/notify-bdr', async (req, res) => {
     gongLastCallDate: string | null
     targetProspectingDate: string | null
     reEngageDate: string | null
+    competitorEndDate: string | null
+    competitor: string | null
   }
 
   if (!bdrEmail) {
@@ -90,7 +104,6 @@ router.post('/notify-bdr', async (req, res) => {
   const accountUrl = `${sfdcInstanceUrl.replace(/\/$/, '')}/lightning/r/Account/${accountId}/view`
   const bdrFirstName = bdrName?.split(' ')[0] ?? 'there'
 
-  // SFDC date-only fields are YYYY-MM-DD — format without UTC conversion
   function fmtDate(iso: string | null): string {
     if (!iso) return '—'
     const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(iso + 'T12:00:00') : new Date(iso)
@@ -104,44 +117,58 @@ router.post('/notify-bdr', async (req, res) => {
     return ` (${days} days ago)`
   }
 
+  // ── Header & situation summary ──────────────────────────────────────────────
   let headerText: string
-  let bodyText: string
+  let situationText: string
 
   if (flagType === 'STALE_PROSPECTING') {
     const staleDays = daysSinceLastRepContact ?? daysSinceLastGongCall
     headerText = `👋 Hey ${bdrFirstName}, *${accountName}* has gone stale in prospecting`
-    bodyText = staleDays !== null
-      ? `This account has been in *Prospecting* status for *${staleDays} days* without any rep communication or Gong call activity. Could you resume outreach or update the status?`
-      : `This account has been in *Prospecting* status with no recent rep communication or Gong calls. Could you resume outreach or update the status?`
+    situationText = staleDays !== null
+      ? `This account has been in *Prospecting* status for *${staleDays} days* with no rep communication or Gong call activity.`
+      : `This account has been in *Prospecting* status with no recent activity on record.`
   } else {
     headerText = `👋 Hey ${bdrFirstName}, *${accountName}* looks ready to move to Prospecting`
-    bodyText = `This account is in *Planned* status but has had recent activity${gongTotalCalls > 0 ? ` (${gongTotalCalls} Gong call${gongTotalCalls !== 1 ? 's' : ''}, last ${fmtDate(gongLastCallDate)})` : ''}. Should the status be updated to Prospecting?`
+    situationText = `This account is in *Planned* status but has had recent outreach activity${gongTotalCalls > 0 ? ` (${gongTotalCalls} Gong call${gongTotalCalls !== 1 ? 's' : ''}, last ${fmtDate(gongLastCallDate)})` : ''}.`
   }
 
-  const fields: { type: 'mrkdwn'; text: string }[] = []
-  if (lastRepCommunicationDate) fields.push({ type: 'mrkdwn', text: `*Last rep contact*\n${fmtDate(lastRepCommunicationDate)}${daysStr(daysSinceLastRepContact)}` })
-  if (gongLastCallDate) fields.push({ type: 'mrkdwn', text: `*Last Gong call*\n${fmtDate(gongLastCallDate)}${daysStr(daysSinceLastGongCall)}` })
-  if (targetProspectingDate) fields.push({ type: 'mrkdwn', text: `*Target prospecting date*\n${fmtDate(targetProspectingDate)}` })
-  if (reEngageDate) fields.push({ type: 'mrkdwn', text: `*Date to re-engage*\n${fmtDate(reEngageDate)}` })
-  if (prospectingPauseReason) fields.push({ type: 'mrkdwn', text: `*Hold reason*\n${prospectingPauseReason}` })
-  if (ownerName) fields.push({ type: 'mrkdwn', text: `*Account owner*\n${ownerName}` })
+  // ── What to update ──────────────────────────────────────────────────────────
+  const updateLines = [
+    `• *Prospecting Status* — move to Prospecting, Paused, or Nurturing as appropriate`,
+    `• *Date to re-engage* — set if pausing or deferring`,
+    `• *Hold reason* — set if pausing`,
+    `• *Incumbent vendor* & *contract end date* — fill in if you've identified competitive info`,
+  ]
+  const updateText = `Please update the following in Salesforce:\n${updateLines.join('\n')}`
+
+  // ── Current values (what we already know) ──────────────────────────────────
+  const currentFields: { type: 'mrkdwn'; text: string }[] = []
+  if (lastRepCommunicationDate) currentFields.push({ type: 'mrkdwn', text: `*Last rep contact*\n${fmtDate(lastRepCommunicationDate)}${daysStr(daysSinceLastRepContact)}` })
+  if (gongLastCallDate) currentFields.push({ type: 'mrkdwn', text: `*Last Gong call*\n${fmtDate(gongLastCallDate)}${daysStr(daysSinceLastGongCall)}` })
+  if (targetProspectingDate) currentFields.push({ type: 'mrkdwn', text: `*Target prospecting date*\n${fmtDate(targetProspectingDate)}` })
+  if (reEngageDate) currentFields.push({ type: 'mrkdwn', text: `*Date to re-engage*\n${fmtDate(reEngageDate)}` })
+  if (prospectingPauseReason) currentFields.push({ type: 'mrkdwn', text: `*Hold reason*\n${prospectingPauseReason}` })
+  if (competitor) currentFields.push({ type: 'mrkdwn', text: `*Incumbent vendor*\n${competitor}` })
+  if (competitorEndDate) currentFields.push({ type: 'mrkdwn', text: `*Vendor contract end*\n${fmtDate(competitorEndDate)}` })
+  if (ownerName) currentFields.push({ type: 'mrkdwn', text: `*Account owner*\n${ownerName}` })
 
   const blocks: KnownBlock[] = [
     { type: 'section', text: { type: 'mrkdwn', text: headerText } },
-    { type: 'section', text: { type: 'mrkdwn', text: bodyText } },
-    ...(fields.length > 0 ? [{ type: 'section' as const, fields }] : []),
+    { type: 'section', text: { type: 'mrkdwn', text: situationText } },
+    { type: 'section', text: { type: 'mrkdwn', text: updateText } },
+    ...(currentFields.length > 0
+      ? [
+          { type: 'divider' as const },
+          { type: 'context' as const, elements: [{ type: 'mrkdwn' as const, text: '*Current values on record*' }] },
+          { type: 'section' as const, fields: currentFields },
+        ]
+      : []),
     {
       type: 'actions',
       elements: [
         {
           type: 'button',
-          text: { type: 'plain_text', text: 'View in Salesforce →', emoji: true },
-          url: accountUrl,
-          action_id: 'view_account_sfdc',
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'Update status →', emoji: true },
+          text: { type: 'plain_text', text: 'Update in Salesforce →', emoji: true },
           url: accountUrl,
           action_id: 'update_status_sfdc',
           style: 'primary',
