@@ -145,9 +145,15 @@ export function evaluateProspectingHygiene(
     }
 
     // Flag 2: In "Planned" but has recent activity → should be moved to Prospecting
+    // Exclude if: re-engage date is in the future (already rescheduled),
+    //             OR target prospecting date is in the future (already planned ahead)
     if (status === 'Planned') {
       const hasAnyRecentActivity = hasRecentRepContact || hasRecentGongCall
-      if (hasAnyRecentActivity) {
+      const reEngageDate = acct.Date_to_Re_engage__c ? new Date(acct.Date_to_Re_engage__c).getTime() : null
+      const targetDate = acct.Target_Prospecting_Date__c ? new Date(acct.Target_Prospecting_Date__c).getTime() : null
+      const reEngageIsFuture = reEngageDate !== null && reEngageDate > now
+      const targetDateIsFuture = targetDate !== null && targetDate > now
+      if (hasAnyRecentActivity && !reEngageIsFuture && !targetDateIsFuture) {
         flags.push({ ...base, flagType: 'SHOULD_BE_PROSPECTING' })
       }
     }
