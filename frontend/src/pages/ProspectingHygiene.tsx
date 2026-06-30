@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState, useMemo, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import {
   RefreshCw,
@@ -11,6 +11,8 @@ import {
   Calendar,
   Phone,
   Building2,
+  Settings,
+  Save,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -48,6 +50,13 @@ interface HygieneResult {
   }
 }
 
+interface AppSettings {
+  sfdcInstanceUrl?: string
+  accountRecordTypeFilter?: string
+  prospectingStaleThresholdDays?: number
+  prospectingRecentActivityDays?: number
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtDate(iso: string | null | undefined): string {
@@ -65,9 +74,49 @@ function daysAgoLabel(days: number | null): string | null {
 // ── ProspectingHygiene page ───────────────────────────────────────────────────
 
 export function ProspectingHygiene() {
+  const qc = useQueryClient()
   const [ownerFilter, setOwnerFilter] = useState('')
   const [staleOpen, setStaleOpen] = useState(true)
   const [shouldPromoteOpen, setShouldPromoteOpen] = useState(true)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [savedSettings, setSavedSettings] = useState(false)
+
+  // Local editable state for settings
+  const [recordTypeFilter, setRecordTypeFilter] = useState('Enterprise')
+  const [staleThresholdDays, setStaleThresholdDays] = useState('14')
+  const [recentActivityDays, setRecentActivityDays] = useState('14')
+
+  const { data: appSettings } = useQuery<AppSettings>({
+    queryKey: ['settings'],
+    queryFn: () => api.get('/config/settings').then((r) => r.data),
+  })
+
+  // Sync local state from persisted settings
+  useEffect(() => {
+    if (appSettings?.accountRecordTypeFilter != null) {
+      setRecordTypeFilter(String(appSettings.accountRecordTypeFilter))
+    }
+    if (appSettings?.prospectingStaleThresholdDays != null) {
+      setStaleThresholdDays(String(appSettings.prospectingStaleThresholdDays))
+    }
+    if (appSettings?.prospectingRecentActivityDays != null) {
+      setRecentActivityDays(String(appSettings.prospectingRecentActivityDays))
+    }
+  }, [appSettings])
+
+  const saveSettings = useMutation({
+    mutationFn: () =>
+      api.put('/config/settings', {
+        accountRecordTypeFilter: recordTypeFilter.trim(),
+        prospectingStaleThresholdDays: Number(staleThresholdDays) || 14,
+        prospectingRecentActivityDays: Number(recentActivityDays) || 14,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings'] })
+      setSavedSettings(true)
+      setTimeout(() => setSavedSettings(false), 2000)
+    },
+  })
 
   const { data, isFetching, isError, error, refetch, isFetched } = useQuery<HygieneResult>({
     queryKey: ['prospecting-hygiene'],
@@ -75,6 +124,8 @@ export function ProspectingHygiene() {
     enabled: false,
     refetchOnWindowFocus: false,
   })
+
+  const sfdcBase = appSettings?.sfdcInstanceUrl?.replace(/\/$/, '') ?? 'https://uberall.lightning.force.com'
 
   const staleFlags = useMemo(
     () => (data?.flags ?? []).filter((f) => f.flagType === 'STALE_PROSPECTING'),
@@ -85,13 +136,10 @@ export function ProspectingHygiene() {
     [data]
   )
 
-  // Unique owners across all flags
   const owners = useMemo(() => {
     if (!data) return []
     const ownerMap = new Map<string, string>()
-    for (const f of data.flags) {
-      ownerMap.set(f.ownerEmail, f.ownerName ?? f.ownerEmail)
-    }
+    for (const f of data.flags) ownerMap.set(f.ownerEmail, f.ownerName ?? f.ownerEmail)
     return Array.from(ownerMap.entries()).sort((a, b) => a[1].localeCompare(b[1]))
   }, [data])
 
@@ -107,20 +155,122 @@ export function ProspectingHygiene() {
     <div className="p-8 max-w-5xl">
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-semibold text-gray-900">Prospecting Hygiene</h2>
           <p className="text-sm text-gray-500 mt-1">Enterprise accounts in Prospect stage</p>
         </div>
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50"
-        >
-          {isFetching ? <RefreshCw size={15} className="animate-spin" /> : <Building2 size={15} />}
-          Scan accounts
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSettingsOpen((o) => !o)}
+            className={clsx(
+              'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors',
+              settingsOpen
+                ? 'bg-gray-100 text-gray-800 border-gray-300'
+                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+            )}
+          >
+            <Settings size={14} />
+            Rules
+          </button>
+          <button
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50"
+          >
+            {isFetching ? <RefreshCw size={15} className="animate-spin" /> : <Building2 size={15} />}
+            Scan accounts
+          </button>
+        </div>
       </div>
+
+      {/* Settings panel */}
+      {settingsOpen && (
+        <div className="mb-6 bg-white rounded-xl border border-gray-200 p-6">
+          <h3 className="text-sm font-semibold text-gray-800 mb-4">Prospecting hygiene rules</h3>
+
+          <div className="space-y-5">
+
+            {/* Record type filter */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Account record type
+              </label>
+              <p className="text-xs text-gray-400 mb-2">
+                Filter to only this SFDC Record Type DeveloperName. Leave blank to scan all prospect accounts.
+              </p>
+              <input
+                type="text"
+                value={recordTypeFilter}
+                onChange={(e) => setRecordTypeFilter(e.target.value)}
+                placeholder="Enterprise"
+                className="input w-56"
+              />
+            </div>
+
+            <div className="h-px bg-gray-100" />
+
+            {/* Stale Prospecting threshold */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Stale prospecting — no activity threshold
+              </label>
+              <p className="text-xs text-gray-400 mb-2">
+                Flag accounts in <strong>Prospecting</strong> status with no rep communication AND no Gong calls
+                in the last N days. These should either finish the flow or be marked Paused.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  value={staleThresholdDays}
+                  onChange={(e) => setStaleThresholdDays(e.target.value)}
+                  className="input w-24 text-center"
+                />
+                <span className="text-sm text-gray-500">days without activity</span>
+              </div>
+            </div>
+
+            <div className="h-px bg-gray-100" />
+
+            {/* Should promote threshold */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Should promote — recent activity window
+              </label>
+              <p className="text-xs text-gray-400 mb-2">
+                Flag accounts in <strong>Planned</strong> status that have had rep communication or Gong call
+                activity within the last N days. These should be moved to Prospecting.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  value={recentActivityDays}
+                  onChange={(e) => setRecentActivityDays(e.target.value)}
+                  className="input w-24 text-center"
+                />
+                <span className="text-sm text-gray-500">days (recent activity window)</span>
+              </div>
+            </div>
+
+          </div>
+
+          <div className="mt-5 flex items-center gap-3 pt-4 border-t border-gray-100">
+            <button
+              onClick={() => saveSettings.mutate()}
+              disabled={saveSettings.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50"
+            >
+              <Save size={13} />
+              {savedSettings ? 'Saved!' : 'Save rules'}
+            </button>
+            <p className="text-xs text-gray-400">
+              Changes take effect on next scan.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Loading state */}
       {isFetching && (
@@ -136,7 +286,7 @@ export function ProspectingHygiene() {
         </div>
       )}
 
-      {/* Error state */}
+      {/* Error */}
       {isError && (
         <div className="mb-6 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
           <strong>Scan failed:</strong> {String((error as { message?: string })?.message ?? error)}
@@ -155,46 +305,39 @@ export function ProspectingHygiene() {
       {/* Results */}
       {data && !isFetching && (
         <>
-          {/* Stats */}
+          {/* Stat cards */}
           <div className="grid grid-cols-3 gap-4 mb-6">
             <div className="bg-white rounded-xl border border-gray-200 px-6 py-5 flex items-center gap-4">
-              <div className="p-2 bg-gray-50 rounded-lg">
-                <Building2 size={18} className="text-gray-500" />
-              </div>
+              <div className="p-2 bg-gray-50 rounded-lg"><Building2 size={18} className="text-gray-500" /></div>
               <div>
                 <div className="text-2xl font-bold text-gray-900">{data.totalAccounts}</div>
                 <div className="text-xs text-gray-500 mt-0.5">Accounts scanned</div>
-                <div className="text-xs text-gray-400 mt-0.5">{data.config.recordTypeFilter} record type</div>
+                <div className="text-xs text-gray-400 mt-0.5">{data.config.recordTypeFilter || 'All'} record type</div>
               </div>
             </div>
             <div className="bg-white rounded-xl border border-gray-200 px-6 py-5 flex items-center gap-4">
-              <div className="p-2 bg-gray-50 rounded-lg">
-                <AlertCircle size={18} className="text-red-500" />
-              </div>
+              <div className="p-2 bg-gray-50 rounded-lg"><AlertCircle size={18} className="text-red-500" /></div>
               <div>
                 <div className="text-2xl font-bold text-gray-900">{staleFlags.length}</div>
                 <div className="text-xs text-gray-500 mt-0.5">Stale prospecting</div>
-                <div className="text-xs text-gray-400 mt-0.5">In "Prospecting", no recent activity</div>
+                <div className="text-xs text-gray-400 mt-0.5">No activity in {data.config.staleThresholdDays}+ days</div>
               </div>
             </div>
             <div className="bg-white rounded-xl border border-gray-200 px-6 py-5 flex items-center gap-4">
-              <div className="p-2 bg-gray-50 rounded-lg">
-                <CheckCircle size={18} className="text-blue-500" />
-              </div>
+              <div className="p-2 bg-gray-50 rounded-lg"><CheckCircle size={18} className="text-blue-500" /></div>
               <div>
                 <div className="text-2xl font-bold text-gray-900">{shouldPromoteFlags.length}</div>
                 <div className="text-xs text-gray-500 mt-0.5">Should be Prospecting</div>
-                <div className="text-xs text-gray-400 mt-0.5">In "Planned" with recent activity</div>
+                <div className="text-xs text-gray-400 mt-0.5">Active in last {data.config.recentActivityDays}d</div>
               </div>
             </div>
           </div>
 
-          {/* Scanned at + filters */}
+          {/* Scanned at + owner filter */}
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <p className="text-xs text-gray-400">
               Scanned {new Date(data.scannedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-              {' · '}stale threshold: {data.config.staleThresholdDays}d
-              {' · '}recent activity window: {data.config.recentActivityDays}d
+              {' · '}stale: {data.config.staleThresholdDays}d · recent: {data.config.recentActivityDays}d
             </p>
             {owners.length > 1 && (
               <select
@@ -210,7 +353,7 @@ export function ProspectingHygiene() {
             )}
           </div>
 
-          {/* Stale Prospecting section */}
+          {/* Stale Prospecting */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden mb-4">
             <button
               onClick={() => setStaleOpen((o) => !o)}
@@ -221,25 +364,24 @@ export function ProspectingHygiene() {
                   {filteredStale.length}
                 </span>
                 <span className="text-sm font-semibold text-gray-800">Stale Prospecting</span>
-                <span className="text-xs text-gray-400">In "Prospecting" status with no recent activity</span>
+                <span className="text-xs text-gray-400">In "Prospecting" with no activity in {data.config.staleThresholdDays}+ days — finish the flow or mark Paused</span>
               </div>
               {staleOpen ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
             </button>
-
             {staleOpen && (
               <div className="divide-y divide-gray-100">
                 {filteredStale.length === 0 ? (
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No stale prospecting accounts</div>
                 ) : (
                   filteredStale.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} />
                   ))
                 )}
               </div>
             )}
           </div>
 
-          {/* Should be Prospecting section */}
+          {/* Should Move to Prospecting */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
             <button
               onClick={() => setShouldPromoteOpen((o) => !o)}
@@ -250,18 +392,17 @@ export function ProspectingHygiene() {
                   {filteredShouldPromote.length}
                 </span>
                 <span className="text-sm font-semibold text-gray-800">Should Move to Prospecting</span>
-                <span className="text-xs text-gray-400">In "Planned" status with recent activity</span>
+                <span className="text-xs text-gray-400">In "Planned" with activity in last {data.config.recentActivityDays}d</span>
               </div>
               {shouldPromoteOpen ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
             </button>
-
             {shouldPromoteOpen && (
               <div className="divide-y divide-gray-100">
                 {filteredShouldPromote.length === 0 ? (
                   <div className="px-6 py-6 text-center text-sm text-gray-400">No accounts to promote</div>
                 ) : (
                   filteredShouldPromote.map((flag) => (
-                    <AccountRow key={flag.accountId} flag={flag} />
+                    <AccountRow key={flag.accountId} flag={flag} sfdcBase={sfdcBase} />
                   ))
                 )}
               </div>
@@ -270,7 +411,7 @@ export function ProspectingHygiene() {
 
           {isFetched && data.flags.length === 0 && (
             <div className="mt-4 px-4 py-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700 text-center">
-              No hygiene issues found — all accounts look good!
+              ✓ No hygiene issues found — all accounts look good!
             </div>
           )}
         </>
@@ -281,24 +422,22 @@ export function ProspectingHygiene() {
 
 // ── AccountRow ────────────────────────────────────────────────────────────────
 
-function AccountRow({ flag }: { flag: ProspectingFlag }) {
-  const sfdcBase = 'https://uberall.lightning.force.com'
+function AccountRow({ flag, sfdcBase }: { flag: ProspectingFlag; sfdcBase: string }) {
   const accountLink = `${sfdcBase}/lightning/r/Account/${flag.accountId}/view`
+  const visibleEmails = flag.contactEmails.slice(0, 2)
+  const extraEmailCount = flag.contactEmails.length - 2
 
   const statusBadgeClass =
     flag.flagType === 'STALE_PROSPECTING'
       ? 'bg-red-50 text-red-700'
       : 'bg-blue-50 text-blue-700'
 
-  const visibleEmails = flag.contactEmails.slice(0, 2)
-  const extraEmailCount = flag.contactEmails.length - 2
-
   return (
     <div className="px-6 py-4 hover:bg-gray-50">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start gap-4">
         <div className="flex-1 min-w-0">
 
-          {/* Account name + status badge */}
+          {/* Account name + badges */}
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <a
               href={accountLink}
@@ -322,54 +461,16 @@ function AccountRow({ flag }: { flag: ProspectingFlag }) {
           {/* Owner */}
           <p className="text-xs text-gray-500 mb-2">{flag.ownerName ?? flag.ownerEmail}</p>
 
-          {/* Date fields grid */}
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs mb-2">
-
-            {/* Last Rep Communication */}
-            <div className="flex items-center gap-1.5">
-              <Calendar size={11} className="text-gray-400 shrink-0" />
-              <span className="text-gray-500">Last rep contact:</span>
-              <span className={clsx('font-medium', flag.lastRepCommunicationDate ? 'text-gray-800' : 'text-gray-400')}>
-                {fmtDate(flag.lastRepCommunicationDate)}
-              </span>
-              {flag.daysSinceLastRepContact !== null && (
-                <span className="text-gray-400">({daysAgoLabel(flag.daysSinceLastRepContact)})</span>
-              )}
-            </div>
-
-            {/* Target Prospecting Date */}
-            <div className="flex items-center gap-1.5">
-              <Calendar size={11} className="text-gray-400 shrink-0" />
-              <span className="text-gray-500">Target date:</span>
-              <span className={clsx('font-medium', flag.targetProspectingDate ? 'text-gray-800' : 'text-gray-400')}>
-                {fmtDate(flag.targetProspectingDate)}
-              </span>
-            </div>
-
-            {/* Re-engage Date */}
-            <div className="flex items-center gap-1.5">
-              <Calendar size={11} className="text-gray-400 shrink-0" />
-              <span className="text-gray-500">Re-engage:</span>
-              <span className={clsx('font-medium', flag.reEngageDate ? 'text-gray-800' : 'text-gray-400')}>
-                {fmtDate(flag.reEngageDate)}
-              </span>
-            </div>
-
-            {/* Competitor End Date */}
-            <div className="flex items-center gap-1.5">
-              <Calendar size={11} className="text-gray-400 shrink-0" />
-              <span className="text-gray-500">Competitor end:</span>
-              <span className={clsx('font-medium', flag.competitorEndDate ? 'text-gray-800' : 'text-gray-400')}>
-                {fmtDate(flag.competitorEndDate)}
-              </span>
-            </div>
-
+          {/* Key dates grid */}
+          <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs mb-2">
+            <DateField label="Last rep contact" value={flag.lastRepCommunicationDate} daysAgo={flag.daysSinceLastRepContact} warn={flag.daysSinceLastRepContact === null || flag.daysSinceLastRepContact > 14} />
+            <DateField label="Target prospecting date" value={flag.targetProspectingDate} />
+            <DateField label="Re-engage date" value={flag.reEngageDate} />
+            <DateField label="Competitor contract end" value={flag.competitorEndDate} />
           </div>
 
-          {/* Gong + contacts row */}
+          {/* Gong + contacts */}
           <div className="flex items-center gap-4 flex-wrap text-xs">
-
-            {/* Gong activity */}
             <div className="flex items-center gap-1.5">
               <Phone size={11} className="text-gray-400 shrink-0" />
               <span className="text-gray-500">Gong:</span>
@@ -380,17 +481,14 @@ function AccountRow({ flag }: { flag: ProspectingFlag }) {
                   <span className="font-medium text-gray-800">{flag.gongTotalCalls} call{flag.gongTotalCalls !== 1 ? 's' : ''}</span>
                   {flag.gongLastCallDate && (
                     <span className="text-gray-400">
-                      · last {fmtDate(flag.gongLastCallDate)}
-                      {flag.daysSinceLastGongCall !== null && (
-                        <span className="ml-1">({daysAgoLabel(flag.daysSinceLastGongCall)})</span>
-                      )}
+                      {' · '}last {fmtDate(flag.gongLastCallDate)}
+                      {flag.daysSinceLastGongCall !== null && ` (${daysAgoLabel(flag.daysSinceLastGongCall)})`}
                     </span>
                   )}
                 </>
               )}
             </div>
 
-            {/* Contact emails */}
             {flag.contactEmails.length > 0 && (
               <div className="flex items-center gap-1.5">
                 <span className="text-gray-500">Contacts:</span>
@@ -402,10 +500,26 @@ function AccountRow({ flag }: { flag: ProspectingFlag }) {
                 )}
               </div>
             )}
-
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── DateField ─────────────────────────────────────────────────────────────────
+
+function DateField({ label, value, daysAgo, warn }: { label: string; value: string | null | undefined; daysAgo?: number | null; warn?: boolean }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <Calendar size={11} className="text-gray-400 shrink-0" />
+      <span className="text-gray-500">{label}:</span>
+      <span className={clsx('font-medium', value ? (warn ? 'text-red-600' : 'text-gray-800') : 'text-gray-400')}>
+        {fmtDate(value)}
+      </span>
+      {daysAgo !== null && daysAgo !== undefined && (
+        <span className="text-gray-400">({daysAgoLabel(daysAgo)})</span>
+      )}
     </div>
   )
 }
