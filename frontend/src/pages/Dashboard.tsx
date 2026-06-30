@@ -420,9 +420,14 @@ export function Dashboard() {
       {/* Stat cards */}
       {!isLoading && (
         <div className="grid grid-cols-3 gap-4 mb-6">
-          <StatCard label="Pending alerts" value={summary?.sent ?? 0} icon={<AlertCircle size={18} className="text-red-500" />} />
+          <StatCard
+            label={dryRunResult ? 'Active flags (latest scan)' : 'Pending alerts'}
+            value={dryRunResult ? groupByOpp(dryRunResult.wouldSend).length : (summary?.sent ?? 0)}
+            icon={<AlertCircle size={18} className="text-red-500" />}
+            hint={dryRunResult ? 'Opps still needing action' : undefined}
+          />
           <StatCard label="Snoozed" value={summary?.snoozed ?? 0} icon={<Clock size={18} className="text-yellow-500" />} />
-          <StatCard label="Resolved" value={summary?.resolved ?? 0} icon={<CheckCircle size={18} className="text-green-500" />} />
+          <StatCard label="Resolved" value={summary?.resolved ?? 0} icon={<CheckCircle size={18} className="text-green-500" />} hint="Auto-updates each scan" />
         </div>
       )}
 
@@ -1057,13 +1062,14 @@ function ManagerDraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
 
 // ── Stat card ─────────────────────────────────────────────────────────────────
 
-function StatCard({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) {
+function StatCard({ label, value, icon, hint }: { label: string; value: number; icon: React.ReactNode; hint?: string }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 px-6 py-5 flex items-center gap-4">
       <div className="p-2 bg-gray-50 rounded-lg">{icon}</div>
       <div>
         <div className="text-2xl font-bold text-gray-900">{value}</div>
         <div className="text-xs text-gray-500 mt-0.5">{label}</div>
+        {hint && <div className="text-xs text-gray-400 mt-0.5">{hint}</div>}
       </div>
     </div>
   )

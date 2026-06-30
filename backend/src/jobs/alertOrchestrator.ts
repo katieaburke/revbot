@@ -135,6 +135,39 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
   }
 }
 
+// ─── Auto-resolve stale notifications ─────────────────────────────────────
+// Marks SENT/SNOOZED notifications as RESOLVED when:
+//   1. The opp is no longer open in Salesforce (closed won/lost/etc.)
+//   2. The opp is open but that specific flag no longer fires
+
+async function autoResolveStale(
+  openOppIds: Set<string>,
+  currentAlerts: Array<{ opportunityId: string; alertType: AlertType }>
+): Promise<number> {
+  const currentFlagKeys = new Set(currentAlerts.map((a) => `${a.opportunityId}:${a.alertType}`))
+
+  const active = await db.notification.findMany({
+    where: { status: { in: ['SENT', 'SNOOZED'] } },
+    select: { id: true, opportunityId: true, alertType: true },
+  })
+
+  const toResolve = active.filter((n) => {
+    if (!openOppIds.has(n.opportunityId)) return true          // opp closed
+    if (!currentFlagKeys.has(`${n.opportunityId}:${n.alertType}`)) return true  // flag cleared
+    return false
+  })
+
+  if (toResolve.length) {
+    await db.notification.updateMany({
+      where: { id: { in: toResolve.map((n) => n.id) } },
+      data: { status: 'RESOLVED', resolvedAt: new Date() },
+    })
+    console.log(`[AutoResolve] Resolved ${toResolve.length} stale notifications`)
+  }
+
+  return toResolve.length
+}
+
 // ─── Dry run ───────────────────────────────────────────────────────────────
 
 export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise<DryRunResult> {
@@ -199,6 +232,17 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
   for (const alert of stageMismatchAlerts) await processAlert(alert, AlertType.STAGE_MISMATCH)
 
   console.log(`[DryRun] Would send: ${wouldSend.length}, Would skip: ${wouldSkip.length}, Unreachable: ${unreachable.length}`)
+
+  // Auto-resolve notifications for closed opps and cleared flags
+  const allCurrentAlerts = [
+    ...pastDueAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: a.alertType })),
+    ...stalledAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.STALLED })),
+    ...meddpiccAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.MEDDPICC_MISSING })),
+    ...nextStepAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.NEXT_STEP_MISSING })),
+    ...closeDateRiskAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.CLOSE_DATE_RISK })),
+    ...stageMismatchAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.STAGE_MISMATCH })),
+  ]
+  await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts)
 
   // Save summary for playbook pages to display
   // Count ALL flagged opps (would send + skipped + unreachable) so sidebar shows
@@ -306,9 +350,20 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
   let skipped = 0
   let errors = 0
 
-  const { pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stageMismatchAlerts, cooldownBusinessDays } = await evaluate(opts)
+  const { opps, pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stageMismatchAlerts, cooldownBusinessDays } = await evaluate(opts)
 
   console.log(`[AlertJob] Found: ${pastDueAlerts.length} past due, ${stalledAlerts.length} stalled, ${meddpiccAlerts.length} MEDDPICC, ${nextStepAlerts.length} missing next step, ${closeDateRiskAlerts.length} close date risk, ${stageMismatchAlerts.length} stage mismatch`)
+
+  // Auto-resolve closed opps and cleared flags before sending new ones
+  const allCurrentAlerts = [
+    ...pastDueAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: a.alertType })),
+    ...stalledAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.STALLED })),
+    ...meddpiccAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.MEDDPICC_MISSING })),
+    ...nextStepAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.NEXT_STEP_MISSING })),
+    ...closeDateRiskAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.CLOSE_DATE_RISK })),
+    ...stageMismatchAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.STAGE_MISMATCH })),
+  ]
+  await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts)
 
   for (const alert of pastDueAlerts) {
     try {
