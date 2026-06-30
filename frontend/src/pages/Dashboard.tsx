@@ -833,6 +833,23 @@ const SNOOZE_OPTIONS = [
   { label: '1 month', days: 30 },
 ]
 
+function fmtSkipReason(skipType: SkipType | undefined, reason: string): string {
+  if (skipType === 'cooldown') {
+    // "Sent 2 business days ago (cooldown: 3 business days)" → "2 bd ago"
+    const m = reason.match(/Sent (\d+ business days?) ago/)
+    return m ? `${m[1]} ago` : reason
+  }
+  if (skipType === 'snoozed_owner' || skipType === 'snoozed_revops') {
+    // "RevOps snoozed until Jun 30, 2026" / "Snoozed by owner until Jun 30, 2026" → "until Jun 30"
+    const m = reason.match(/until (.+)/)
+    if (m) {
+      // strip the year for brevity
+      return `until ${m[1].replace(/, \d{4}$/, '')}`
+    }
+  }
+  return reason
+}
+
 function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, hint, sfdcLink, onDelete, onDraft, onManagerDraft, managerNotifiedOppId, confirmDeleteId, deletingId, oppCounts, onSnooze, snoozeOpenOppId, setSnoozeOpenOppId, snoozePending }: {
   title: string
   groups: OppGroup[]
@@ -883,6 +900,15 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                 const isDeleting = deletingId === g.opportunityId
                 const counts = oppCounts[g.opportunityId] ?? { rep: 0, manager: 0 }
                 const managerNotified = managerNotifiedOppId === g.opportunityId
+                const skipType = g.alerts.find(a => a.skipType)?.skipType
+                const skipReason = g.alerts.find(a => a.skipReason)?.skipReason
+                const skipBadge = skipType === 'cooldown'
+                  ? { icon: '⏱', label: 'Cooldown', cls: 'bg-gray-100 text-gray-600' }
+                  : skipType === 'snoozed_owner'
+                  ? { icon: '😴', label: 'Rep snoozed', cls: 'bg-amber-50 text-amber-700' }
+                  : skipType === 'snoozed_revops'
+                  ? { icon: '🔕', label: 'RevOps snoozed', cls: 'bg-indigo-50 text-indigo-700' }
+                  : null
                 return (
                   <div key={g.opportunityId} className="flex items-start justify-between py-2.5 px-3 rounded-lg border border-gray-100 hover:bg-gray-50">
                     <div className="flex-1 min-w-0">
@@ -897,6 +923,11 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                         )}
                         {g.opportunityType && (
                           <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-medium">{g.opportunityType}</span>
+                        )}
+                        {skipBadge && (
+                          <span className={clsx('text-xs px-1.5 py-0.5 rounded-full font-medium', skipBadge.cls)} title={skipReason}>
+                            {skipBadge.icon} {skipBadge.label}{skipReason ? ` · ${fmtSkipReason(skipType, skipReason)}` : ''}
+                          </span>
                         )}
                         {counts.rep > 0 && (
                           <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium" title={`Rep notified ${counts.rep} time${counts.rep === 1 ? '' : 's'}${counts.lastSentRep ? ` · last ${fmtDate(counts.lastSentRep)}` : ''}`}>
@@ -925,7 +956,6 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                           getAlertTags(a).map((tag, j) => (
                             <span key={`${i}-${j}`} className={clsx('text-xs font-medium px-1.5 py-0.5 rounded', tag.color)}>
                               {tag.label}
-                              {j === 0 && a.skipReason && ` — ${a.skipReason}`}
                             </span>
                           ))
                         )}
