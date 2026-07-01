@@ -335,8 +335,8 @@ export async function invalidateGongCache(): Promise<void> {
 // Results are cached in Redis for 30 minutes.
 export async function buildFlowContactIndex(
   emailAddresses: string[]
-): Promise<Map<string, GongFlowEnrollment[]> | null> {
-  if (emailAddresses.length === 0) return new Map()
+): Promise<{ index: Map<string, GongFlowEnrollment[]> | null; error: string | null }> {
+  if (emailAddresses.length === 0) return { index: new Map(), error: null }
 
   const normalizedEmails = emailAddresses.map((e) => e.toLowerCase())
 
@@ -350,7 +350,7 @@ export async function buildFlowContactIndex(
       const enrollments = fullMap.get(email)
       if (enrollments?.length) result.set(email, enrollments)
     }
-    return result
+    return { index: result, error: null }
   }
 
   const client = makeClient()
@@ -427,11 +427,16 @@ export async function buildFlowContactIndex(
       const enrollments = emailToFlows.get(email)
       if (enrollments?.length) result.set(email, enrollments)
     }
-    return result
+    return { index: result, error: null }
   } catch (err) {
-    // Gong Engage Flows API may not be available on all plans
-    console.error('[Gong] Flows API unavailable:', String(err))
-    return null
+    // Extract the most useful part of the error for surfacing in the UI
+    const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string }
+    const status = axiosErr.response?.status
+    const body = axiosErr.response?.data
+    const detail = body ? JSON.stringify(body) : axiosErr.message ?? String(err)
+    const errorMsg = status ? `Gong Flows API ${status}: ${detail}` : `Gong Flows API error: ${detail}`
+    console.error('[Gong] Flows API unavailable:', errorMsg)
+    return { index: null, error: errorMsg }
   }
 }
 

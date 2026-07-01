@@ -32,12 +32,12 @@ router.get('/prospecting-hygiene', async (_req, res) => {
       )
     )
 
-    const [gongActivity, flowIndex] = await Promise.all([
+    const [gongActivity, flowResult] = await Promise.all([
       buildAccountActivityIndex(accountIds),
       buildFlowContactIndex(allContactEmails),
     ])
 
-    const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowIndex)
+    const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowResult.index)
 
     // Load nudge log for all accounts so the UI can show last-sent + cooldown state
     const nudgeSettings = await db.appSetting.findMany({
@@ -54,6 +54,7 @@ router.get('/prospecting-hygiene', async (_req, res) => {
       totalAccounts: accounts.length,
       flags,
       nudgeLog,
+      flowError: flowResult.error,  // null = OK, string = error message for debugging
       config: { recordTypeFilter, staleThresholdDays, recentActivityDays },
     })
   } catch (err) {
