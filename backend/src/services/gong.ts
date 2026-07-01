@@ -5,7 +5,8 @@ import { redis } from '../redis'
 const GONG_BASE = 'https://api.gong.io/v2'
 const CACHE_TTL_SECONDS = 60 * 60 // 1 hour — Gong rate limits: 3 req/s, 10k req/day
 const CACHE_KEY = 'gong:call_index'
-const CACHE_KEY_RAW = 'gong:calls_raw'
+const CACHE_KEY_RAW = 'gong:calls_raw' // 90-day full fetch (opps — includes highlights)
+const CACHE_KEY_ACCOUNT = 'gong:calls_account' // 30-day lightweight fetch (accounts)
 const CACHE_KEY_FLOWS = 'gong:flow_contacts'
 const FLOW_CACHE_TTL_SECONDS = 30 * 60 // 30 min — flow enrollments change less often
 
@@ -170,7 +171,7 @@ function makeClient(): AxiosInstance {
   })
 }
 
-// Fetch all calls for a rolling window with cursor pagination
+// Fetch all calls for a rolling window with cursor pagination (full — includes highlights for risk detection)
 async function fetchAllCallsExtensive(
   client: AxiosInstance,
   fromDate: Date,
@@ -192,7 +193,7 @@ async function fetchAllCallsExtensive(
       ...(cursor ? { cursor } : {}),
     }
 
-    const res = await client.post<GongExtensiveResponse>('/calls/extensive', body)
+    const res = await client.post<GongExtensiveResponse>('/calls/extensive', body, { timeout: 20_000 })
     calls.push(...(res.data.calls ?? []))
     cursor = res.data.records?.cursor
   } while (cursor)
@@ -200,10 +201,36 @@ async function fetchAllCallsExtensive(
   return calls
 }
 
-// ─── Shared raw call cache helper ──────────────────────────────────────────
+// Lightweight call fetch — only parties + CRM context, no content (used for account activity index)
+async function fetchAllCallsLite(
+  client: AxiosInstance,
+  fromDate: Date,
+  toDate: Date
+): Promise<GongExtensiveCall[]> {
+  const calls: GongExtensiveCall[] = []
+  let cursor: string | undefined
 
-// Fetches all Gong calls for the lookback window, caching raw results in Redis.
-// Both the opportunity index and account index read from this shared cache.
+  do {
+    const body: Record<string, unknown> = {
+      filter: {
+        fromDateTime: fromDate.toISOString(),
+        toDateTime: toDate.toISOString(),
+      },
+      // No contentSelector = parties + metadata only, much smaller payload
+      ...(cursor ? { cursor } : {}),
+    }
+
+    const res = await client.post<GongExtensiveResponse>('/calls/extensive', body, { timeout: 15_000 })
+    calls.push(...(res.data.calls ?? []))
+    cursor = res.data.records?.cursor
+  } while (cursor)
+
+  return calls
+}
+
+// ─── Shared raw call cache helpers ─────────────────────────────────────────
+
+// Full fetch (highlights + callOutcome) — used by opportunity index (risk phrases, MEDDPICC)
 async function getCachedCalls(lookbackDays = 90): Promise<GongExtensiveCall[]> {
   const cached = await redis.get(CACHE_KEY_RAW)
   if (cached) {
@@ -223,6 +250,33 @@ async function getCachedCalls(lookbackDays = 90): Promise<GongExtensiveCall[]> {
   }
 
   await redis.set(CACHE_KEY_RAW, JSON.stringify(calls), 'EX', CACHE_TTL_SECONDS)
+  return calls
+}
+
+// Lite fetch (parties + CRM context only, no content) — used by account activity index.
+// 30-day window is enough for prospecting staleness checks and much faster to fetch.
+async function getCachedAccountCalls(lookbackDays = 30): Promise<GongExtensiveCall[]> {
+  const cached = await redis.get(CACHE_KEY_ACCOUNT)
+  if (cached) {
+    console.log('[Gong] Account calls: cache hit')
+    return JSON.parse(cached) as GongExtensiveCall[]
+  }
+
+  const client = makeClient()
+  const toDate = new Date()
+  const fromDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
+
+  let calls: GongExtensiveCall[] = []
+  try {
+    console.log(`[Gong] Fetching account calls (lite, ${lookbackDays}d)`)
+    calls = await fetchAllCallsLite(client, fromDate, toDate)
+    console.log(`[Gong] Account calls: fetched ${calls.length}`)
+  } catch (err) {
+    console.error('[Gong] Failed to fetch account calls:', err)
+    return []
+  }
+
+  await redis.set(CACHE_KEY_ACCOUNT, JSON.stringify(calls), 'EX', CACHE_TTL_SECONDS)
   return calls
 }
 
@@ -325,6 +379,7 @@ export async function buildOpportunityActivityIndex(
 export async function invalidateGongCache(): Promise<void> {
   await redis.del(CACHE_KEY)
   await redis.del(CACHE_KEY_RAW)
+  await redis.del(CACHE_KEY_ACCOUNT)
   await redis.del(CACHE_KEY_FLOWS)
 }
 
@@ -459,11 +514,11 @@ export async function buildFlowContactIndex(
 // Uses the shared raw call cache to avoid redundant Gong API calls.
 export async function buildAccountActivityIndex(
   accountIds: string[],
-  lookbackDays = 90
+  lookbackDays = 30
 ): Promise<Map<string, GongAccountActivity>> {
   if (accountIds.length === 0) return new Map()
 
-  const calls = await getCachedCalls(lookbackDays)
+  const calls = await getCachedAccountCalls(lookbackDays)
 
   // Index calls by SFDC account ID (objectType === 'Account')
   const callsByAccount = new Map<string, GongExtensiveCall[]>()
