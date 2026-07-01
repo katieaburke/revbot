@@ -1,6 +1,6 @@
 import { db } from '../db'
 import { fetchOpenOpportunities } from '../services/salesforce'
-import { buildOpportunityActivityIndex, invalidateGongCache } from '../services/gong'
+import { buildOpportunityActivityIndex, invalidateGongCache, warmGongCallCache, isGongCacheWarm } from '../services/gong'
 import { evaluatePastDue } from '../alerts/pastDue'
 import { evaluateStalled } from '../alerts/stalled'
 import { evaluateMeddpicc } from '../alerts/meddpicc'
@@ -121,22 +121,23 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cool
 async function evaluate(opts: { bustGongCache?: boolean } = {}) {
   if (opts.bustGongCache) await invalidateGongCache()
 
-  // Fetch SFDC opps and Gong activity in parallel.
-  // Gong is given 45s — if it times out or errors, we proceed with empty activity
-  // so SFDC data always loads regardless of Gong availability.
-  const GONG_TIMEOUT_MS = 45_000
+  // Fast Redis ping — tells us whether Gong data is available without blocking.
+  // If cold: fire-and-forget a background warm for the NEXT run, skip Gong this run.
+  // If warm: build the index normally (reads from Redis — near-instant).
+  // This prevents the "double fetch" race where both warm and index builder
+  // independently hit the Gong API at the same time.
+  const gongWarm = await isGongCacheWarm()
+  if (!gongWarm) {
+    warmGongCallCache().catch((err) => console.warn('[Gong] Background warm failed:', String(err)))
+    console.warn('[Gong] Cache cold — skipping Gong activity this run. Cache is warming in background; next run will include Gong data.')
+  }
+
   const opps = await fetchOpenOpportunities()
   const sfdcIds = opps.map((o) => o.Id)
 
-  const gongActivity = await Promise.race([
-    buildOpportunityActivityIndex(sfdcIds),
-    new Promise<Awaited<ReturnType<typeof buildOpportunityActivityIndex>>>((resolve) =>
-      setTimeout(() => {
-        console.warn('[Gong] Activity index timed out after 45s — proceeding with empty activity data')
-        resolve(new Map())
-      }, GONG_TIMEOUT_MS)
-    ),
-  ])
+  const gongActivity: Awaited<ReturnType<typeof buildOpportunityActivityIndex>> = gongWarm
+    ? await buildOpportunityActivityIndex(sfdcIds)
+    : new Map()
 
   const [stallRules, stallThresholds, meddpiccRequirements, closeDateRiskRules, stageMismatchRules, bufferSettings] = await Promise.all([
     db.stallRule.findMany({ where: { enabled: true } }),
@@ -217,23 +218,70 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
 
   const oppById = new Map(opps.map((o) => [o.Id, o]))
 
+  // ── Bulk pre-load to avoid per-alert DB queries ──────────────────────────
+  // Instead of one DB round-trip per alert (×hundreds), load everything upfront in 2 queries.
+
+  // 1. All known users keyed by email — replaces resolveSlackUserId() per alert
+  const allUsers = await db.user.findMany({ select: { slackEmail: true, slackUserId: true } })
+  const slackIdByEmail = new Map(allUsers.map((u) => [u.slackEmail, u.slackUserId]))
+
+  // 2. All active (SENT / SNOOZED) notifications — replaces isSnoozedOrRecentlySent() per alert
+  const activeNotifications = await db.notification.findMany({
+    where: { status: { in: ['SENT', 'SNOOZED'] } },
+    select: { opportunityId: true, alertType: true, status: true, sentAt: true, snoozedUntil: true, alertDetails: true },
+    orderBy: { sentAt: 'desc' },
+  })
+  // Build a map: "${opportunityId}:${alertType}" → most-recent notification
+  const notifByKey = new Map<string, typeof activeNotifications[number]>()
+  for (const n of activeNotifications) {
+    const key = `${n.opportunityId}:${n.alertType}`
+    if (!notifByKey.has(key)) notifByKey.set(key, n) // already ordered desc, first wins
+  }
+
+  function checkSnoozeOrCooldown(
+    oppId: string,
+    alertType: AlertType,
+    cdDays: number
+  ): { skip: boolean; reason?: string; skipType?: SkipType } {
+    const n = notifByKey.get(`${oppId}:${alertType}`)
+    if (!n) return { skip: false }
+
+    if (n.status === 'SNOOZED' && n.snoozedUntil && n.snoozedUntil > new Date()) {
+      const isRevops = (n.alertDetails as Record<string, unknown> | null)?._source === 'revops_snooze'
+      const until = n.snoozedUntil.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      return {
+        skip: true,
+        reason: isRevops ? `RevOps snoozed until ${until}` : `Snoozed by owner until ${until}`,
+        skipType: isRevops ? 'snoozed_revops' : 'snoozed_owner',
+      }
+    }
+
+    if (n.status === 'SENT') {
+      const bdSince = businessDaysSince(n.sentAt)
+      if (bdSince < cdDays) {
+        const label = bdSince === 1 ? '1 business day' : `${bdSince} business days`
+        return { skip: true, reason: `Sent ${label} ago (cooldown: ${cdDays} business days)`, skipType: 'cooldown' }
+      }
+    }
+
+    return { skip: false }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const wouldSend: DryRunAlert[] = []
   const wouldSkip: DryRunAlert[] = []
   const unreachable: DryRunAlert[] = []
 
   type AnyAlert = PastDueAlert | StalledAlert | MeddpiccAlert | NextStepAlert | CloseDateRiskAlert | StageMismatchAlert
 
-  async function processAlert(alert: AnyAlert, alertType: AlertType) {
+  function processAlert(alert: AnyAlert, alertType: AlertType) {
     const opp = oppById.get(alert.opportunityId)
     const managerEmail = opp?.Owner?.Manager?.Email ?? null
     const managerName = opp?.Owner?.Manager?.Name ?? null
 
-
-    const [{ skip, reason, skipType }, ownerSlackId, managerSlackId] = await Promise.all([
-      isSnoozedOrRecentlySent(alert.opportunityId, alertType, cooldownBusinessDays),
-      resolveSlackUserId(alert.ownerEmail),
-      managerEmail ? resolveSlackUserId(managerEmail) : Promise.resolve(null),
-    ])
+    const { skip, reason, skipType } = checkSnoozeOrCooldown(alert.opportunityId, alertType, cooldownBusinessDays)
+    const ownerSlackId = slackIdByEmail.get(alert.ownerEmail) ?? null
+    const managerSlackId = managerEmail ? (slackIdByEmail.get(managerEmail) ?? null) : null
 
     const dryAlert: DryRunAlert = {
       alertType,
@@ -265,12 +313,13 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
     }
   }
 
-  for (const alert of pastDueAlerts) await processAlert(alert, alert.alertType)
-  for (const alert of stalledAlerts) await processAlert(alert, AlertType.STALLED)
-  for (const alert of meddpiccAlerts) await processAlert(alert, AlertType.MEDDPICC_MISSING)
-  for (const alert of nextStepAlerts) await processAlert(alert, AlertType.NEXT_STEP_MISSING)
-  for (const alert of closeDateRiskAlerts) await processAlert(alert, AlertType.CLOSE_DATE_RISK)
-  for (const alert of stageMismatchAlerts) await processAlert(alert, AlertType.STAGE_MISMATCH)
+  // All alert processing is now synchronous (pure in-memory map lookups)
+  for (const a of pastDueAlerts) processAlert(a, a.alertType)
+  for (const a of stalledAlerts) processAlert(a, AlertType.STALLED)
+  for (const a of meddpiccAlerts) processAlert(a, AlertType.MEDDPICC_MISSING)
+  for (const a of nextStepAlerts) processAlert(a, AlertType.NEXT_STEP_MISSING)
+  for (const a of closeDateRiskAlerts) processAlert(a, AlertType.CLOSE_DATE_RISK)
+  for (const a of stageMismatchAlerts) processAlert(a, AlertType.STAGE_MISMATCH)
 
   console.log(`[DryRun] Would send: ${wouldSend.length}, Would skip: ${wouldSkip.length}, Unreachable: ${unreachable.length}`)
 

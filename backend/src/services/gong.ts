@@ -247,6 +247,9 @@ async function fetchAllCallsLite(
 
 // ─── Shared raw call cache helpers ─────────────────────────────────────────
 
+// Deduplicates concurrent callers on a cold cache — prevents double-fetching Gong
+let rawCallsFetchInFlight: Promise<GongExtensiveCall[]> | null = null
+
 // Full fetch (highlights + callOutcome) — used by opportunity index (risk phrases, MEDDPICC)
 async function getCachedCalls(lookbackDays = 90): Promise<GongExtensiveCall[]> {
   const cached = await redis.get(CACHE_KEY_RAW)
@@ -254,15 +257,39 @@ async function getCachedCalls(lookbackDays = 90): Promise<GongExtensiveCall[]> {
     return JSON.parse(cached) as GongExtensiveCall[]
   }
 
+  // If a fetch is already running, share the same promise — don't start a second fetch
+  if (rawCallsFetchInFlight) {
+    console.log('[Gong] Raw calls: joining in-flight fetch')
+    return rawCallsFetchInFlight
+  }
+
   const client = makeClient()
   const toDate = new Date()
   const fromDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
 
-  // fetchAllCallsExtensive breaks on error and returns whatever it collected — always cache it
-  const calls = await fetchAllCallsExtensive(client, fromDate, toDate)
-  console.log(`[Gong] Caching ${calls.length} calls (${lookbackDays}d window)`)
-  await redis.set(CACHE_KEY_RAW, JSON.stringify(calls), 'EX', CACHE_TTL_SECONDS)
-  return calls
+  rawCallsFetchInFlight = (async () => {
+    try {
+      // fetchAllCallsExtensive breaks on error and returns whatever it collected — always cache it
+      const calls = await fetchAllCallsExtensive(client, fromDate, toDate)
+      console.log(`[Gong] Caching ${calls.length} calls (${lookbackDays}d window)`)
+      await redis.set(CACHE_KEY_RAW, JSON.stringify(calls), 'EX', CACHE_TTL_SECONDS)
+      return calls
+    } finally {
+      rawCallsFetchInFlight = null
+    }
+  })()
+
+  return rawCallsFetchInFlight
+}
+
+// Returns true if either the processed index or raw call cache is populated in Redis.
+// Use this to decide whether to skip Gong on a cold-cache run.
+export async function isGongCacheWarm(): Promise<boolean> {
+  const [index, raw] = await Promise.all([
+    redis.get(CACHE_KEY),
+    redis.get(CACHE_KEY_RAW),
+  ])
+  return !!(index || raw)
 }
 
 // Lite fetch (parties + CRM context only, no content) — used by account activity index.
@@ -385,6 +412,11 @@ export async function buildOpportunityActivityIndex(
   }
 
   return index
+}
+
+// Warms the raw call cache without needing SFDC IDs — call in parallel with fetchOpenOpportunities()
+export async function warmGongCallCache(): Promise<void> {
+  await getCachedCalls().catch((err) => console.warn('[Gong] Cache warm failed:', String(err)))
 }
 
 // Force-invalidate the cache (e.g. after admin triggers a manual alert run)
