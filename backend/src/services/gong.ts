@@ -10,6 +10,10 @@ const CACHE_KEY_ACCOUNT = 'gong:calls_account' // 30-day lightweight fetch (acco
 const CACHE_KEY_FLOWS = 'gong:flow_contacts'
 const FLOW_CACHE_TTL_SECONDS = 30 * 60 // 30 min — flow enrollments change less often
 
+// In-memory L1 cache for the processed opportunity index — rebuilding from raw calls on every
+// request is slow; this keeps it in-process between runs
+let _oppIndexMemCache: { data: string; expiresAt: number } | null = null
+
 // ─── Raw Gong API types ────────────────────────────────────────────────────
 
 interface GongCallMetadata {
@@ -339,19 +343,34 @@ export async function buildOpportunityActivityIndex(
 ): Promise<Map<string, GongOpportunityActivity>> {
   if (sfdcIds.length === 0) return new Map()
 
-  // Check Redis cache first
-  const cached = await redis.get(CACHE_KEY)
-  if (cached) {
-    const parsed = JSON.parse(cached) as Array<[string, Omit<GongOpportunityActivity, 'uniqueExternalParticipants'> & { uniqueExternalParticipants: string[] }]>
+  const now = Date.now()
+
+  // Helper: deserialize a cached JSON string into the filtered Map
+  function deserializeIndex(raw: string): Map<string, GongOpportunityActivity> {
+    const parsed = JSON.parse(raw) as Array<[string, Omit<GongOpportunityActivity, 'uniqueExternalParticipants'> & { uniqueExternalParticipants: string[] }]>
     const map = new Map<string, GongOpportunityActivity>()
     for (const [id, val] of parsed) {
       map.set(id, { ...val, uniqueExternalParticipants: new Set(val.uniqueExternalParticipants) })
     }
-    // Only return entries relevant to requested sfdcIds
+    const sfdcSet = new Set(sfdcIds)
     for (const key of Array.from(map.keys())) {
-      if (!sfdcIds.includes(key)) map.delete(key)
+      if (!sfdcSet.has(key)) map.delete(key)
     }
     return map
+  }
+
+  // L1: in-memory (instant — no Redis round-trip)
+  if (_oppIndexMemCache && _oppIndexMemCache.expiresAt > now) {
+    console.log('[Gong] Opp index: memory cache hit')
+    return deserializeIndex(_oppIndexMemCache.data)
+  }
+
+  // L2: Redis
+  const cached = await redis.get(CACHE_KEY).catch(() => null)
+  if (cached) {
+    console.log('[Gong] Opp index: Redis cache hit')
+    _oppIndexMemCache = { data: cached, expiresAt: now + CACHE_TTL_SECONDS * 1000 }
+    return deserializeIndex(cached)
   }
 
   const calls = await getCachedCalls(lookbackDays)
@@ -414,11 +433,14 @@ export async function buildOpportunityActivityIndex(
     id,
     { ...val, uniqueExternalParticipants: Array.from(val.uniqueExternalParticipants) },
   ])
-  await redis.set(CACHE_KEY, JSON.stringify(serializable), 'EX', CACHE_TTL_SECONDS)
+  const serialized = JSON.stringify(serializable)
+  _oppIndexMemCache = { data: serialized, expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000 }
+  await redis.set(CACHE_KEY, serialized, 'EX', CACHE_TTL_SECONDS).catch(() => undefined)
 
   // Filter to only requested IDs
+  const sfdcSet = new Set(sfdcIds)
   for (const key of Array.from(index.keys())) {
-    if (!sfdcIds.includes(key)) index.delete(key)
+    if (!sfdcSet.has(key)) index.delete(key)
   }
 
   return index
@@ -468,8 +490,8 @@ export async function buildFlowContactIndex(
     return { index: result, error: null }
   }
 
-  // Hard timeout — flows fetch must not block the scan beyond this
-  const FLOWS_TIMEOUT_MS = 25_000
+  // Hard timeout — if Flows API doesn't respond in 8s it's likely unavailable; error gets cached
+  const FLOWS_TIMEOUT_MS = 8_000
 
   const client = makeClient()
 

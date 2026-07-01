@@ -6,9 +6,14 @@ import { randomBytes, createHash } from 'crypto'
 import { redis } from '../redis'
 
 const SFDC_OPP_CACHE_KEY = 'sfdc:open_opportunities'
-const SFDC_OPP_CACHE_TTL = 5 * 60 // 5 minutes — short enough to stay fresh, long enough to make repeated runs instant
+const SFDC_OPP_CACHE_TTL = 5 * 60
 const SFDC_ACCOUNT_CACHE_KEY = 'sfdc:prospect_accounts'
 const SFDC_ACCOUNT_CACHE_TTL = 5 * 60
+
+// In-memory cache — zero network latency, lives for the process lifetime
+// Used as L1 (in-process), Redis as L2 (across restarts/deploys)
+let _oppsMemCache: { data: SfdcOpportunity[]; expiresAt: number } | null = null
+const _accountsMemCache = new Map<string, { data: SfdcAccount[]; expiresAt: number }>()
 
 export interface SfdcOpportunity {
   Id: string
@@ -180,13 +185,23 @@ export async function handleSfdcCallback(code: string, userId: string, codeVerif
 }
 
 export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {}): Promise<SfdcOpportunity[]> {
+  const now = Date.now()
   if (!opts.bustCache) {
-    const cached = await redis.get(SFDC_OPP_CACHE_KEY)
+    // L1: in-memory (instant)
+    if (_oppsMemCache && _oppsMemCache.expiresAt > now) {
+      console.log(`[SFDC] Opps: memory cache hit (${_oppsMemCache.data.length} records)`)
+      return _oppsMemCache.data
+    }
+    // L2: Redis (fast, survives restarts)
+    const cached = await redis.get(SFDC_OPP_CACHE_KEY).catch(() => null)
     if (cached) {
       const opps = JSON.parse(cached) as SfdcOpportunity[]
-      console.log(`[SFDC] Open opportunities: cache hit (${opps.length} records)`)
+      console.log(`[SFDC] Opps: Redis cache hit (${opps.length} records)`)
+      _oppsMemCache = { data: opps, expiresAt: now + SFDC_OPP_CACHE_TTL * 1000 }
       return opps
     }
+  } else {
+    _oppsMemCache = null
   }
 
   const conn = await getServiceConnection()
@@ -213,12 +228,14 @@ export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {})
     records.push(...result.records)
   }
   console.log(`[SFDC] Fetched ${records.length} open opportunities from API`)
-  await redis.set(SFDC_OPP_CACHE_KEY, JSON.stringify(records), 'EX', SFDC_OPP_CACHE_TTL)
+  _oppsMemCache = { data: records, expiresAt: Date.now() + SFDC_OPP_CACHE_TTL * 1000 }
+  await redis.set(SFDC_OPP_CACHE_KEY, JSON.stringify(records), 'EX', SFDC_OPP_CACHE_TTL).catch(() => undefined)
   return records
 }
 
 export async function invalidateSfdcOppCache(): Promise<void> {
-  await redis.del(SFDC_OPP_CACHE_KEY)
+  _oppsMemCache = null
+  await redis.del(SFDC_OPP_CACHE_KEY).catch(() => undefined)
 }
 
 export async function updateOpportunity(
@@ -276,13 +293,24 @@ export interface SfdcAccount {
 
 export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterprise_Account_Record', opts: { bustCache?: boolean } = {}): Promise<SfdcAccount[]> {
   const cacheKey = `${SFDC_ACCOUNT_CACHE_KEY}:${recordTypeDeveloperName}`
+  const now = Date.now()
   if (!opts.bustCache) {
-    const cached = await redis.get(cacheKey)
+    // L1: in-memory
+    const mem = _accountsMemCache.get(cacheKey)
+    if (mem && mem.expiresAt > now) {
+      console.log(`[SFDC] Accounts: memory cache hit (${mem.data.length} records)`)
+      return mem.data
+    }
+    // L2: Redis
+    const cached = await redis.get(cacheKey).catch(() => null)
     if (cached) {
       const accounts = JSON.parse(cached) as SfdcAccount[]
-      console.log(`[SFDC] Prospect accounts: cache hit (${accounts.length} records)`)
+      console.log(`[SFDC] Accounts: Redis cache hit (${accounts.length} records)`)
+      _accountsMemCache.set(cacheKey, { data: accounts, expiresAt: now + SFDC_ACCOUNT_CACHE_TTL * 1000 })
       return accounts
     }
+  } else {
+    _accountsMemCache.delete(cacheKey)
   }
 
   const conn = await getServiceConnection()
@@ -307,7 +335,8 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
     records.push(...result.records)
   }
   console.log(`[SFDC] Fetched ${records.length} prospect accounts from API`)
-  await redis.set(cacheKey, JSON.stringify(records), 'EX', SFDC_ACCOUNT_CACHE_TTL)
+  _accountsMemCache.set(cacheKey, { data: records, expiresAt: Date.now() + SFDC_ACCOUNT_CACHE_TTL * 1000 })
+  await redis.set(cacheKey, JSON.stringify(records), 'EX', SFDC_ACCOUNT_CACHE_TTL).catch(() => undefined)
   return records
 }
 
