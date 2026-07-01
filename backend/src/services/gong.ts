@@ -353,64 +353,70 @@ export async function buildFlowContactIndex(
     return { index: result, error: null }
   }
 
+  // Hard timeout — flows fetch must not block the scan beyond this
+  const FLOWS_TIMEOUT_MS = 25_000
+
   const client = makeClient()
 
-  try {
-    // Fetch all flows (paginated)
+  async function fetchFlowsCore(): Promise<{ index: Map<string, GongFlowEnrollment[]>; error: null }> {
+    // Fetch all flows (paginated) — use short per-request timeout
     const allFlows: GongFlow[] = []
     let flowCursor: string | undefined
     do {
       const res = await client.get<GongFlowsResponse>('/flows', {
         params: flowCursor ? { cursor: flowCursor } : {},
+        timeout: 10_000,
       })
       allFlows.push(...(res.data.flows ?? []))
       flowCursor = res.data.records?.cursor
     } while (flowCursor)
 
-    // Build email → active enrollments index
+    console.log(`[Gong] Fetching contacts for ${allFlows.length} flows in parallel`)
+
+    // Fetch contacts for all flows in parallel (max 5 concurrent to stay under rate limit)
+    const CONCURRENCY = 5
     const emailToFlows = new Map<string, GongFlowEnrollment[]>()
 
-    for (const flow of allFlows) {
-      try {
-        let contactCursor: string | undefined
-        do {
-          const res = await client.get<GongFlowContactsResponse>(`/flows/${flow.id}/contacts`, {
-            params: contactCursor ? { cursor: contactCursor } : {},
-          })
-          for (const contact of res.data.contacts ?? []) {
-            if (!contact.emailAddress) continue
-            const status = contact.status ?? 'UNKNOWN'
-            const statusUp = status.toUpperCase()
-
-            // Include active enrollments and completed ones (for "completed since target date" metric)
-            const isActive = ['ACTIVE', 'IN_PROGRESS', 'ENROLLED'].includes(statusUp)
-            const isCompleted = statusUp === 'COMPLETED'
-            if (!isActive && !isCompleted) continue
-
-            // Resolve next step due date — Gong may use different field names
-            const nextStepDueDate =
-              contact.nextStepDueDate ?? contact.nextTouchpointDate ?? contact.dueDate ?? contact.scheduledDate ?? null
-
-            // Resolve completion timestamp
-            const completedAt =
-              contact.completedAt ?? contact.completedDate ?? contact.endedAt ?? null
-
-            const email = contact.emailAddress.toLowerCase()
-            if (!emailToFlows.has(email)) emailToFlows.set(email, [])
-            emailToFlows.get(email)!.push({
-              flowId: flow.id,
-              flowName: flow.name,
-              status,
-              nextStepDueDate,
-              completedAt,
+    for (let i = 0; i < allFlows.length; i += CONCURRENCY) {
+      const batch = allFlows.slice(i, i + CONCURRENCY)
+      await Promise.allSettled(batch.map(async (flow) => {
+        try {
+          let contactCursor: string | undefined
+          do {
+            const res = await client.get<GongFlowContactsResponse>(`/flows/${flow.id}/contacts`, {
+              params: contactCursor ? { cursor: contactCursor } : {},
+              timeout: 10_000,
             })
-          }
-          contactCursor = res.data.records?.cursor
-        } while (contactCursor)
-      } catch (err) {
-        // Skip individual flows we can't read (permission/not-found)
-        console.warn(`[Gong] Skipping flow ${flow.id} (${flow.name}):`, String(err))
-      }
+            for (const contact of res.data.contacts ?? []) {
+              if (!contact.emailAddress) continue
+              const status = contact.status ?? 'UNKNOWN'
+              const statusUp = status.toUpperCase()
+
+              const isActive = ['ACTIVE', 'IN_PROGRESS', 'ENROLLED'].includes(statusUp)
+              const isCompleted = statusUp === 'COMPLETED'
+              if (!isActive && !isCompleted) continue
+
+              const nextStepDueDate =
+                contact.nextStepDueDate ?? contact.nextTouchpointDate ?? contact.dueDate ?? contact.scheduledDate ?? null
+              const completedAt =
+                contact.completedAt ?? contact.completedDate ?? contact.endedAt ?? null
+
+              const email = contact.emailAddress.toLowerCase()
+              if (!emailToFlows.has(email)) emailToFlows.set(email, [])
+              emailToFlows.get(email)!.push({
+                flowId: flow.id,
+                flowName: flow.name,
+                status,
+                nextStepDueDate,
+                completedAt,
+              })
+            }
+            contactCursor = res.data.records?.cursor
+          } while (contactCursor)
+        } catch (err) {
+          console.warn(`[Gong] Skipping flow ${flow.id} (${flow.name}):`, String(err))
+        }
+      }))
     }
 
     // Cache the full index
@@ -428,6 +434,13 @@ export async function buildFlowContactIndex(
       if (enrollments?.length) result.set(email, enrollments)
     }
     return { index: result, error: null }
+  }
+
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Gong Flows fetch timed out after ${FLOWS_TIMEOUT_MS / 1000}s`)), FLOWS_TIMEOUT_MS)
+    )
+    return await Promise.race([fetchFlowsCore(), timeoutPromise])
   } catch (err) {
     // Extract the most useful part of the error for surfacing in the UI
     const axiosErr = err as { response?: { status?: number; data?: unknown }; message?: string }
