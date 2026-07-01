@@ -209,6 +209,54 @@ router.post('/notify-bdr', async (req, res) => {
   return res.json({ ok: true, sentTo: bdrEmail })
 })
 
+// GET /api/accounts/gong-flow-debug
+// Bypasses Redis, hits Gong flows API directly, returns raw shape for one account's contacts.
+router.get('/gong-flow-debug', async (req, res) => {
+  try {
+    const { redis } = await import('../redis')
+    const { default: axios } = await import('axios')
+    const { config } = await import('../config')
+
+    // Optional: clear cache so we get a fresh hit
+    await redis.del('gong:flow_contacts')
+
+    const client = axios.create({
+      baseURL: 'https://api.gong.io/v2',
+      auth: { username: config.GONG_ACCESS_KEY, password: config.GONG_ACCESS_SECRET },
+      timeout: 30_000,
+    })
+
+    // Step 1: list flows
+    let flowsRaw: unknown = null
+    let flowsError: string | null = null
+    try {
+      const r = await client.get('/flows')
+      flowsRaw = r.data
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: unknown }; message?: string }
+      flowsError = `${err.response?.status ?? ''} ${JSON.stringify(err.response?.data ?? err.message)}`
+    }
+
+    // Step 2: if flows came back, fetch contacts for the first flow
+    let contactsRaw: unknown = null
+    let contactsError: string | null = null
+    if (flowsRaw && (flowsRaw as { flows?: { id: string }[] }).flows?.length) {
+      const firstFlowId = (flowsRaw as { flows: { id: string }[] }).flows[0].id
+      try {
+        const r = await client.get(`/flows/${firstFlowId}/contacts`)
+        contactsRaw = r.data
+      } catch (e: unknown) {
+        const err = e as { response?: { status?: number; data?: unknown }; message?: string }
+        contactsError = `${err.response?.status ?? ''} ${JSON.stringify(err.response?.data ?? err.message)}`
+      }
+    }
+
+    res.json({ flowsRaw, flowsError, contactsRaw, contactsError })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
 // PATCH /api/accounts/:accountId
 // Update editable prospecting fields directly from Beacon (writes back to Salesforce).
 router.patch('/:accountId', async (req, res) => {
