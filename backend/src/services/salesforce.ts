@@ -73,9 +73,6 @@ export async function getConnectionForUser(userId: string): Promise<jsforce.Conn
     instanceUrl: user.sfdcInstanceUrl,
     accessToken: decrypt(user.sfdcAccessToken),
     refreshToken: user.sfdcRefreshToken ? decrypt(user.sfdcRefreshToken) : undefined,
-    callOptions: {},
-    // 30s per HTTP request — prevents hanging indefinitely on slow/unresponsive SFDC
-    requestConfig: { timeout: 30_000 },
   })
 
   conn.on('refresh', async (accessToken: string) => {
