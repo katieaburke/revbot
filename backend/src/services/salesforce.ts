@@ -73,6 +73,9 @@ export async function getConnectionForUser(userId: string): Promise<jsforce.Conn
     instanceUrl: user.sfdcInstanceUrl,
     accessToken: decrypt(user.sfdcAccessToken),
     refreshToken: user.sfdcRefreshToken ? decrypt(user.sfdcRefreshToken) : undefined,
+    callOptions: {},
+    // 30s per HTTP request — prevents hanging indefinitely on slow/unresponsive SFDC
+    requestConfig: { timeout: 30_000 },
   })
 
   conn.on('refresh', async (accessToken: string) => {
@@ -205,28 +208,40 @@ export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {})
   }
 
   const conn = await getServiceConnection()
-  let result = await conn.query<SfdcOpportunity>(`
-    SELECT
-      Id, Name, StageName, CloseDate, Type, Amount,
-      OwnerId, Owner.Id, Owner.Name, Owner.Email, Owner.Manager.Email, Owner.Manager.Name,
-      CreatedDate, LastActivityDate, IsClosed, IsWon,
-      Stage_Duration_current__c, Opportunity_Age__c, Booking_Date__c, Stage_Change_Date__c,
-      M_Metrics__c, E_Economic_buyer__c,
-      DC_Decision_Criteria__c, DP_Decision_Process__c,
-      I_Identify_Pain__c, Ch_Champion__c, Co_Competition_New__c, P_Paperwork__c,
-      Budget_Details__c, Authority_Details__c, Need_Details__c, Timing_Details__c,
-      Sales_Channel__c, Sales_Function__c, Sales_Region__c,
-      NextStep, Next_Step_Date__c,
-      Account.Id, Account.Name
-    FROM Opportunity
-    WHERE IsClosed = false
-    ORDER BY CloseDate ASC
-  `)
-  const records = [...result.records]
-  while (!result.done && result.nextRecordsUrl) {
-    result = await conn.queryMore<SfdcOpportunity>(result.nextRecordsUrl)
-    records.push(...result.records)
+
+  async function runQuery(): Promise<SfdcOpportunity[]> {
+    let result = await conn.query<SfdcOpportunity>(`
+      SELECT
+        Id, Name, StageName, CloseDate, Type, Amount,
+        OwnerId, Owner.Id, Owner.Name, Owner.Email, Owner.Manager.Email, Owner.Manager.Name,
+        CreatedDate, LastActivityDate, IsClosed, IsWon,
+        Stage_Duration_current__c, Opportunity_Age__c, Booking_Date__c, Stage_Change_Date__c,
+        M_Metrics__c, E_Economic_buyer__c,
+        DC_Decision_Criteria__c, DP_Decision_Process__c,
+        I_Identify_Pain__c, Ch_Champion__c, Co_Competition_New__c, P_Paperwork__c,
+        Budget_Details__c, Authority_Details__c, Need_Details__c, Timing_Details__c,
+        Sales_Channel__c, Sales_Function__c, Sales_Region__c,
+        NextStep, Next_Step_Date__c,
+        Account.Id, Account.Name
+      FROM Opportunity
+      WHERE IsClosed = false
+      ORDER BY CloseDate ASC
+    `)
+    const records = [...result.records]
+    while (!result.done && result.nextRecordsUrl) {
+      result = await conn.queryMore<SfdcOpportunity>(result.nextRecordsUrl)
+      records.push(...result.records)
+    }
+    return records
   }
+
+  const records = await Promise.race([
+    runQuery(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('SFDC opportunity query timed out after 35s')), 35_000)
+    ),
+  ])
+
   console.log(`[SFDC] Fetched ${records.length} open opportunities from API`)
   _oppsMemCache = { data: records, expiresAt: Date.now() + SFDC_OPP_CACHE_TTL * 1000 }
   await redis.set(SFDC_OPP_CACHE_KEY, JSON.stringify(records), 'EX', SFDC_OPP_CACHE_TTL).catch(() => undefined)
@@ -315,25 +330,37 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
 
   const conn = await getServiceConnection()
   const rtFilter = recordTypeDeveloperName ? `AND RecordType.DeveloperName = '${recordTypeDeveloperName}'` : ''
-  let result = await conn.query<SfdcAccount>(`
-    SELECT Id, Name, Account_Stage__c, Prospecting_Status__c, Prospecting_Pause_Reason__c,
-           Target_Prospecting_Date__c, Date_to_Re_engage__c,
-           End_of_competitor_engagement__c, Competitor__c, Last_Rep_Communication_Date__c,
-           OwnerId, Owner.Id, Owner.Name, Owner.Email,
-           BDR_Assigned__c, BDR_Assigned__r.Id, BDR_Assigned__r.Name, BDR_Assigned__r.Email,
-           RecordType.Name, RecordType.DeveloperName,
-           (SELECT Id, Email, Name FROM Contacts LIMIT 10)
-    FROM Account
-    WHERE Account_Stage__c = 'Prospect'
-    AND Target_Prospecting_Date__c != null
-    ${rtFilter}
-    ORDER BY Name ASC
-  `)
-  const records = [...result.records]
-  while (!result.done && result.nextRecordsUrl) {
-    result = await conn.queryMore<SfdcAccount>(result.nextRecordsUrl)
-    records.push(...result.records)
+
+  async function runQuery(): Promise<SfdcAccount[]> {
+    let result = await conn.query<SfdcAccount>(`
+      SELECT Id, Name, Account_Stage__c, Prospecting_Status__c, Prospecting_Pause_Reason__c,
+             Target_Prospecting_Date__c, Date_to_Re_engage__c,
+             End_of_competitor_engagement__c, Competitor__c, Last_Rep_Communication_Date__c,
+             OwnerId, Owner.Id, Owner.Name, Owner.Email,
+             BDR_Assigned__c, BDR_Assigned__r.Id, BDR_Assigned__r.Name, BDR_Assigned__r.Email,
+             RecordType.Name, RecordType.DeveloperName,
+             (SELECT Id, Email, Name FROM Contacts LIMIT 10)
+      FROM Account
+      WHERE Account_Stage__c = 'Prospect'
+      AND Target_Prospecting_Date__c != null
+      ${rtFilter}
+      ORDER BY Name ASC
+    `)
+    const records = [...result.records]
+    while (!result.done && result.nextRecordsUrl) {
+      result = await conn.queryMore<SfdcAccount>(result.nextRecordsUrl)
+      records.push(...result.records)
+    }
+    return records
   }
+
+  const records = await Promise.race([
+    runQuery(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('SFDC account query timed out after 35s')), 35_000)
+    ),
+  ])
+
   console.log(`[SFDC] Fetched ${records.length} prospect accounts from API`)
   _accountsMemCache.set(cacheKey, { data: records, expiresAt: Date.now() + SFDC_ACCOUNT_CACHE_TTL * 1000 })
   await redis.set(cacheKey, JSON.stringify(records), 'EX', SFDC_ACCOUNT_CACHE_TTL).catch(() => undefined)
