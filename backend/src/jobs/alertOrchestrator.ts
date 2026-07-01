@@ -126,6 +126,7 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
   // If warm: build the index normally (reads from Redis — near-instant).
   // This prevents the "double fetch" race where both warm and index builder
   // independently hit the Gong API at the same time.
+  const t0 = Date.now()
   const gongWarm = await isGongCacheWarm()
   if (!gongWarm) {
     warmGongCallCache().catch((err) => console.warn('[Gong] Background warm failed:', String(err)))
@@ -133,11 +134,14 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
   }
 
   const opps = await fetchOpenOpportunities({ bustCache: opts.bustGongCache })
+  console.log(`[Evaluate] SFDC opps: ${Date.now() - t0}ms (${opps.length} opps, gongWarm=${gongWarm})`)
   const sfdcIds = opps.map((o) => o.Id)
 
+  const tGong = Date.now()
   const gongActivity: Awaited<ReturnType<typeof buildOpportunityActivityIndex>> = gongWarm
     ? await buildOpportunityActivityIndex(sfdcIds)
     : new Map()
+  console.log(`[Evaluate] Gong index: ${Date.now() - tGong}ms`)
 
   const [stallRules, stallThresholds, meddpiccRequirements, closeDateRiskRules, stageMismatchRules, bufferSettings] = await Promise.all([
     db.stallRule.findMany({ where: { enabled: true } }),

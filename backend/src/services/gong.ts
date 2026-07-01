@@ -449,16 +449,22 @@ export async function buildFlowContactIndex(
 
   const normalizedEmails = emailAddresses.map((e) => e.toLowerCase())
 
-  // Check Redis cache
+  // Check Redis cache — stored as either array-of-tuples (success) or {_error: string} (failure)
   const cached = await redis.get(CACHE_KEY_FLOWS)
   if (cached) {
-    const parsed = JSON.parse(cached) as Array<[string, GongFlowEnrollment[]]>
+    const parsed = JSON.parse(cached) as Array<[string, GongFlowEnrollment[]]> | { _error: string }
+    if (!Array.isArray(parsed)) {
+      // Cached error — don't retry until TTL expires
+      console.log(`[Gong] Flow contacts: cached error — ${parsed._error}`)
+      return { index: null, error: parsed._error }
+    }
     const fullMap = new Map<string, GongFlowEnrollment[]>(parsed)
     const result = new Map<string, GongFlowEnrollment[]>()
     for (const email of normalizedEmails) {
       const enrollments = fullMap.get(email)
       if (enrollments?.length) result.set(email, enrollments)
     }
+    console.log(`[Gong] Flow contacts: cache hit`)
     return { index: result, error: null }
   }
 
@@ -558,6 +564,8 @@ export async function buildFlowContactIndex(
     const detail = body ? JSON.stringify(body) : axiosErr.message ?? String(err)
     const errorMsg = status ? `Gong Flows API ${status}: ${detail}` : `Gong Flows API error: ${detail}`
     console.error('[Gong] Flows API unavailable:', errorMsg)
+    // Cache the error for 5 minutes so repeated scans don't each wait 25s
+    await redis.set(CACHE_KEY_FLOWS, JSON.stringify({ _error: errorMsg }), 'EX', 5 * 60).catch(() => undefined)
     return { index: null, error: errorMsg }
   }
 }

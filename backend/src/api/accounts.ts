@@ -22,6 +22,8 @@ router.get('/prospecting-hygiene', async (_req, res) => {
     const staleThresholdDays = Number(settingMap.prospectingStaleThresholdDays ?? 14)
     const recentActivityDays = Number(settingMap.prospectingRecentActivityDays ?? 14)
 
+    const t0 = Date.now()
+
     // Check Gong account cache upfront — if cold, skip and warm in background
     const gongAccountWarm = await isGongAccountCacheWarm()
     if (!gongAccountWarm) {
@@ -30,6 +32,8 @@ router.get('/prospecting-hygiene', async (_req, res) => {
     }
 
     const accounts = await fetchProspectAccounts(recordTypeFilter)
+    console.log(`[Hygiene] SFDC accounts: ${Date.now() - t0}ms (${accounts.length} accounts)`)
+
     const accountIds = accounts.map((a) => a.Id)
 
     // Collect all contact emails across all accounts for flow lookup
@@ -39,11 +43,13 @@ router.get('/prospecting-hygiene', async (_req, res) => {
       )
     )
 
-    // Only fetch Gong data if cache is warm — flow index has its own 25s internal timeout
+    // Only fetch Gong activity if cache is warm — flow index has its own 25s internal timeout + error caching
+    const tGong = Date.now()
     const [gongActivity, flowResult] = await Promise.all([
       gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()),
       buildFlowContactIndex(allContactEmails),
     ])
+    console.log(`[Hygiene] Gong: ${Date.now() - tGong}ms (accountWarm=${gongAccountWarm}, flowErr=${flowResult.error ?? 'none'})`)
 
     const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowResult.index)
 
