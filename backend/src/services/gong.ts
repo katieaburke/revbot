@@ -3,7 +3,7 @@ import { config } from '../config'
 import { redis } from '../redis'
 
 const GONG_BASE = 'https://api.gong.io/v2'
-const CACHE_TTL_SECONDS = 60 * 60 // 1 hour — Gong rate limits: 3 req/s, 10k req/day
+const CACHE_TTL_SECONDS = 6 * 60 * 60 // 6 hours — Gong data doesn't change minute-to-minute
 const CACHE_KEY = 'gong:call_index'
 const CACHE_KEY_RAW = 'gong:calls_raw' // 90-day full fetch (opps — includes highlights)
 const CACHE_KEY_ACCOUNT = 'gong:calls_account' // 30-day lightweight fetch (accounts)
@@ -193,7 +193,7 @@ async function fetchAllCallsExtensive(
       ...(cursor ? { cursor } : {}),
     }
 
-    const res = await client.post<GongExtensiveResponse>('/calls/extensive', body, { timeout: 20_000 })
+    const res = await client.post<GongExtensiveResponse>('/calls/extensive', body)
     calls.push(...(res.data.calls ?? []))
     cursor = res.data.records?.cursor
   } while (cursor)
