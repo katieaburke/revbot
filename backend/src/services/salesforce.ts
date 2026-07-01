@@ -7,6 +7,8 @@ import { redis } from '../redis'
 
 const SFDC_OPP_CACHE_KEY = 'sfdc:open_opportunities'
 const SFDC_OPP_CACHE_TTL = 5 * 60 // 5 minutes — short enough to stay fresh, long enough to make repeated runs instant
+const SFDC_ACCOUNT_CACHE_KEY = 'sfdc:prospect_accounts'
+const SFDC_ACCOUNT_CACHE_TTL = 5 * 60
 
 export interface SfdcOpportunity {
   Id: string
@@ -272,7 +274,17 @@ export interface SfdcAccount {
   Contacts?: { totalSize: number; records: Array<{ Id: string; Email: string | null; Name: string }> } | null
 }
 
-export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterprise_Account_Record'): Promise<SfdcAccount[]> {
+export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterprise_Account_Record', opts: { bustCache?: boolean } = {}): Promise<SfdcAccount[]> {
+  const cacheKey = `${SFDC_ACCOUNT_CACHE_KEY}:${recordTypeDeveloperName}`
+  if (!opts.bustCache) {
+    const cached = await redis.get(cacheKey)
+    if (cached) {
+      const accounts = JSON.parse(cached) as SfdcAccount[]
+      console.log(`[SFDC] Prospect accounts: cache hit (${accounts.length} records)`)
+      return accounts
+    }
+  }
+
   const conn = await getServiceConnection()
   const rtFilter = recordTypeDeveloperName ? `AND RecordType.DeveloperName = '${recordTypeDeveloperName}'` : ''
   let result = await conn.query<SfdcAccount>(`
@@ -294,7 +306,8 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
     result = await conn.queryMore<SfdcAccount>(result.nextRecordsUrl)
     records.push(...result.records)
   }
-  console.log(`[SFDC] Fetched ${records.length} prospect accounts`)
+  console.log(`[SFDC] Fetched ${records.length} prospect accounts from API`)
+  await redis.set(cacheKey, JSON.stringify(records), 'EX', SFDC_ACCOUNT_CACHE_TTL)
   return records
 }
 

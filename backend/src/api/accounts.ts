@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { requireAdmin } from '../middleware/adminAuth'
 import { fetchProspectAccounts, getSfdcInstanceUrl, updateProspectAccount } from '../services/salesforce'
-import { buildAccountActivityIndex, buildFlowContactIndex } from '../services/gong'
+import { buildAccountActivityIndex, buildFlowContactIndex, isGongAccountCacheWarm, warmGongAccountCallCache } from '../services/gong'
 import { evaluateProspectingHygiene, type ProspectingFlagType } from '../alerts/prospecting'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { db } from '../db'
@@ -22,6 +22,13 @@ router.get('/prospecting-hygiene', async (_req, res) => {
     const staleThresholdDays = Number(settingMap.prospectingStaleThresholdDays ?? 14)
     const recentActivityDays = Number(settingMap.prospectingRecentActivityDays ?? 14)
 
+    // Check Gong account cache upfront — if cold, skip and warm in background
+    const gongAccountWarm = await isGongAccountCacheWarm()
+    if (!gongAccountWarm) {
+      warmGongAccountCallCache().catch((err) => console.warn('[Gong] Account warm failed:', String(err)))
+      console.warn('[Gong] Account cache cold — skipping Gong activity this run. Warming in background.')
+    }
+
     const accounts = await fetchProspectAccounts(recordTypeFilter)
     const accountIds = accounts.map((a) => a.Id)
 
@@ -32,8 +39,9 @@ router.get('/prospecting-hygiene', async (_req, res) => {
       )
     )
 
+    // Only fetch Gong data if cache is warm — flow index has its own 25s internal timeout
     const [gongActivity, flowResult] = await Promise.all([
-      buildAccountActivityIndex(accountIds),
+      gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()),
       buildFlowContactIndex(allContactEmails),
     ])
 

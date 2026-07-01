@@ -292,6 +292,16 @@ export async function isGongCacheWarm(): Promise<boolean> {
   return !!(index || raw)
 }
 
+// Returns true if the lightweight account call cache is warm.
+export async function isGongAccountCacheWarm(): Promise<boolean> {
+  return !!(await redis.get(CACHE_KEY_ACCOUNT))
+}
+
+// Warms the account call cache in the background (used by prospecting hygiene scan).
+export async function warmGongAccountCallCache(): Promise<void> {
+  await getCachedAccountCalls().catch((err) => console.warn('[Gong] Account cache warm failed:', String(err)))
+}
+
 // Lite fetch (parties + CRM context only, no content) — used by account activity index.
 // 30-day window is enough for prospecting staleness checks and much faster to fetch.
 async function getCachedAccountCalls(lookbackDays = 30): Promise<GongExtensiveCall[]> {
