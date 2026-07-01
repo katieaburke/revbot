@@ -121,9 +121,22 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cool
 async function evaluate(opts: { bustGongCache?: boolean } = {}) {
   if (opts.bustGongCache) await invalidateGongCache()
 
+  // Fetch SFDC opps and Gong activity in parallel.
+  // Gong is given 45s — if it times out or errors, we proceed with empty activity
+  // so SFDC data always loads regardless of Gong availability.
+  const GONG_TIMEOUT_MS = 45_000
   const opps = await fetchOpenOpportunities()
   const sfdcIds = opps.map((o) => o.Id)
-  const gongActivity = await buildOpportunityActivityIndex(sfdcIds)
+
+  const gongActivity = await Promise.race([
+    buildOpportunityActivityIndex(sfdcIds),
+    new Promise<Awaited<ReturnType<typeof buildOpportunityActivityIndex>>>((resolve) =>
+      setTimeout(() => {
+        console.warn('[Gong] Activity index timed out after 45s — proceeding with empty activity data')
+        resolve(new Map())
+      }, GONG_TIMEOUT_MS)
+    ),
+  ])
 
   const [stallRules, stallThresholds, meddpiccRequirements, closeDateRiskRules, stageMismatchRules, bufferSettings] = await Promise.all([
     db.stallRule.findMany({ where: { enabled: true } }),
