@@ -3,7 +3,7 @@ import { config } from '../config'
 import { db } from '../db'
 import { encrypt, decrypt } from '../crypto'
 import { randomBytes, createHash } from 'crypto'
-import { redis } from '../redis'
+import { cacheRedis as redis } from '../redis'
 
 const SFDC_OPP_CACHE_KEY = 'sfdc:open_opportunities'
 const SFDC_OPP_CACHE_TTL = 5 * 60

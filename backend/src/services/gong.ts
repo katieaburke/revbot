@@ -1,6 +1,6 @@
 import axios, { type AxiosInstance } from 'axios'
 import { config } from '../config'
-import { redis } from '../redis'
+import { cacheRedis as redis } from '../redis'
 
 const GONG_BASE = 'https://api.gong.io/v2'
 const CACHE_TTL_SECONDS = 6 * 60 * 60 // 6 hours — Gong data doesn't change minute-to-minute
