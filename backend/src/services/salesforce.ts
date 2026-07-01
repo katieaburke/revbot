@@ -3,6 +3,10 @@ import { config } from '../config'
 import { db } from '../db'
 import { encrypt, decrypt } from '../crypto'
 import { randomBytes, createHash } from 'crypto'
+import { redis } from '../redis'
+
+const SFDC_OPP_CACHE_KEY = 'sfdc:open_opportunities'
+const SFDC_OPP_CACHE_TTL = 5 * 60 // 5 minutes — short enough to stay fresh, long enough to make repeated runs instant
 
 export interface SfdcOpportunity {
   Id: string
@@ -173,7 +177,16 @@ export async function handleSfdcCallback(code: string, userId: string, codeVerif
   })
 }
 
-export async function fetchOpenOpportunities(): Promise<SfdcOpportunity[]> {
+export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {}): Promise<SfdcOpportunity[]> {
+  if (!opts.bustCache) {
+    const cached = await redis.get(SFDC_OPP_CACHE_KEY)
+    if (cached) {
+      const opps = JSON.parse(cached) as SfdcOpportunity[]
+      console.log(`[SFDC] Open opportunities: cache hit (${opps.length} records)`)
+      return opps
+    }
+  }
+
   const conn = await getServiceConnection()
   let result = await conn.query<SfdcOpportunity>(`
     SELECT
@@ -197,8 +210,13 @@ export async function fetchOpenOpportunities(): Promise<SfdcOpportunity[]> {
     result = await conn.queryMore<SfdcOpportunity>(result.nextRecordsUrl)
     records.push(...result.records)
   }
-  console.log(`[SFDC] Fetched ${records.length} open opportunities`)
+  console.log(`[SFDC] Fetched ${records.length} open opportunities from API`)
+  await redis.set(SFDC_OPP_CACHE_KEY, JSON.stringify(records), 'EX', SFDC_OPP_CACHE_TTL)
   return records
+}
+
+export async function invalidateSfdcOppCache(): Promise<void> {
+  await redis.del(SFDC_OPP_CACHE_KEY)
 }
 
 export async function updateOpportunity(

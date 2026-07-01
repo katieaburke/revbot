@@ -1,5 +1,5 @@
 import { db } from '../db'
-import { fetchOpenOpportunities } from '../services/salesforce'
+import { fetchOpenOpportunities, invalidateSfdcOppCache } from '../services/salesforce'
 import { buildOpportunityActivityIndex, invalidateGongCache, warmGongCallCache, isGongCacheWarm } from '../services/gong'
 import { evaluatePastDue } from '../alerts/pastDue'
 import { evaluateStalled } from '../alerts/stalled'
@@ -119,7 +119,7 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cool
 // ─── Core evaluation (shared by live and dry run) ─────────────────────────
 
 async function evaluate(opts: { bustGongCache?: boolean } = {}) {
-  if (opts.bustGongCache) await invalidateGongCache()
+  if (opts.bustGongCache) await Promise.all([invalidateGongCache(), invalidateSfdcOppCache()])
 
   // Fast Redis ping — tells us whether Gong data is available without blocking.
   // If cold: fire-and-forget a background warm for the NEXT run, skip Gong this run.
@@ -132,7 +132,7 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
     console.warn('[Gong] Cache cold — skipping Gong activity this run. Cache is warming in background; next run will include Gong data.')
   }
 
-  const opps = await fetchOpenOpportunities()
+  const opps = await fetchOpenOpportunities({ bustCache: opts.bustGongCache })
   const sfdcIds = opps.map((o) => o.Id)
 
   const gongActivity: Awaited<ReturnType<typeof buildOpportunityActivityIndex>> = gongWarm
