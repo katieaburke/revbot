@@ -63,7 +63,9 @@ export function evaluateProspectingHygiene(
       ? Math.floor((now - new Date(gongLastCallDate).getTime()) / (1000 * 60 * 60 * 24))
       : null
 
-    const hasRecentRepContact = daysSinceLastRepContact !== null && daysSinceLastRepContact <= config.recentActivityDays
+    // NOTE: hasRecentRepContact is intentionally excluded from activity checks — Last_Rep_Communication_Date__c
+    // is updated by call block dials even when the account isn't in an active flow, making it an unreliable
+    // signal for intentional prospecting activity. Only Gong call data drives the flags.
     const hasRecentGongCall = daysSinceLastGongCall !== null && daysSinceLastGongCall <= config.recentActivityDays
 
     // Compute per-account Gong flow stats for this account's contact emails
@@ -138,32 +140,29 @@ export function evaluateProspectingHygiene(
 
     const status = acct.Prospecting_Status__c
 
-    // Flag 1: In "Prospecting" but no activity in staleThresholdDays
+    // Flag 1: In "Prospecting" but no Gong call activity in staleThresholdDays
     if (status === 'Prospecting') {
-      const hasAnyRecentActivity = hasRecentRepContact || hasRecentGongCall
-      if (!hasAnyRecentActivity) {
+      if (!hasRecentGongCall) {
         flags.push({ ...base, flagType: 'STALE_PROSPECTING' })
       }
     }
 
-    // Flag 2: In "Planned" but has recent activity → should be moved to Prospecting
+    // Flag 2: In "Planned" but has recent Gong call activity → should be moved to Prospecting
     // Exclude if: re-engage date is in the future (already rescheduled),
     //             OR target prospecting date is in the future (already planned ahead)
     if (status === 'Planned') {
-      const hasAnyRecentActivity = hasRecentRepContact || hasRecentGongCall
       const reEngageDate = acct.Date_to_Re_engage__c ? new Date(acct.Date_to_Re_engage__c).getTime() : null
       const targetDate = acct.Target_Prospecting_Date__c ? new Date(acct.Target_Prospecting_Date__c).getTime() : null
       const reEngageIsFuture = reEngageDate !== null && reEngageDate > now
       const targetDateIsFuture = targetDate !== null && targetDate > now
-      if (hasAnyRecentActivity && !reEngageIsFuture && !targetDateIsFuture) {
+      if (hasRecentGongCall && !reEngageIsFuture && !targetDateIsFuture) {
         flags.push({ ...base, flagType: 'SHOULD_BE_PROSPECTING' })
       }
     }
 
-    // Flag 3: Has recent activity but target prospecting date is before the 1st of last month
+    // Flag 3: Has recent Gong call activity but target prospecting date is before the 1st of last month
     // i.e. they're actively working the account but haven't updated the target date in 30+ days
     {
-      const hasAnyRecentActivity = hasRecentRepContact || hasRecentGongCall
       const nowDate = new Date(now)
       const firstOfPrevMonth = new Date(nowDate.getFullYear(), nowDate.getMonth() - 1, 1)
       const targetDateMs = acct.Target_Prospecting_Date__c
@@ -174,10 +173,10 @@ export function evaluateProspectingHygiene(
       // Only flag active statuses — skip Paused/Nurturing/Success
       const isActiveStatus = status === 'Prospecting' || status === 'Planned'
 
-      // Don't double-flag an account already caught by Flag 1 (stale prospecting)
-      const alreadyStale = status === 'Prospecting' && !(hasRecentRepContact || hasRecentGongCall)
+      // Don't double-flag an account already caught by Flag 1 (stale prospecting = no recent Gong call)
+      const alreadyStale = status === 'Prospecting' && !hasRecentGongCall
 
-      if (hasAnyRecentActivity && targetIsStale && isActiveStatus && !alreadyStale) {
+      if (hasRecentGongCall && targetIsStale && isActiveStatus && !alreadyStale) {
         flags.push({ ...base, flagType: 'STALE_TARGET_DATE' })
       }
     }
