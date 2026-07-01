@@ -119,20 +119,20 @@ async function isSnoozedOrRecentlySent(oppId: string, alertType: AlertType, cool
 // ─── Core evaluation (shared by live and dry run) ─────────────────────────
 
 async function evaluate(opts: { bustGongCache?: boolean } = {}) {
+  console.log('[Evaluate] Step 1: bust cache check')
   if (opts.bustGongCache) await Promise.all([invalidateGongCache(), invalidateSfdcOppCache()])
 
-  // Fast Redis ping — tells us whether Gong data is available without blocking.
-  // If cold: fire-and-forget a background warm for the NEXT run, skip Gong this run.
-  // If warm: build the index normally (reads from Redis — near-instant).
-  // This prevents the "double fetch" race where both warm and index builder
-  // independently hit the Gong API at the same time.
   const t0 = Date.now()
+  console.log('[Evaluate] Step 2: Redis warm check...')
   const gongWarm = await isGongCacheWarm()
+  console.log(`[Evaluate] Step 3: Redis check done in ${Date.now() - t0}ms, gongWarm=${gongWarm}`)
+
   if (!gongWarm) {
     warmGongCallCache().catch((err) => console.warn('[Gong] Background warm failed:', String(err)))
-    console.warn('[Gong] Cache cold — skipping Gong activity this run. Cache is warming in background; next run will include Gong data.')
+    console.warn('[Gong] Cache cold — skipping Gong activity this run.')
   }
 
+  console.log('[Evaluate] Step 4: fetching SFDC opps...')
   const opps = await fetchOpenOpportunities({ bustCache: opts.bustGongCache })
   console.log(`[Evaluate] SFDC opps: ${Date.now() - t0}ms (${opps.length} opps, gongWarm=${gongWarm})`)
   const sfdcIds = opps.map((o) => o.Id)

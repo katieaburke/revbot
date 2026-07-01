@@ -287,18 +287,27 @@ async function getCachedCalls(lookbackDays = 90): Promise<GongExtensiveCall[]> {
 }
 
 // Returns true if either the processed index or raw call cache is populated in Redis.
-// Use this to decide whether to skip Gong on a cold-cache run.
+// Never throws — Redis errors are treated as cold cache.
 export async function isGongCacheWarm(): Promise<boolean> {
-  const [index, raw] = await Promise.all([
-    redis.get(CACHE_KEY),
-    redis.get(CACHE_KEY_RAW),
-  ])
-  return !!(index || raw)
+  try {
+    const [index, raw] = await Promise.all([
+      redis.get(CACHE_KEY).catch(() => null),
+      redis.get(CACHE_KEY_RAW).catch(() => null),
+    ])
+    return !!(index || raw)
+  } catch {
+    return false
+  }
 }
 
 // Returns true if the lightweight account call cache is warm.
+// Never throws — Redis errors are treated as cold cache.
 export async function isGongAccountCacheWarm(): Promise<boolean> {
-  return !!(await redis.get(CACHE_KEY_ACCOUNT))
+  try {
+    return !!(await redis.get(CACHE_KEY_ACCOUNT).catch(() => null))
+  } catch {
+    return false
+  }
 }
 
 // Warms the account call cache in the background (used by prospecting hygiene scan).
