@@ -179,6 +179,7 @@ async function fetchAllCallsExtensive(
 ): Promise<GongExtensiveCall[]> {
   const calls: GongExtensiveCall[] = []
   let cursor: string | undefined
+  let page = 0
 
   do {
     const body: Record<string, unknown> = {
@@ -193,9 +194,17 @@ async function fetchAllCallsExtensive(
       ...(cursor ? { cursor } : {}),
     }
 
-    const res = await client.post<GongExtensiveResponse>('/calls/extensive', body)
-    calls.push(...(res.data.calls ?? []))
-    cursor = res.data.records?.cursor
+    try {
+      const res = await client.post<GongExtensiveResponse>('/calls/extensive', body)
+      calls.push(...(res.data.calls ?? []))
+      cursor = res.data.records?.cursor
+      page++
+      console.log(`[Gong] Calls page ${page}: ${calls.length} total so far`)
+    } catch (err) {
+      const msg = (err as { message?: string }).message ?? String(err)
+      console.error(`[Gong] Calls fetch stopped at page ${page + 1}: ${msg} — returning ${calls.length} calls collected so far`)
+      break // return partial results rather than throwing
+    }
   } while (cursor)
 
   return calls
@@ -209,6 +218,7 @@ async function fetchAllCallsLite(
 ): Promise<GongExtensiveCall[]> {
   const calls: GongExtensiveCall[] = []
   let cursor: string | undefined
+  let page = 0
 
   do {
     const body: Record<string, unknown> = {
@@ -220,9 +230,16 @@ async function fetchAllCallsLite(
       ...(cursor ? { cursor } : {}),
     }
 
-    const res = await client.post<GongExtensiveResponse>('/calls/extensive', body, { timeout: 15_000 })
-    calls.push(...(res.data.calls ?? []))
-    cursor = res.data.records?.cursor
+    try {
+      const res = await client.post<GongExtensiveResponse>('/calls/extensive', body, { timeout: 15_000 })
+      calls.push(...(res.data.calls ?? []))
+      cursor = res.data.records?.cursor
+      page++
+    } catch (err) {
+      const msg = (err as { message?: string }).message ?? String(err)
+      console.error(`[Gong] Lite calls fetch stopped at page ${page + 1}: ${msg} — returning ${calls.length} so far`)
+      break
+    }
   } while (cursor)
 
   return calls
@@ -241,14 +258,9 @@ async function getCachedCalls(lookbackDays = 90): Promise<GongExtensiveCall[]> {
   const toDate = new Date()
   const fromDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
 
-  let calls: GongExtensiveCall[] = []
-  try {
-    calls = await fetchAllCallsExtensive(client, fromDate, toDate)
-  } catch (err) {
-    console.error('[Gong] Failed to fetch calls:', err)
-    return []
-  }
-
+  // fetchAllCallsExtensive breaks on error and returns whatever it collected — always cache it
+  const calls = await fetchAllCallsExtensive(client, fromDate, toDate)
+  console.log(`[Gong] Caching ${calls.length} calls (${lookbackDays}d window)`)
   await redis.set(CACHE_KEY_RAW, JSON.stringify(calls), 'EX', CACHE_TTL_SECONDS)
   return calls
 }
