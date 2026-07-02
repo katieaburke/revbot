@@ -241,6 +241,22 @@ router.get('/sfdc-status', async (_req, res) => {
   res.json({ connected: !!user })
 })
 
+router.delete('/sfdc-disconnect', async (_req, res) => {
+  await db.user.updateMany({
+    where: { isRevOps: true },
+    data: {
+      sfdcAccessToken: null,
+      sfdcRefreshToken: null,
+      sfdcTokenExpiresAt: null,
+      sfdcConnectedAt: null,
+    },
+  })
+  // Bust the cached connection so next connect starts fresh
+  const { invalidateSfdcCache } = await import('../services/salesforce')
+  invalidateSfdcCache()
+  res.json({ ok: true })
+})
+
 // ── App Settings (schedule, cooldown, etc.) ───────────────────────────────────
 
 router.get('/settings', async (_req, res) => {

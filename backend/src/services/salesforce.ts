@@ -232,12 +232,20 @@ export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {})
     return records
   }
 
-  const records = await Promise.race([
-    runQuery(),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('SFDC opportunity query timed out after 35s')), 35_000)
-    ),
-  ])
+  let records: SfdcOpportunity[]
+  try {
+    records = await Promise.race([
+      runQuery(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('SFDC opportunity query timed out after 20s')), 20_000)
+      ),
+    ])
+  } catch (err) {
+    // Stale/expired token often causes jsforce to hang — bust the cached connection
+    // so the next attempt re-authenticates from scratch
+    _serviceConn = null
+    throw err
+  }
 
   console.log(`[SFDC] Fetched ${records.length} open opportunities from API`)
   _oppsMemCache = { data: records, expiresAt: Date.now() + SFDC_OPP_CACHE_TTL * 1000 }
@@ -351,12 +359,18 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
     return records
   }
 
-  const records = await Promise.race([
-    runQuery(),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('SFDC account query timed out after 35s')), 35_000)
-    ),
-  ])
+  let records: SfdcAccount[]
+  try {
+    records = await Promise.race([
+      runQuery(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('SFDC account query timed out after 20s')), 20_000)
+      ),
+    ])
+  } catch (err) {
+    _serviceConn = null
+    throw err
+  }
 
   console.log(`[SFDC] Fetched ${records.length} prospect accounts from API`)
   _accountsMemCache.set(cacheKey, { data: records, expiresAt: Date.now() + SFDC_ACCOUNT_CACHE_TTL * 1000 })

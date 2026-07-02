@@ -115,8 +115,21 @@ export function Settings() {
             <label className="block text-xs font-medium text-gray-700 mb-0.5">RevOps connection</label>
             <p className="text-xs text-gray-400 mb-2">Connect your Salesforce account so the app can read pipeline data for dry runs and alert evaluation.</p>
             {isConnected ? (
-              <div className="flex items-center gap-2 text-sm text-green-600">
-                <CheckCircle size={15} /> Salesforce connected successfully!
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 text-sm text-green-600">
+                  <CheckCircle size={15} /> Salesforce connected successfully!
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!confirm('Disconnect Salesforce? You will need to reconnect to run scans.')) return
+                    await api.delete('/config/sfdc-disconnect')
+                    window.location.reload()
+                  }}
+                  className="text-xs text-gray-400 hover:text-red-500 underline"
+                >
+                  Disconnect
+                </button>
               </div>
             ) : (
               <button

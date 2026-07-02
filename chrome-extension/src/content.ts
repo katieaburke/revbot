@@ -252,7 +252,7 @@ async function initPanel() {
 
   const configured = await isConfigured()
   if (!configured) {
-    renderNotConfigured(panel)
+    removePanel()
     return
   }
 
