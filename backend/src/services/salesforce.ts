@@ -11,6 +11,12 @@ const SFDC_API_VERSION = '59.0'
 // Run a SOQL query via direct REST API calls using axios.
 // jsforce's HTTP layer has no per-request timeout and can hang indefinitely on Railway.
 // axios gives us a hard socket-level timeout so we always fail fast.
+interface SfdcQueryResponse<T> {
+  records: T[]
+  done: boolean
+  nextRecordsUrl?: string
+}
+
 async function runSfdcSoql<T>(
   instanceUrl: string,
   accessToken: string,
@@ -20,12 +26,13 @@ async function runSfdcSoql<T>(
   const records: T[] = []
   let nextPath: string | null = `/services/data/v${SFDC_API_VERSION}/query?q=${encodeURIComponent(soql)}`
   while (nextPath) {
-    const resp = await axios.get<{ records: T[]; done: boolean; nextRecordsUrl?: string }>(
+    const resp = await axios.get<SfdcQueryResponse<T>>(
       `${instanceUrl}${nextPath}`,
       { headers: { Authorization: `Bearer ${accessToken}` }, timeout: timeoutMs },
     )
-    records.push(...resp.data.records)
-    nextPath = resp.data.done ? null : (resp.data.nextRecordsUrl ?? null)
+    const page: SfdcQueryResponse<T> = resp.data
+    records.push(...page.records)
+    nextPath = page.done ? null : (page.nextRecordsUrl ?? null)
   }
   return records
 }
