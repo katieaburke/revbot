@@ -1,9 +1,34 @@
 import * as jsforce from 'jsforce'
+import axios from 'axios'
 import { config } from '../config'
 import { db } from '../db'
 import { encrypt, decrypt } from '../crypto'
 import { randomBytes, createHash } from 'crypto'
 import { cacheRedis as redis } from '../redis'
+
+const SFDC_API_VERSION = '59.0'
+
+// Run a SOQL query via direct REST API calls using axios.
+// jsforce's HTTP layer has no per-request timeout and can hang indefinitely on Railway.
+// axios gives us a hard socket-level timeout so we always fail fast.
+async function runSfdcSoql<T>(
+  instanceUrl: string,
+  accessToken: string,
+  soql: string,
+  timeoutMs = 15_000,
+): Promise<T[]> {
+  const records: T[] = []
+  let nextPath: string | null = `/services/data/v${SFDC_API_VERSION}/query?q=${encodeURIComponent(soql)}`
+  while (nextPath) {
+    const resp = await axios.get<{ records: T[]; done: boolean; nextRecordsUrl?: string }>(
+      `${instanceUrl}${nextPath}`,
+      { headers: { Authorization: `Bearer ${accessToken}` }, timeout: timeoutMs },
+    )
+    records.push(...resp.data.records)
+    nextPath = resp.data.done ? null : (resp.data.nextRecordsUrl ?? null)
+  }
+  return records
+}
 
 const SFDC_OPP_CACHE_KEY = 'sfdc:open_opportunities'
 const SFDC_OPP_CACHE_TTL = 5 * 60
@@ -206,9 +231,12 @@ export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {})
 
   const conn = await getServiceConnection()
 
-  async function runQuery(): Promise<SfdcOpportunity[]> {
-    let result = await conn.query<SfdcOpportunity>(`
-      SELECT
+  let records: SfdcOpportunity[]
+  try {
+    records = await runSfdcSoql<SfdcOpportunity>(
+      conn.instanceUrl,
+      conn.accessToken!,
+      `SELECT
         Id, Name, StageName, CloseDate, Type, Amount,
         OwnerId, Owner.Id, Owner.Name, Owner.Email, Owner.Manager.Email, Owner.Manager.Name,
         CreatedDate, LastActivityDate, IsClosed, IsWon,
@@ -222,28 +250,12 @@ export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {})
         Account.Id, Account.Name
       FROM Opportunity
       WHERE IsClosed = false
-      ORDER BY CloseDate ASC
-    `)
-    const records = [...result.records]
-    while (!result.done && result.nextRecordsUrl) {
-      result = await conn.queryMore<SfdcOpportunity>(result.nextRecordsUrl)
-      records.push(...result.records)
-    }
-    return records
-  }
-
-  let records: SfdcOpportunity[]
-  try {
-    records = await Promise.race([
-      runQuery(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('SFDC opportunity query timed out after 20s')), 20_000)
-      ),
-    ])
+      ORDER BY CloseDate ASC`,
+    )
   } catch (err) {
-    // Stale/expired token often causes jsforce to hang — bust the cached connection
-    // so the next attempt re-authenticates from scratch
     _serviceConn = null
+    const status = (err as any)?.response?.status
+    if (status === 401) throw new Error('Salesforce token expired — please reconnect Salesforce in settings')
     throw err
   }
 
@@ -336,9 +348,12 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
   const conn = await getServiceConnection()
   const rtFilter = recordTypeDeveloperName ? `AND RecordType.DeveloperName = '${recordTypeDeveloperName}'` : ''
 
-  async function runQuery(): Promise<SfdcAccount[]> {
-    let result = await conn.query<SfdcAccount>(`
-      SELECT Id, Name, Account_Stage__c, Prospecting_Status__c, Prospecting_Pause_Reason__c,
+  let records: SfdcAccount[]
+  try {
+    records = await runSfdcSoql<SfdcAccount>(
+      conn.instanceUrl,
+      conn.accessToken!,
+      `SELECT Id, Name, Account_Stage__c, Prospecting_Status__c, Prospecting_Pause_Reason__c,
              Target_Prospecting_Date__c, Date_to_Re_engage__c,
              End_of_competitor_engagement__c, Competitor__c, Last_Rep_Communication_Date__c,
              OwnerId, Owner.Id, Owner.Name, Owner.Email,
@@ -349,26 +364,12 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
       WHERE Account_Stage__c = 'Prospect'
       AND Target_Prospecting_Date__c != null
       ${rtFilter}
-      ORDER BY Name ASC
-    `)
-    const records = [...result.records]
-    while (!result.done && result.nextRecordsUrl) {
-      result = await conn.queryMore<SfdcAccount>(result.nextRecordsUrl)
-      records.push(...result.records)
-    }
-    return records
-  }
-
-  let records: SfdcAccount[]
-  try {
-    records = await Promise.race([
-      runQuery(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('SFDC account query timed out after 20s')), 20_000)
-      ),
-    ])
+      ORDER BY Name ASC`,
+    )
   } catch (err) {
     _serviceConn = null
+    const status = (err as any)?.response?.status
+    if (status === 401) throw new Error('Salesforce token expired — please reconnect Salesforce in settings')
     throw err
   }
 
