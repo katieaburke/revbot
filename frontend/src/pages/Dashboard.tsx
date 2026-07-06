@@ -472,14 +472,34 @@ export function Dashboard() {
       <SectionHeader icon={<Briefcase size={16} />} title="Opportunities" />
 
       {/* Stat cards */}
-      {!isLoading && (
+      {!isLoading && dryRunResult && (() => {
+        const wouldSendGroups = groupByOpp(dryRunResult.wouldSend)
+        const newSendGroups = wouldSendGroups.filter(g => {
+          const c = oppCounts[g.opportunityId]
+          return !c || (c.rep === 0 && c.manager === 0)
+        })
+        const resendGroups = wouldSendGroups.filter(g => {
+          const c = oppCounts[g.opportunityId]
+          return c && (c.rep > 0 || c.manager > 0)
+        })
+        const cooldownGroups = groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'cooldown' || !a.skipType))
+        const snoozedOwnerGroups = groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_owner'))
+        const snoozedRevopsGroups = groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_revops'))
+        const resolvedCount = dryRunResult.resolved?.length ?? 0
+        return (
+          <div className="grid grid-cols-3 gap-4 mb-6">
+            <StatCard label="Would Send" value={newSendGroups.length} icon={<AlertCircle size={18} className="text-red-500" />} hint="New flags, not yet notified" />
+            <StatCard label="In Cooldown" value={cooldownGroups.length} icon={<Clock size={18} className="text-blue-400" />} hint="Sent, within cooldown window" />
+            <StatCard label="Cooldown Expired" value={resendGroups.length} icon={<RefreshCw size={18} className="text-orange-400" />} hint="Sent before, window passed — would re-send" />
+            <StatCard label="Snoozed by Rep" value={snoozedOwnerGroups.length} icon={<BellOff size={18} className="text-yellow-500" />} hint="Rep snoozed via Slack" />
+            <StatCard label="Snoozed by RevOps" value={snoozedRevopsGroups.length} icon={<BellOff size={18} className="text-amber-500" />} hint="Manually snoozed from dashboard" />
+            <StatCard label="Resolved" value={resolvedCount} icon={<CheckCircle size={18} className="text-green-500" />} hint="Auto-updates each scan" />
+          </div>
+        )
+      })()}
+      {!isLoading && !dryRunResult && (
         <div className="grid grid-cols-3 gap-4 mb-6">
-          <StatCard
-            label={dryRunResult ? 'Active flags (latest scan)' : 'Pending alerts'}
-            value={dryRunResult ? groupByOpp(dryRunResult.wouldSend).length : (summary?.sent ?? 0)}
-            icon={<AlertCircle size={18} className="text-red-500" />}
-            hint={dryRunResult ? 'Opps still needing action' : undefined}
-          />
+          <StatCard label="Pending alerts" value={summary?.sent ?? 0} icon={<AlertCircle size={18} className="text-red-500" />} />
           <StatCard label="Snoozed" value={summary?.snoozed ?? 0} icon={<Clock size={18} className="text-yellow-500" />} />
           <StatCard label="Resolved" value={summary?.resolved ?? 0} icon={<CheckCircle size={18} className="text-green-500" />} hint="Auto-updates each scan" />
         </div>
