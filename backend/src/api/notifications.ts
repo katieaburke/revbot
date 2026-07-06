@@ -350,83 +350,63 @@ router.post('/nudge', async (req, res) => {
   }
 })
 
-// Prisma client is not regenerated locally — managerEmail/ownerEmail are runtime fields
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const notifDb = (db as any)
+// ── Shared helper: build manager summary from last dry run result ─────────────
+// "Open" = wouldSkip (flags with active notifications, in cooldown or snoozed)
+// "Pending" = wouldSend (flags ready to send next)
+// Both arrays already carry ownerEmail/managerEmail — no Notification join needed.
+
+type DryRunAlertMin = {
+  ownerEmail: string; ownerName: string | null
+  managerEmail: string | null; managerName: string | null
+  opportunityId: string; skipType?: string
+}
+
+function buildManagerSummary(
+  dryRun: { wouldSend: DryRunAlertMin[]; wouldSkip: DryRunAlertMin[] },
+  filterEmails?: string[]
+) {
+  type RepEntry = { ownerName: string | null; openOppIds: Set<string>; pendingOppIds: Set<string> }
+  type MgrEntry = { managerName: string | null; reps: Map<string, RepEntry> }
+  const mgrMap = new Map<string, MgrEntry>()
+
+  function addAlert(alert: DryRunAlertMin, bucket: 'open' | 'pending') {
+    if (!alert.managerEmail) return
+    if (filterEmails && !filterEmails.includes(alert.managerEmail)) return
+    if (!mgrMap.has(alert.managerEmail)) mgrMap.set(alert.managerEmail, { managerName: alert.managerName, reps: new Map() })
+    const mgr = mgrMap.get(alert.managerEmail)!
+    if (!mgr.reps.has(alert.ownerEmail)) mgr.reps.set(alert.ownerEmail, { ownerName: alert.ownerName, openOppIds: new Set(), pendingOppIds: new Set() })
+    const rep = mgr.reps.get(alert.ownerEmail)!
+    if (bucket === 'open') rep.openOppIds.add(alert.opportunityId)
+    else rep.pendingOppIds.add(alert.opportunityId)
+  }
+
+  for (const a of (dryRun.wouldSkip ?? [])) addAlert(a, 'open')
+  for (const a of (dryRun.wouldSend ?? [])) addAlert(a, 'pending')
+
+  return Array.from(mgrMap.entries()).map(([mgrEmail, entry]) => {
+    const reps = Array.from(entry.reps.entries()).map(([repEmail, r]) => ({
+      ownerEmail: repEmail,
+      ownerName: r.ownerName,
+      openCount: r.openOppIds.size,
+      pendingCount: r.pendingOppIds.size,
+    })).sort((a, b) => (b.openCount + b.pendingCount) - (a.openCount + a.pendingCount))
+    return {
+      managerEmail: mgrEmail,
+      managerName: entry.managerName,
+      totalOpen: reps.reduce((s, r) => s + r.openCount, 0),
+      totalPending: reps.reduce((s, r) => s + r.pendingCount, 0),
+      reps,
+    }
+  }).sort((a, b) => (a.managerName ?? a.managerEmail).localeCompare(b.managerName ?? b.managerEmail))
+}
 
 // GET /api/notifications/manager-summary-data
-// Returns open flag counts and pending flag counts per manager → rep, for the summary DM preview.
 router.get('/manager-summary-data', async (_req, res) => {
   try {
-    type NotifRow = { managerEmail: string | null; managerName: string | null; ownerEmail: string; ownerName: string | null; opportunityId: string }
-    // 1. Open (sent/snoozed) notifications grouped by manager → owner
-    const openNotifs: NotifRow[] = await notifDb.notification.findMany({
-      where: { status: { in: ['SENT', 'SNOOZED'] }, managerEmail: { not: null } },
-      select: { managerEmail: true, managerName: true, ownerEmail: true, ownerName: true, opportunityId: true },
-    })
-
-    // Build: managerEmail → { managerName, reps: Map<ownerEmail, { ownerName, openOppIds }> }
-    type RepStat = { ownerName: string | null; openOppIds: Set<string> }
-    type MgrEntry = { managerName: string | null; reps: Map<string, RepStat> }
-    const mgrMap = new Map<string, MgrEntry>()
-
-    for (const n of openNotifs) {
-      const mgrEmail = n.managerEmail!
-      if (!mgrMap.has(mgrEmail)) mgrMap.set(mgrEmail, { managerName: n.managerName, reps: new Map() })
-      const entry = mgrMap.get(mgrEmail)!
-      if (!entry.reps.has(n.ownerEmail)) entry.reps.set(n.ownerEmail, { ownerName: n.ownerName, openOppIds: new Set() })
-      entry.reps.get(n.ownerEmail)!.openOppIds.add(n.opportunityId)
-    }
-
-    // 2. Pending flags from last dry run
-    const lastDryRunSetting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
-    type DryRunAlertMin = { ownerEmail: string; ownerName: string | null; managerEmail: string | null; managerName: string | null; opportunityId: string; wouldSkip: boolean; skipType?: string }
-    const pendingByMgr = new Map<string, Map<string, { ownerName: string | null; pendingOppIds: Set<string> }>>()
-
-    if (lastDryRunSetting) {
-      const dryRun = JSON.parse(lastDryRunSetting.value) as { wouldSend: DryRunAlertMin[] }
-      for (const alert of (dryRun.wouldSend ?? [])) {
-        if (!alert.managerEmail) continue
-        if (!pendingByMgr.has(alert.managerEmail)) pendingByMgr.set(alert.managerEmail, new Map())
-        const repMap = pendingByMgr.get(alert.managerEmail)!
-        if (!repMap.has(alert.ownerEmail)) repMap.set(alert.ownerEmail, { ownerName: alert.ownerName, pendingOppIds: new Set() })
-        repMap.get(alert.ownerEmail)!.pendingOppIds.add(alert.opportunityId)
-      }
-    }
-
-    // 3. Merge into response
-    const allManagerEmails = new Set([...mgrMap.keys(), ...pendingByMgr.keys()])
-    const managers = Array.from(allManagerEmails).map((mgrEmail) => {
-      const openEntry = mgrMap.get(mgrEmail)
-      const pendingEntry = pendingByMgr.get(mgrEmail)
-      const managerName = openEntry?.managerName ?? null
-
-      const allRepEmails = new Set([
-        ...(openEntry ? openEntry.reps.keys() : []),
-        ...(pendingEntry ? pendingEntry.keys() : []),
-      ])
-
-      const reps = Array.from(allRepEmails).map((repEmail) => {
-        const openRep = openEntry?.reps.get(repEmail)
-        const pendingRep = pendingEntry?.get(repEmail)
-        return {
-          ownerEmail: repEmail,
-          ownerName: openRep?.ownerName ?? pendingRep?.ownerName ?? null,
-          openCount: openRep?.openOppIds.size ?? 0,
-          pendingCount: pendingRep?.pendingOppIds.size ?? 0,
-        }
-      }).sort((a, b) => (b.openCount + b.pendingCount) - (a.openCount + a.pendingCount))
-
-      return {
-        managerEmail: mgrEmail,
-        managerName,
-        totalOpen: reps.reduce((s, r) => s + r.openCount, 0),
-        totalPending: reps.reduce((s, r) => s + r.pendingCount, 0),
-        reps,
-      }
-    }).sort((a, b) => (a.managerName ?? a.managerEmail).localeCompare(b.managerName ?? b.managerEmail))
-
-    res.json({ managers })
+    const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+    if (!setting) return res.json({ managers: [] })
+    const dryRun = JSON.parse(setting.value) as { wouldSend: DryRunAlertMin[]; wouldSkip: DryRunAlertMin[] }
+    res.json({ managers: buildManagerSummary(dryRun) })
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
@@ -440,41 +420,15 @@ router.post('/send-manager-summary', async (req, res) => {
     return res.status(400).json({ error: 'managerEmails must be a non-empty array' })
   }
 
-  type NotifRow2 = { managerEmail: string | null; managerName: string | null; ownerEmail: string; ownerName: string | null; opportunityId: string }
-  // Re-use the same data logic
-  const openNotifs: NotifRow2[] = await notifDb.notification.findMany({
-    where: { status: { in: ['SENT', 'SNOOZED'] }, managerEmail: { in: managerEmails } },
-    select: { managerEmail: true, managerName: true, ownerEmail: true, ownerName: true, opportunityId: true },
-  })
-
-  type RepStat = { ownerName: string | null; openOppIds: Set<string> }
-  type MgrEntry = { managerName: string | null; reps: Map<string, RepStat> }
-  const mgrMap = new Map<string, MgrEntry>()
-  for (const n of openNotifs) {
-    const mgrEmail = n.managerEmail!
-    if (!mgrMap.has(mgrEmail)) mgrMap.set(mgrEmail, { managerName: n.managerName, reps: new Map() })
-    const entry = mgrMap.get(mgrEmail)!
-    if (!entry.reps.has(n.ownerEmail)) entry.reps.set(n.ownerEmail, { ownerName: n.ownerName, openOppIds: new Set() })
-    entry.reps.get(n.ownerEmail)!.openOppIds.add(n.opportunityId)
-  }
-
-  const lastDryRunSetting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
-  type DryRunAlertMin = { ownerEmail: string; ownerName: string | null; managerEmail: string | null; managerName: string | null; opportunityId: string }
-  const pendingByMgr = new Map<string, Map<string, { ownerName: string | null; pendingOppIds: Set<string> }>>()
-  if (lastDryRunSetting) {
-    const dryRun = JSON.parse(lastDryRunSetting.value) as { wouldSend: DryRunAlertMin[] }
-    for (const alert of (dryRun.wouldSend ?? [])) {
-      if (!alert.managerEmail || !managerEmails.includes(alert.managerEmail)) continue
-      if (!pendingByMgr.has(alert.managerEmail)) pendingByMgr.set(alert.managerEmail, new Map())
-      const repMap = pendingByMgr.get(alert.managerEmail)!
-      if (!repMap.has(alert.ownerEmail)) repMap.set(alert.ownerEmail, { ownerName: alert.ownerName, pendingOppIds: new Set() })
-      repMap.get(alert.ownerEmail)!.pendingOppIds.add(alert.opportunityId)
-    }
-  }
+  const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+  if (!setting) return res.status(404).json({ error: 'No dry run data found — run a scan first.' })
+  const dryRun = JSON.parse(setting.value) as { wouldSend: DryRunAlertMin[]; wouldSkip: DryRunAlertMin[] }
+  const managers = buildManagerSummary(dryRun, managerEmails)
 
   const results: { managerEmail: string; ok: boolean; error?: string }[] = []
 
-  for (const mgrEmail of managerEmails) {
+  for (const mgr of managers) {
+    const mgrEmail = mgr.managerEmail
     try {
       const slackUserId = await resolveSlackUserId(mgrEmail)
       if (!slackUserId) {
@@ -482,27 +436,15 @@ router.post('/send-manager-summary', async (req, res) => {
         continue
       }
 
-      const openEntry = mgrMap.get(mgrEmail)
-      const pendingEntry = pendingByMgr.get(mgrEmail)
-      const managerFirstName = (openEntry?.managerName ?? mgrEmail).split(' ')[0]
+      const managerFirstName = (mgr.managerName ?? mgrEmail).split(' ')[0]
+      const repRows = mgr.reps.map((r) => ({
+        name: r.ownerName ?? r.ownerEmail,
+        openCount: r.openCount,
+        pendingCount: r.pendingCount,
+      }))
 
-      const allRepEmails = new Set([
-        ...(openEntry ? openEntry.reps.keys() : []),
-        ...(pendingEntry ? pendingEntry.keys() : []),
-      ])
-
-      const repRows = Array.from(allRepEmails).map((repEmail) => {
-        const openRep = openEntry?.reps.get(repEmail)
-        const pendingRep = pendingEntry?.get(repEmail)
-        return {
-          name: openRep?.ownerName ?? pendingRep?.ownerName ?? repEmail,
-          openCount: openRep?.openOppIds.size ?? 0,
-          pendingCount: pendingRep?.pendingOppIds.size ?? 0,
-        }
-      }).sort((a, b) => (b.openCount + b.pendingCount) - (a.openCount + a.pendingCount))
-
-      const totalOpen = repRows.reduce((s, r) => s + r.openCount, 0)
-      const totalPending = repRows.reduce((s, r) => s + r.pendingCount, 0)
+      const totalOpen = mgr.totalOpen
+      const totalPending = mgr.totalPending
 
       const repLines = repRows
         .filter((r) => r.openCount > 0 || r.pendingCount > 0)
@@ -551,7 +493,14 @@ router.post('/send-manager-summary', async (req, res) => {
       await sendDm(slackUserId, blocks, `Pipeline hygiene update for your team — ${totalOpen} open, ${totalPending} queued`)
       results.push({ managerEmail: mgrEmail, ok: true })
     } catch (err) {
-      results.push({ managerEmail: mgrEmail, ok: false, error: String(err) })
+      results.push({ managerEmail: mgr.managerEmail, ok: false, error: String(err) })
+    }
+  }
+
+  // Also add failures for any requested emails not in the dry run data
+  for (const email of managerEmails) {
+    if (!results.find((r) => r.managerEmail === email)) {
+      results.push({ managerEmail: email, ok: false, error: 'No data found for this manager in the last scan' })
     }
   }
 

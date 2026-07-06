@@ -1,7 +1,4 @@
 import { db } from '../db'
-// Prisma client not regenerated locally — ownerEmail/managerEmail are runtime fields on Notification
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const notifDb = (db as any)
 import { fetchOpenOpportunities, invalidateSfdcOppCache } from '../services/salesforce'
 import { buildOpportunityActivityIndex, invalidateGongCache, warmGongCallCache, isGongCacheWarm } from '../services/gong'
 import { evaluatePastDue } from '../alerts/pastDue'
@@ -191,10 +188,11 @@ async function autoResolveStale(
 ): Promise<ResolvedNotification[]> {
   const currentFlagKeys = new Set(currentAlerts.map((a) => `${a.opportunityId}:${a.alertType}`))
 
-  type ActiveNotif = { id: string; opportunityId: string; opportunityName: string; alertType: string; ownerEmail: string; managerEmail: string | null }
-  const active: ActiveNotif[] = await notifDb.notification.findMany({
+  type ActiveNotif = { id: string; opportunityId: string; opportunityName: string; alertType: string; owner: { slackEmail: string | null } | null }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const active: ActiveNotif[] = await (db as any).notification.findMany({
     where: { status: { in: ['SENT', 'SNOOZED'] } },
-    select: { id: true, opportunityId: true, opportunityName: true, alertType: true, ownerEmail: true, managerEmail: true },
+    select: { id: true, opportunityId: true, opportunityName: true, alertType: true, owner: { select: { slackEmail: true } } },
   })
 
   const toResolve = active.filter((n) => {
@@ -216,8 +214,8 @@ async function autoResolveStale(
     opportunityName: n.opportunityName,
     alertType: n.alertType as AlertType,
     resolveReason: !openOppIds.has(n.opportunityId) ? 'opp_closed' : 'flag_cleared',
-    ownerEmail: n.ownerEmail,
-    managerEmail: n.managerEmail ?? null,
+    ownerEmail: n.owner?.slackEmail ?? '',
+    managerEmail: null,
   }))
 }
 
