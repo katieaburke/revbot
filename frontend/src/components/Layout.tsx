@@ -115,6 +115,7 @@ export function Layout() {
                 Territory Management
               </p>
               <NavItem to="/playbook/territory/reassignment" label="Reassign to Success" icon={ArrowLeftRight} />
+              <NavItem to="/playbook/territory/churned" label="Churned → Sales" icon={ArrowLeftRight} />
 
             </div>
           )}

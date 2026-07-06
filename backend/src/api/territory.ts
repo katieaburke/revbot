@@ -6,6 +6,13 @@ import {
   sendReassignmentMessages,
   type ReassignmentPreview,
 } from '../services/reassignment'
+import {
+  fetchChurnedAccounts,
+  fetchSalesReps,
+  updateAccountOwner,
+  notifyNewOwner,
+} from '../services/churnedReassignment'
+import { getServiceConnection } from '../services/salesforce'
 import { config } from '../config'
 
 const router = Router()
@@ -41,6 +48,45 @@ router.post('/reassignment/send', async (req, res) => {
     res.json({ ok: true, ...result })
   } catch (err) {
     console.error('[Territory] Send error:', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// ── Churned reassignment ────────────────────────────────────────────────────────
+
+// GET /api/territory/churned/accounts
+// Returns churned accounts (contract ended >6m ago, still owned by AM) + available sales reps
+router.get('/churned/accounts', async (_req, res) => {
+  try {
+    const [accounts, reps] = await Promise.all([fetchChurnedAccounts(), fetchSalesReps()])
+    res.json({ accounts, reps })
+  } catch (err) {
+    console.error('[Territory/Churned] Fetch error:', err)
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// POST /api/territory/churned/reassign
+// Body: { accountId, newOwnerId, newOwnerName, newOwnerEmail, account: ChurnedAccount }
+// Updates OwnerId in SFDC, sends Slack DM to new owner
+router.post('/churned/reassign', async (req, res) => {
+  const { accountId, newOwnerId, newOwnerName, newOwnerEmail, account } = req.body ?? {}
+  if (!accountId || !newOwnerId || !newOwnerName || !newOwnerEmail) {
+    res.status(400).json({ error: 'accountId, newOwnerId, newOwnerName, newOwnerEmail are required' })
+    return
+  }
+
+  try {
+    // 1. Update owner in SFDC
+    await updateAccountOwner(accountId, newOwnerId)
+
+    // 2. Send Slack DM to new owner
+    const conn = await getServiceConnection()
+    await notifyNewOwner(account, newOwnerName, newOwnerEmail, conn.instanceUrl)
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[Territory/Churned] Reassign error:', err)
     res.status(500).json({ error: (err as Error).message })
   }
 })
