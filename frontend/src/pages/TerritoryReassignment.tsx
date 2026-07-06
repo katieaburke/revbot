@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { RefreshCw, Send, ChevronDown, ChevronUp, Users, AlertCircle } from 'lucide-react'
+import { RefreshCw, Send, ChevronDown, ChevronUp, Users, AlertCircle, X } from 'lucide-react'
 import clsx from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -59,6 +59,7 @@ export function TerritoryReassignment() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [sent, setSent] = useState(false)
   const [sendResult, setSendResult] = useState<{ sent: string[]; failed: string[] } | null>(null)
+  const [showDraft, setShowDraft] = useState(false)
 
   const { data: preview, isLoading, error, refetch, isFetching } = useQuery<ReassignmentPreview>({
     queryKey: ['territory-reassignment-preview'],
@@ -71,6 +72,7 @@ export function TerritoryReassignment() {
     onSuccess: (data) => {
       setSent(true)
       setSendResult(data)
+      setShowDraft(false)
     },
   })
 
@@ -107,8 +109,8 @@ export function TerritoryReassignment() {
             Refresh
           </button>
           <button
-            onClick={() => sendMutation.mutate()}
-            disabled={!preview || totalRouted === 0 || sendMutation.isPending || sent}
+            onClick={() => setShowDraft(true)}
+            disabled={!preview || totalRouted === 0 || sent}
             className={clsx(
               'flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors',
               sent
@@ -117,7 +119,7 @@ export function TerritoryReassignment() {
             )}
           >
             <Send size={14} />
-            {sendMutation.isPending ? 'Sending…' : sent ? 'Sent ✓' : `Send Slack messages (${totalRouted})`}
+            {sent ? 'Sent ✓' : `Send Slack messages (${totalRouted})`}
           </button>
         </div>
       </div>
@@ -261,6 +263,107 @@ export function TerritoryReassignment() {
               <p className="text-sm text-gray-500">No accounts need reassignment right now.</p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Draft preview modal */}
+      {showDraft && preview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Review messages before sending</h2>
+                <p className="text-xs text-gray-500 mt-0.5">{Object.keys(preview.routedByLeader).length} Slack DMs will be sent</p>
+              </div>
+              <button onClick={() => setShowDraft(false)} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Message previews */}
+            <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+              {Object.entries(preview.routedByLeader).map(([leaderKey, accounts]) => {
+                const anaGroup = accounts.filter((a) => a.suggestAna)
+                const teamGroup = accounts.filter((a) => !a.suggestAna)
+                const leader = accounts[0]
+                const date = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+                const firstName = leader.leaderName.split(' ')[0]
+
+                return (
+                  <div key={leaderKey} className="rounded-xl border border-gray-200 overflow-hidden">
+                    {/* Slack-style header */}
+                    <div className={clsx(
+                      'px-4 py-2.5 flex items-center gap-2 border-b border-gray-100',
+                      LEADER_COLORS[leaderKey] ? 'bg-gray-50' : 'bg-gray-50'
+                    )}>
+                      <span className={clsx('inline-flex px-2 py-0.5 rounded-full text-xs font-semibold border', LEADER_COLORS[leaderKey] ?? 'bg-gray-100 text-gray-600 border-gray-200')}>
+                        {leader.leaderName}
+                      </span>
+                      <span className="text-xs text-gray-400">{leader.leaderEmail}</span>
+                    </div>
+
+                    {/* Message body */}
+                    <div className="px-4 py-3 space-y-2 text-sm font-mono bg-white">
+                      <p className="font-sans font-semibold text-gray-800 text-xs uppercase tracking-wide">📋 Customers to reassign — {date}</p>
+                      <p className="font-sans text-gray-700">
+                        Hi {firstName}! <strong>{accounts.length} customer account{accounts.length !== 1 ? 's' : ''}</strong> are owned by New Business reps and need to be moved to your team.
+                      </p>
+
+                      {anaGroup.length > 0 && (
+                        <div className="pt-1">
+                          <p className="font-sans font-semibold text-gray-700 text-xs mb-1">🇪🇸 Suggest assigning to Ana Hernández ({anaGroup.length})</p>
+                          {anaGroup.slice(0, 5).map(({ account }) => (
+                            <p key={account.id} className="text-gray-600 text-xs">
+                              • <strong>{account.name}</strong> — {account.billingCountry ?? 'Unknown'} — {account.ownerName}
+                            </p>
+                          ))}
+                          {anaGroup.length > 5 && <p className="text-xs text-gray-400 italic">…and {anaGroup.length - 5} more</p>}
+                        </div>
+                      )}
+
+                      {teamGroup.length > 0 && (
+                        <div className="pt-1">
+                          <p className="font-sans font-semibold text-gray-700 text-xs mb-1">
+                            {anaGroup.length > 0 ? `🌍 Assign to your team (${teamGroup.length})` : `Accounts to assign to your team`}
+                          </p>
+                          {teamGroup.slice(0, 5).map(({ account }) => (
+                            <p key={account.id} className="text-gray-600 text-xs">
+                              • <strong>{account.name}</strong> — {account.billingCountry ?? 'Unknown'} — {account.ownerName}
+                            </p>
+                          ))}
+                          {teamGroup.length > 5 && <p className="text-xs text-gray-400 italic">…and {teamGroup.length - 5} more</p>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-400">Messages will be sent as Slack DMs from RevBot</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowDraft(false)}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => sendMutation.mutate()}
+                  disabled={sendMutation.isPending}
+                  className="flex items-center gap-2 px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {sendMutation.isPending
+                    ? <><RefreshCw size={14} className="animate-spin" /> Sending…</>
+                    : <><Send size={14} /> Confirm &amp; Send ({Object.keys(preview.routedByLeader).length} DMs)</>
+                  }
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
