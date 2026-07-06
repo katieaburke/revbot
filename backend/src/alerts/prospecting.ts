@@ -63,10 +63,9 @@ export function evaluateProspectingHygiene(
       ? Math.floor((now - new Date(gongLastCallDate).getTime()) / (1000 * 60 * 60 * 24))
       : null
 
-    // NOTE: hasRecentRepContact is intentionally excluded from activity checks — Last_Rep_Communication_Date__c
-    // is updated by call block dials even when the account isn't in an active flow, making it an unreliable
-    // signal for intentional prospecting activity. Only Gong call data drives the flags.
     const hasRecentGongCall = daysSinceLastGongCall !== null && daysSinceLastGongCall <= config.recentActivityDays
+    // Rep contact date suppresses STALE_PROSPECTING even without a Gong call — covers email/manual outreach
+    const hasRecentRepContact = daysSinceLastRepContact !== null && daysSinceLastRepContact <= config.staleThresholdDays
 
     // Compute per-account Gong flow stats for this account's contact emails
     let gongFlowStats: ProspectingFlag['gongFlowStats'] = null
@@ -140,9 +139,9 @@ export function evaluateProspectingHygiene(
 
     const status = acct.Prospecting_Status__c
 
-    // Flag 1: In "Prospecting" but no Gong call activity in staleThresholdDays
+    // Flag 1: In "Prospecting" but no recent activity (Gong call OR rep contact) in staleThresholdDays
     if (status === 'Prospecting') {
-      if (!hasRecentGongCall) {
+      if (!hasRecentGongCall && !hasRecentRepContact) {
         flags.push({ ...base, flagType: 'STALE_PROSPECTING' })
       }
     }
@@ -173,8 +172,8 @@ export function evaluateProspectingHygiene(
       // Only flag active statuses — skip Paused/Nurturing/Success
       const isActiveStatus = status === 'Prospecting' || status === 'Planned'
 
-      // Don't double-flag an account already caught by Flag 1 (stale prospecting = no recent Gong call)
-      const alreadyStale = status === 'Prospecting' && !hasRecentGongCall
+      // Don't double-flag an account already caught by Flag 1 (stale prospecting = no recent activity)
+      const alreadyStale = status === 'Prospecting' && !hasRecentGongCall && !hasRecentRepContact
 
       if (hasRecentGongCall && targetIsStale && isActiveStatus && !alreadyStale) {
         flags.push({ ...base, flagType: 'STALE_TARGET_DATE' })
