@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAdmin } from '../middleware/adminAuth'
-import { fetchProspectAccounts, getSfdcInstanceUrl, updateProspectAccount } from '../services/salesforce'
+import { fetchProspectAccounts, getSfdcInstanceUrl, updateProspectAccount, fetchContactFlows } from '../services/salesforce'
 import { buildAccountActivityIndex, isGongAccountCacheWarm, warmGongAccountCallCache } from '../services/gong'
 import type { GongFlowEnrollment } from '../services/gong'
 import { evaluateProspectingHygiene, type ProspectingFlagType } from '../alerts/prospecting'
@@ -37,29 +37,26 @@ router.get('/prospecting-hygiene', async (_req, res) => {
 
     const accountIds = accounts.map((a) => a.Id)
 
-    // Build Gong flow index from SFDC contact fields (Gong syncs these via native integration)
+    // Build Gong flow index via direct Contact query (subquery approach has sharing-rule issues)
     // Map: contact email (lowercase) → GongFlowEnrollment[]
+    const tGong = Date.now()
+    const [gongActivity, contactFlows] = await Promise.all([
+      gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()),
+      fetchContactFlows(accountIds),
+    ])
+
     const flowIndex = new Map<string, GongFlowEnrollment[]>()
-    for (const account of accounts) {
-      for (const contact of account.Contacts?.records ?? []) {
-        if (!contact.Email) continue
-        const email = contact.Email.toLowerCase()
-        if (contact.Gong__Actively_Being_in_a_Flow__c && contact.Gong__Current_Flow_Name__c) {
-          if (!flowIndex.has(email)) flowIndex.set(email, [])
-          flowIndex.get(email)!.push({
-            flowId: contact.Gong__Current_Flow_Name__c, // no separate ID exposed in SFDC fields; use name as key
-            flowName: contact.Gong__Current_Flow_Name__c,
-            status: contact.Gong__Flow_Status__c ?? 'ACTIVE',
-            nextStepDueDate: contact.Gong__Current_Flow_Task_Due_Date__c ?? null,
-            completedAt: null,
-          })
-        }
-      }
+    for (const cf of contactFlows) {
+      if (!flowIndex.has(cf.email)) flowIndex.set(cf.email, [])
+      flowIndex.get(cf.email)!.push({
+        flowId: cf.flowName,
+        flowName: cf.flowName,
+        status: cf.flowStatus,
+        nextStepDueDate: cf.nextStepDueDate,
+        completedAt: null,
+      })
     }
 
-    // Only fetch Gong call activity if cache is warm
-    const tGong = Date.now()
-    const gongActivity = await (gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()))
     console.log(`[Hygiene] Gong: ${Date.now() - tGong}ms (accountWarm=${gongAccountWarm}, flowContacts=${flowIndex.size} contacts with active flows)`)
 
     const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowIndex)

@@ -406,6 +406,75 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
   return records
 }
 
+// Fetch Gong Engage flow data for contacts on a given set of accounts.
+// Queries Contact records directly (subquery approach has sharing-rule visibility issues).
+// Returns a map of contact email (lowercase) → flow info.
+export interface SfdcContactFlow {
+  email: string
+  accountId: string
+  flowName: string
+  flowStatus: string
+  nextStepDueDate: string | null
+  flowOwner: string | null
+  addedToFlowDate: string | null
+  numberOfActiveFlows: number
+}
+
+export async function fetchContactFlows(accountIds: string[]): Promise<SfdcContactFlow[]> {
+  if (accountIds.length === 0) return []
+  const conn = await getServiceConnection()
+
+  // SFDC SOQL IN clause: chunk if needed (safe up to ~10k IDs, but we batch to keep URL manageable)
+  const CHUNK = 500
+  const results: SfdcContactFlow[] = []
+
+  for (let i = 0; i < accountIds.length; i += CHUNK) {
+    const chunk = accountIds.slice(i, i + CHUNK)
+    const idList = chunk.map((id) => `'${id}'`).join(',')
+
+    interface RawContact {
+      Id: string
+      Email?: string | null
+      AccountId: string
+      Gong__Current_Flow_Name__c?: string | null
+      Gong__Flow_Status__c?: string | null
+      Gong__Current_Flow_Task_Due_Date__c?: string | null
+      Gong__Engage_Flow_Owner__c?: string | null
+      Gong__Added_to_Flow_Date__c?: string | null
+      Gong__Number_of_Active_Engage_Flows__c?: number | null
+    }
+
+    const contacts = await runSfdcSoql<RawContact>(
+      conn.instanceUrl,
+      conn.accessToken!,
+      `SELECT Id, Email, AccountId,
+              Gong__Current_Flow_Name__c, Gong__Flow_Status__c,
+              Gong__Current_Flow_Task_Due_Date__c, Gong__Engage_Flow_Owner__c,
+              Gong__Added_to_Flow_Date__c, Gong__Number_of_Active_Engage_Flows__c
+       FROM Contact
+       WHERE AccountId IN (${idList})
+       AND Gong__Actively_Being_in_a_Flow__c = true
+       AND Email != null`,
+    )
+
+    for (const c of contacts) {
+      if (!c.Email || !c.Gong__Current_Flow_Name__c) continue
+      results.push({
+        email: c.Email.toLowerCase(),
+        accountId: c.AccountId,
+        flowName: c.Gong__Current_Flow_Name__c,
+        flowStatus: c.Gong__Flow_Status__c ?? 'In progress',
+        nextStepDueDate: c.Gong__Current_Flow_Task_Due_Date__c ?? null,
+        flowOwner: c.Gong__Engage_Flow_Owner__c ?? null,
+        addedToFlowDate: c.Gong__Added_to_Flow_Date__c ?? null,
+        numberOfActiveFlows: c.Gong__Number_of_Active_Engage_Flows__c ?? 1,
+      })
+    }
+  }
+
+  return results
+}
+
 // Update editable prospecting fields on an Account record
 export async function updateProspectAccount(
   accountId: string,
