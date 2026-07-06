@@ -43,7 +43,7 @@ const BANT_FIELDS: { key: keyof MeddpiccReq; label: string; letter: string }[] =
   { key: 'requireTiming', label: 'Timing', letter: 'T' },
 ]
 
-const OPP_TYPES = ['All', 'Initial', 'Renewal', 'Amendment']
+const OPP_TYPES = ['All', 'New Business', 'Existing Business', 'Initial', 'Renewal', 'Amendment']
 
 export function MeddpiccConfig() {
   const qc = useQueryClient()
@@ -123,10 +123,7 @@ export function MeddpiccConfig() {
                 <td className="px-4 py-3">
                   <span className={clsx(
                     'inline-flex px-2 py-0.5 rounded-full text-xs font-medium',
-                    req.opportunityType === 'All' ? 'bg-gray-100 text-gray-500' :
-                    req.opportunityType === 'Initial' ? 'bg-blue-50 text-blue-700' :
-                    req.opportunityType === 'Renewal' ? 'bg-green-50 text-green-700' :
-                    'bg-amber-50 text-amber-700'
+                    TYPE_COLORS[req.opportunityType ?? 'All'] ?? 'bg-gray-100 text-gray-500 border-gray-200'
                   )}>
                     {req.opportunityType ?? 'All'}
                   </span>
@@ -180,7 +177,9 @@ export function MeddpiccConfig() {
 
 const TYPE_COLORS: Record<string, string> = {
   All: 'bg-gray-100 text-gray-600 border-gray-200',
-  'Initial': 'bg-blue-50 text-blue-700 border-blue-200',
+  'New Business': 'bg-blue-50 text-blue-700 border-blue-200',
+  'Existing Business': 'bg-violet-50 text-violet-700 border-violet-200',
+  Initial: 'bg-sky-50 text-sky-700 border-sky-200',
   Renewal: 'bg-green-50 text-green-700 border-green-200',
   Amendment: 'bg-amber-50 text-amber-700 border-amber-200',
 }
