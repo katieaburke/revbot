@@ -121,46 +121,62 @@ export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
   }))
 }
 
+// ── Routing overrides (persisted in appSettings) ────────────────────────────────
+
+export interface RoutingOverrides {
+  spanishSpeakingOwners?: string[]
+  northernEuropeOwners?: string[]
+}
+
 // ── Routing logic ───────────────────────────────────────────────────────────────
 
 export function routeAccount(
   account: ReassignAccount,
+  overrides?: RoutingOverrides,
 ): { leaderKey: keyof typeof LEADERS; suggestAna: boolean; reason: string } | null {
   const ownerName = account.ownerName
   const ownerRole = account.ownerRole ?? ''
   const country = account.billingCountry ?? ''
 
-  // Rule 1 & 2: Named Spanish-speaking reps → Samy, suggest Ana
-  if (SPANISH_SPEAKING_OWNERS.has(ownerName)) {
+  const spanishSet = overrides?.spanishSpeakingOwners
+    ? new Set(overrides.spanishSpeakingOwners)
+    : SPANISH_SPEAKING_OWNERS
+
+  const northernEuropeSet = overrides?.northernEuropeOwners
+    ? new Set(overrides.northernEuropeOwners)
+    : NORTHERN_EUROPE_OWNERS
+
+  // Rule 1: Named Spanish-speaking reps → Samy, suggest Ana
+  if (spanishSet.has(ownerName)) {
     return { leaderKey: 'samy', suggestAna: true, reason: `Owner: ${ownerName} (Spanish-speaking)` }
   }
 
-  // Rule 3: US-CAN role + LATAM billing country → Samy, suggest Ana
+  // Rule 2: US-CAN role + LATAM billing country → Samy, suggest Ana
   if (ownerRole.includes('US-CAN') && ownerRole.includes('New Business') && LATAM_COUNTRIES.has(country)) {
     return { leaderKey: 'samy', suggestAna: true, reason: `US-CAN rep, LATAM billing country (${country})` }
   }
 
-  // Rule 4: US-CAN New Business role → Allison
+  // Rule 3: US-CAN New Business role → Allison
   if (ownerRole.includes('US-CAN') && ownerRole.includes('New Business')) {
     return { leaderKey: 'allison', suggestAna: false, reason: 'US-CAN New Business rep' }
   }
 
-  // Rule 5: Northern Europe named reps → Jo
-  if (NORTHERN_EUROPE_OWNERS.has(ownerName)) {
+  // Rule 4: Northern Europe named reps → Jo
+  if (northernEuropeSet.has(ownerName)) {
     return { leaderKey: 'jo', suggestAna: false, reason: `Northern Europe rep (${ownerName})` }
   }
 
-  // Rule 6: Enrico Pisoni → Karolina
+  // Rule 5: Enrico Pisoni → Karolina
   if (ownerName === 'Enrico Pisoni') {
     return { leaderKey: 'karolina', suggestAna: false, reason: 'Owner: Enrico Pisoni' }
   }
 
-  // Rule 7: EMEA New Business role → Samy
+  // Rule 6: EMEA New Business role → Samy
   if (ownerRole.includes('EMEA') && ownerRole.includes('New Business')) {
     return { leaderKey: 'samy', suggestAna: false, reason: 'EMEA New Business rep' }
   }
 
-  // Rule 8: Inactive owner (# in name) — route by billing country
+  // Rule 7: Inactive owner (# in name) — route by billing country
   const ownerInactive = ownerName.includes('#')
   const secondaryInactive = (account.secondaryOwnerName ?? '').includes('#')
   if (ownerInactive || secondaryInactive) {
@@ -175,12 +191,12 @@ export function routeAccount(
   return null
 }
 
-export function buildPreview(accounts: ReassignAccount[]): ReassignmentPreview {
+export function buildPreview(accounts: ReassignAccount[], overrides?: RoutingOverrides): ReassignmentPreview {
   const routedByLeader: Record<string, RoutedAccount[]> = {}
   const unrouted: UnroutedAccount[] = []
 
   for (const account of accounts) {
-    const route = routeAccount(account)
+    const route = routeAccount(account, overrides)
     if (!route) {
       unrouted.push({ account, reason: 'No matching routing rule' })
       continue

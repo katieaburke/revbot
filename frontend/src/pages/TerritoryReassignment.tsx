@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { RefreshCw, Send, ChevronDown, ChevronUp, Users, AlertCircle, X } from 'lucide-react'
+import { RefreshCw, Send, ChevronDown, ChevronUp, Users, AlertCircle, X, Settings, Plus, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -37,6 +37,29 @@ interface ReassignmentPreview {
   fetchedAt: string
 }
 
+interface RoutingRule {
+  id: number
+  description: string
+  route: string
+  suggestAna: boolean
+  condition: string
+}
+
+interface Leader {
+  name: string
+  email: string
+  region: string
+}
+
+interface RoutingConfig {
+  leaders: Record<string, Leader>
+  ana: { name: string; email: string }
+  spanishSpeakingOwners: string[]
+  northernEuropeOwners: string[]
+  latamCountries: string[]
+  rules: RoutingRule[]
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const LEADER_COLORS: Record<string, string> = {
@@ -60,6 +83,12 @@ export function TerritoryReassignment() {
   const [sent, setSent] = useState(false)
   const [sendResult, setSendResult] = useState<{ sent: string[]; failed: string[] } | null>(null)
   const [showDraft, setShowDraft] = useState(false)
+  const [showRules, setShowRules] = useState(false)
+  const [editSpanish, setEditSpanish] = useState<string[] | null>(null)
+  const [editNorthernEurope, setEditNorthernEurope] = useState<string[] | null>(null)
+  const [newNameSpanish, setNewNameSpanish] = useState('')
+  const [newNameNorthernEurope, setNewNameNorthernEurope] = useState('')
+  const queryClient = useQueryClient()
 
   const { data: preview, isLoading, error, refetch, isFetching } = useQuery<ReassignmentPreview>({
     queryKey: ['territory-reassignment-preview'],
@@ -75,6 +104,40 @@ export function TerritoryReassignment() {
       setShowDraft(false)
     },
   })
+
+  const { data: routingConfig } = useQuery<RoutingConfig>({
+    queryKey: ['territory-routing-config'],
+    queryFn: () => api.get('/territory/routing-config').then((r) => r.data),
+    enabled: showRules,
+    staleTime: 60_000,
+  })
+
+  const saveRulesMutation = useMutation({
+    mutationFn: (payload: { spanishSpeakingOwners: string[]; northernEuropeOwners: string[] }) =>
+      api.put('/territory/routing-config', payload).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['territory-routing-config'] })
+      queryClient.invalidateQueries({ queryKey: ['territory-reassignment-preview'] })
+      setEditSpanish(null)
+      setEditNorthernEurope(null)
+    },
+  })
+
+  function openRules() {
+    setEditSpanish(null)
+    setEditNorthernEurope(null)
+    setNewNameSpanish('')
+    setNewNameNorthernEurope('')
+    setShowRules(true)
+  }
+
+  function saveRules() {
+    if (!routingConfig) return
+    saveRulesMutation.mutate({
+      spanishSpeakingOwners: editSpanish ?? routingConfig.spanishSpeakingOwners,
+      northernEuropeOwners: editNorthernEurope ?? routingConfig.northernEuropeOwners,
+    })
+  }
 
   const totalRouted = preview
     ? Object.values(preview.routedByLeader).reduce((s, a) => s + a.length, 0)
@@ -107,6 +170,13 @@ export function TerritoryReassignment() {
           >
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
             Refresh
+          </button>
+          <button
+            onClick={openRules}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+          >
+            <Settings size={14} />
+            Rules
           </button>
           <button
             onClick={() => setShowDraft(true)}
@@ -266,6 +336,158 @@ export function TerritoryReassignment() {
         </div>
       )}
 
+      {/* Rules modal */}
+      {showRules && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Routing Rules</h2>
+                <p className="text-xs text-gray-500 mt-0.5">How accounts are routed to team leaders — rules apply in priority order</p>
+              </div>
+              <button onClick={() => setShowRules(false)} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 px-6 py-4 space-y-6">
+              {!routingConfig ? (
+                <div className="text-center py-8 text-sm text-gray-400">Loading…</div>
+              ) : (
+                <>
+                  {/* Routing rules list */}
+                  <section>
+                    <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Priority Rules</h3>
+                    <div className="space-y-2">
+                      {routingConfig.rules.map((rule) => (
+                        <div key={rule.id} className="flex gap-3 p-3 rounded-lg border border-gray-100 bg-gray-50/50">
+                          <span className="flex-shrink-0 w-6 h-6 rounded-full bg-gray-200 text-gray-600 text-xs font-bold flex items-center justify-center">
+                            {rule.id}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-gray-800">{rule.description}</p>
+                            <p className="text-xs text-gray-500 mt-0.5">{rule.condition}</p>
+                            <p className="text-xs mt-1">
+                              <span className="font-medium text-gray-700">→ {rule.route}</span>
+                              {rule.suggestAna && (
+                                <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-orange-50 text-orange-700 border border-orange-100">
+                                  Suggest Ana Hernández
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* Named rep sets */}
+                  <section>
+                    <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Named Rep Lists</h3>
+                    <div className="space-y-4">
+                      {/* Spanish-speaking owners */}
+                      <NamedRepSet
+                        label="🇪🇸 Spanish-speaking reps (Rule 1)"
+                        description="Routes to Samy Benmeziane, suggests Ana Hernández"
+                        names={editSpanish ?? routingConfig.spanishSpeakingOwners}
+                        editing={editSpanish !== null}
+                        newName={newNameSpanish}
+                        onEdit={() => setEditSpanish([...routingConfig.spanishSpeakingOwners])}
+                        onCancel={() => { setEditSpanish(null); setNewNameSpanish('') }}
+                        onRemove={(name) => setEditSpanish((prev) => (prev ?? []).filter((n) => n !== name))}
+                        onNewNameChange={setNewNameSpanish}
+                        onAdd={() => {
+                          const trimmed = newNameSpanish.trim()
+                          if (trimmed) { setEditSpanish((prev) => [...(prev ?? []), trimmed]); setNewNameSpanish('') }
+                        }}
+                      />
+
+                      {/* Northern Europe owners */}
+                      <NamedRepSet
+                        label="🌍 Northern Europe reps (Rule 4)"
+                        description="Routes to Jo Billington"
+                        names={editNorthernEurope ?? routingConfig.northernEuropeOwners}
+                        editing={editNorthernEurope !== null}
+                        newName={newNameNorthernEurope}
+                        onEdit={() => setEditNorthernEurope([...routingConfig.northernEuropeOwners])}
+                        onCancel={() => { setEditNorthernEurope(null); setNewNameNorthernEurope('') }}
+                        onRemove={(name) => setEditNorthernEurope((prev) => (prev ?? []).filter((n) => n !== name))}
+                        onNewNameChange={setNewNameNorthernEurope}
+                        onAdd={() => {
+                          const trimmed = newNameNorthernEurope.trim()
+                          if (trimmed) { setEditNorthernEurope((prev) => [...(prev ?? []), trimmed]); setNewNameNorthernEurope('') }
+                        }}
+                      />
+                    </div>
+                  </section>
+
+                  {/* Team leaders reference */}
+                  <section>
+                    <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Team Leaders</h3>
+                    <div className="rounded-lg border border-gray-100 overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="text-left px-4 py-2 text-xs font-medium text-gray-400 uppercase">Name</th>
+                            <th className="text-left px-4 py-2 text-xs font-medium text-gray-400 uppercase">Email</th>
+                            <th className="text-left px-4 py-2 text-xs font-medium text-gray-400 uppercase">Region</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50">
+                          {Object.entries(routingConfig.leaders).map(([key, leader]) => (
+                            <tr key={key} className="hover:bg-gray-50">
+                              <td className="px-4 py-2.5">
+                                <span className={clsx('inline-flex px-2 py-0.5 rounded-full text-xs font-semibold border', LEADER_COLORS[key] ?? 'bg-gray-100 text-gray-600 border-gray-200')}>
+                                  {leader.name}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5 text-gray-500 text-xs">{leader.email}</td>
+                              <td className="px-4 py-2.5 text-gray-500 text-xs">{leader.region}</td>
+                            </tr>
+                          ))}
+                          <tr className="hover:bg-gray-50 bg-orange-50/40">
+                            <td className="px-4 py-2.5">
+                              <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold border bg-orange-50 text-orange-700 border-orange-200">
+                                {routingConfig.ana.name}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-500 text-xs">{routingConfig.ana.email}</td>
+                            <td className="px-4 py-2.5 text-gray-400 text-xs italic">Suggested for LATAM/Spanish</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-400">Named rep list changes take effect on next preview refresh</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowRules(false)}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg hover:bg-gray-50"
+                >
+                  Close
+                </button>
+                {(editSpanish !== null || editNorthernEurope !== null) && (
+                  <button
+                    onClick={saveRules}
+                    disabled={saveRulesMutation.isPending}
+                    className="flex items-center gap-2 px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50"
+                  >
+                    {saveRulesMutation.isPending ? <><RefreshCw size={14} className="animate-spin" /> Saving…</> : 'Save changes'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Draft preview modal */}
       {showDraft && preview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
@@ -364,6 +586,70 @@ export function TerritoryReassignment() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Named rep set editor ──────────────────────────────────────────────────────
+
+interface NamedRepSetProps {
+  label: string
+  description: string
+  names: string[]
+  editing: boolean
+  newName: string
+  onEdit: () => void
+  onCancel: () => void
+  onRemove: (name: string) => void
+  onNewNameChange: (v: string) => void
+  onAdd: () => void
+}
+
+function NamedRepSet({ label, description, names, editing, newName, onEdit, onCancel, onRemove, onNewNameChange, onAdd }: NamedRepSetProps) {
+  return (
+    <div className="rounded-lg border border-gray-100 p-4">
+      <div className="flex items-start justify-between mb-2">
+        <div>
+          <p className="text-sm font-medium text-gray-800">{label}</p>
+          <p className="text-xs text-gray-500">{description}</p>
+        </div>
+        {!editing
+          ? <button onClick={onEdit} className="text-xs text-brand-600 hover:text-brand-700 font-medium">Edit</button>
+          : <button onClick={onCancel} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+        }
+      </div>
+      <div className="flex flex-wrap gap-1.5 mt-2">
+        {names.map((name) => (
+          <span key={name} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-gray-100 text-gray-700 text-xs">
+            {name}
+            {editing && (
+              <button onClick={() => onRemove(name)} className="text-gray-400 hover:text-red-500 ml-0.5">
+                <Trash2 size={11} />
+              </button>
+            )}
+          </span>
+        ))}
+        {names.length === 0 && <span className="text-xs text-gray-400 italic">No reps configured</span>}
+      </div>
+      {editing && (
+        <div className="flex items-center gap-2 mt-3">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => onNewNameChange(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') onAdd() }}
+            placeholder="Full name (must match Salesforce exactly)"
+            className="flex-1 text-xs px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400"
+          />
+          <button
+            onClick={onAdd}
+            disabled={!newName.trim()}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-gray-800 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40"
+          >
+            <Plus size={12} /> Add
+          </button>
         </div>
       )}
     </div>

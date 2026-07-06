@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { RefreshCw, AlertCircle, CheckCircle, ChevronDown } from 'lucide-react'
+import { RefreshCw, AlertCircle, CheckCircle, ChevronDown, ExternalLink } from 'lucide-react'
 import clsx from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -182,7 +182,18 @@ export function ChurnedReassignment() {
                   >
                     {/* Account */}
                     <td className="px-5 py-3 font-medium text-gray-900 max-w-[200px]">
-                      <span className="block truncate" title={account.name}>{account.name}</span>
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate" title={account.name}>{account.name}</span>
+                        <a
+                          href={`https://uberall.lightning.force.com/${account.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-shrink-0 text-gray-300 hover:text-brand-500 transition-colors"
+                          title="Open in Salesforce"
+                        >
+                          <ExternalLink size={12} />
+                        </a>
+                      </span>
                     </td>
 
                     {/* Locations */}
