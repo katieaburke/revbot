@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ComposedChart,
@@ -34,10 +34,19 @@ interface DropdownOption {
   name: string | null
 }
 
+interface ActiveOwner {
+  email: string
+  name: string | null
+  label: string
+}
+
 interface FlagsOverTimeResponse {
   chartData: ChartDataPoint[]
   owners: DropdownOption[]
   managers: DropdownOption[]
+  ownerBreakdown: Array<Record<string, string | number>>
+  activeAlertTypes: string[]
+  activeOwners: ActiveOwner[]
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -66,10 +75,25 @@ const ALERT_LABELS: Record<string, string> = {
 
 const ALERT_TYPES = Object.keys(ALERT_COLORS) as Array<keyof typeof ALERT_COLORS>
 
+// Distinct palette for owner stacking (up to 12 reps)
+const OWNER_PALETTE = [
+  '#6366f1', // indigo
+  '#14b8a6', // teal
+  '#f59e0b', // amber
+  '#ec4899', // pink
+  '#3b82f6', // blue
+  '#10b981', // emerald
+  '#f97316', // orange
+  '#8b5cf6', // violet
+  '#06b6d4', // cyan
+  '#84cc16', // lime
+  '#ef4444', // red
+  '#d946ef', // fuchsia
+]
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function formatXAxisDate(dateStr: string): string {
-  // dateStr is YYYY-MM-DD, parse as UTC to avoid timezone shifts
   const [year, month, day] = dateStr.split('-').map(Number)
   const d = new Date(year, month - 1, day)
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -81,6 +105,16 @@ export function Analytics() {
   const [days, setDays] = useState<'30' | '60' | '90'>('30')
   const [ownerEmail, setOwnerEmail] = useState('')
   const [managerEmail, setManagerEmail] = useState('')
+  const [stackBy, setStackBy] = useState<'flagType' | 'owner'>('flagType')
+
+  // Auto-switch stack mode when manager filter changes
+  useEffect(() => {
+    if (managerEmail) {
+      setStackBy('owner')
+    } else {
+      setStackBy('flagType')
+    }
+  }, [managerEmail])
 
   const params = new URLSearchParams({ days })
   if (ownerEmail) params.set('ownerEmail', ownerEmail)
@@ -95,6 +129,11 @@ export function Analytics() {
   })
 
   const hasData = data && data.chartData.length > 0
+
+  // Active alert types: prefer backend-computed list, fall back to all types
+  const activeAlertTypes = data?.activeAlertTypes ?? ALERT_TYPES
+  // Active owners for "by owner" stack
+  const activeOwners = data?.activeOwners ?? []
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
@@ -150,6 +189,35 @@ export function Analytics() {
             </option>
           ))}
         </select>
+
+        {/* Stack by toggle — always visible */}
+        <div className="flex items-center gap-1.5 ml-auto">
+          <span className="text-xs text-gray-500 font-medium">Stack by</span>
+          <div className="flex items-center rounded-lg border border-gray-200 overflow-hidden bg-white">
+            <button
+              onClick={() => setStackBy('flagType')}
+              className={[
+                'px-3 py-1.5 text-sm font-medium transition-colors',
+                stackBy === 'flagType'
+                  ? 'bg-brand-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-50',
+              ].join(' ')}
+            >
+              Flag type
+            </button>
+            <button
+              onClick={() => setStackBy('owner')}
+              className={[
+                'px-3 py-1.5 text-sm font-medium transition-colors',
+                stackBy === 'owner'
+                  ? 'bg-brand-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-50',
+              ].join(' ')}
+            >
+              Owner
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Chart Card */}
@@ -178,7 +246,7 @@ export function Analytics() {
           </div>
         )}
 
-        {!isLoading && !error && hasData && (
+        {!isLoading && !error && hasData && stackBy === 'flagType' && (
           <ResponsiveContainer width="100%" height={320}>
             <ComposedChart data={data.chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -211,13 +279,62 @@ export function Analytics() {
                 }
                 wrapperStyle={{ fontSize: 11 }}
               />
-              {ALERT_TYPES.map((type) => (
+              {activeAlertTypes.map((type) => (
                 <Bar
                   key={type}
                   dataKey={type}
                   stackId="flags"
                   fill={ALERT_COLORS[type]}
                   name={type}
+                />
+              ))}
+              <Line
+                type="monotone"
+                dataKey="total"
+                stroke="#374151"
+                strokeWidth={2}
+                strokeDasharray="4 4"
+                dot={false}
+                name="total"
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+
+        {!isLoading && !error && hasData && stackBy === 'owner' && (
+          <ResponsiveContainer width="100%" height={320}>
+            <ComposedChart
+              data={data.ownerBreakdown}
+              margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis
+                dataKey="date"
+                tickFormatter={formatXAxisDate}
+                tick={{ fontSize: 11, fill: '#6b7280' }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fontSize: 11, fill: '#6b7280' }}
+                tickLine={false}
+                axisLine={false}
+                width={32}
+              />
+              <Tooltip
+                formatter={(value, name) => [value, String(name)]}
+                labelFormatter={(label) => formatXAxisDate(String(label))}
+                contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {activeOwners.map((owner, i) => (
+                <Bar
+                  key={owner.label}
+                  dataKey={owner.label}
+                  stackId="owners"
+                  fill={OWNER_PALETTE[i % OWNER_PALETTE.length]}
+                  name={owner.label}
                 />
               ))}
               <Line

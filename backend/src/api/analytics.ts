@@ -140,10 +140,50 @@ router.get('/flags-over-time', requireAdmin, async (req, res) => {
         return entry
       })
 
+    // ── Owner breakdown (per day, per owner name: total flag count) ───────────
+    // Used for "stack by owner" view on the frontend
+    const ownerDayMap = new Map<string, Map<string, number>>() // day → ownerLabel → flagCount
+    const activeOwnerMap = new Map<string, string | null>()    // email → name (filtered data only)
+
+    for (const s of filteredSnapshots) {
+      const day = s.runAt.toISOString().split('T')[0]
+      const label = s.ownerName ?? s.ownerEmail
+      if (!ownerDayMap.has(day)) ownerDayMap.set(day, new Map())
+      const dayOwners = ownerDayMap.get(day)!
+      dayOwners.set(label, (dayOwners.get(label) ?? 0) + 1)
+      if (!activeOwnerMap.has(s.ownerEmail)) activeOwnerMap.set(s.ownerEmail, s.ownerName)
+    }
+
+    // Collect all owner labels so every day point has the same keys
+    const allOwnerLabels = Array.from(
+      new Set(Array.from(ownerDayMap.values()).flatMap((m) => Array.from(m.keys())))
+    ).sort()
+
+    const ownerBreakdown: Array<Record<string, string | number>> = Array.from(ownerDayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, counts]) => {
+        const point: Record<string, string | number> = { date }
+        for (const label of allOwnerLabels) {
+          point[label] = counts.get(label) ?? 0
+        }
+        return point
+      })
+
+    // ── Active alert types (only those with ≥1 flag in filtered data) ─────────
+    const alertTypeCounts: Record<string, number> = {}
+    for (const s of filteredSnapshots) {
+      alertTypeCounts[s.alertType] = (alertTypeCounts[s.alertType] ?? 0) + 1
+    }
+    const activeAlertTypes = alertTypes.filter((t) => (alertTypeCounts[t] ?? 0) > 0)
+
+    const activeOwners = Array.from(activeOwnerMap.entries())
+      .map(([email, name]) => ({ email, name, label: name ?? email }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+
     // Suppress unused variable warning
     void alertTypes
 
-    res.json({ chartData, owners, managers })
+    res.json({ chartData, owners, managers, ownerBreakdown, activeAlertTypes, activeOwners })
   } catch (err) {
     console.error('[Analytics] flags-over-time error:', err)
     res.status(500).json({ error: 'Internal server error' })
