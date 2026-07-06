@@ -47,7 +47,7 @@ export default function App() {
             <Route path="/close-date-risk" element={<CloseDateConfig />} />
             <Route path="/playbook/stage-mismatch" element={<StageMismatchConfig />} />
             <Route path="/playbook/accounts" element={<ProspectingHygiene />} />
-            <Route path="/playbook/territory/reassignment" element={<TerritoryReassignment />} />
+            <Route path="/playbook/territory/newlogos" element={<TerritoryReassignment />} />
             <Route path="/playbook/territory/churned" element={<ChurnedReassignment />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/team" element={<Team />} />

@@ -114,7 +114,7 @@ export function Layout() {
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Territory Management
               </p>
-              <NavItem to="/playbook/territory/reassignment" label="New Logos → Success" icon={ArrowLeftRight} />
+              <NavItem to="/playbook/territory/newlogos" label="New Logos → Success" icon={ArrowLeftRight} />
               <NavItem to="/playbook/territory/churned" label="Churned → Sales" icon={ArrowLeftRight} />
 
             </div>

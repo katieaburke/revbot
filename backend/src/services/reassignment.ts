@@ -266,7 +266,7 @@ function buildLeaderBlocks(leaderName: string, accounts: RoutedAccount[], appUrl
     elements: [{
       type: 'button',
       text: { type: 'plain_text', text: 'View in Beacon', emoji: true },
-      url: `${appUrl}/playbook/territory/reassignment`,
+      url: `${appUrl}/playbook/territory/newlogos`,
       style: 'primary',
     }],
   })
