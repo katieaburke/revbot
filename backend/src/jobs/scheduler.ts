@@ -1,6 +1,8 @@
 import { Queue, Worker } from 'bullmq'
 import { redis } from '../redis'
 import { runAlertJob } from './alertOrchestrator'
+import { runReassignmentJob } from '../services/reassignment'
+import { config } from '../config'
 
 const QUEUE_NAME = 'alert-jobs'
 
@@ -20,6 +22,9 @@ export function startWorker() {
     async (job) => {
       if (job.name === 'run-alerts') {
         return runAlertJob({ bustGongCache: job.data?.bustGongCache === true })
+      }
+      if (job.name === 'run-reassignment') {
+        return runReassignmentJob(config.APP_URL)
       }
     },
     { connection: redis as any, concurrency: 1 }
@@ -63,5 +68,27 @@ export async function scheduleAlertJob(cronExpression?: string | null) {
 export async function triggerAlertJobNow() {
   const job = await alertQueue.add('run-alerts', { triggeredAt: new Date().toISOString(), bustGongCache: true })
   console.log(`[Scheduler] Manual alert job triggered: ${job.id}`)
+  return job.id
+}
+
+// ── Territory reassignment ──────────────────────────────────────────────────
+
+const REASSIGNMENT_CRON = '0 7 * * 1-5' // Mon–Fri 7am
+
+export async function scheduleReassignmentJob() {
+  // Remove any existing reassignment repeatable jobs
+  const repeatableJobs = await alertQueue.getRepeatableJobs()
+  for (const job of repeatableJobs) {
+    if (job.name === 'run-reassignment') {
+      await alertQueue.removeRepeatableByKey(job.key)
+    }
+  }
+  await alertQueue.add('run-reassignment', {}, { repeat: { pattern: REASSIGNMENT_CRON } })
+  console.log(`[Scheduler] Reassignment job scheduled: ${REASSIGNMENT_CRON}`)
+}
+
+export async function triggerReassignmentJobNow() {
+  const job = await alertQueue.add('run-reassignment', { triggeredAt: new Date().toISOString() })
+  console.log(`[Scheduler] Manual reassignment job triggered: ${job.id}`)
   return job.id
 }

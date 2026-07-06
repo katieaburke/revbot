@@ -4,13 +4,14 @@ import cors from 'cors'
 import { config } from './config'
 import { db } from './db'
 import { initSlack } from './slack/bot'
-import { startWorker, alertQueue } from './jobs/scheduler'
+import { startWorker, alertQueue, scheduleReassignmentJob } from './jobs/scheduler'
 import authRouter from './api/auth'
 import configRouter from './api/config'
 import notificationsRouter from './api/notifications'
 import extensionRouter from './api/extension'
 import analyticsRouter from './api/analytics'
 import accountsRouter from './api/accounts'
+import territoryRouter from './api/territory'
 
 async function main() {
   // Init Slack (optional — skipped if tokens not set)
@@ -32,6 +33,13 @@ async function main() {
     console.warn('⚠️  Could not clear scheduled jobs:', (err as Error).message)
   }
 
+  // Schedule daily territory reassignment (Mon–Fri 7am)
+  try {
+    await scheduleReassignmentJob()
+  } catch (err) {
+    console.warn('⚠️  Could not schedule reassignment job:', (err as Error).message)
+  }
+
   // Express app
   const app = express()
   app.use(helmet())
@@ -51,6 +59,7 @@ async function main() {
   app.use('/api/extension', extensionRouter)
   app.use('/api/analytics', analyticsRouter)
   app.use('/api/accounts', accountsRouter)
+  app.use('/api/territory', territoryRouter)
 
   app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
 

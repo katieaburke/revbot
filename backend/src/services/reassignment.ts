@@ -1,0 +1,299 @@
+import axios from 'axios'
+import { getServiceConnection } from './salesforce'
+import { sendDm, resolveSlackUserId } from '../slack/bot'
+import type { KnownBlock } from '@slack/web-api'
+
+// ── Routing config ─────────────────────────────────────────────────────────────
+// Update these when territories change — priority order matters (first match wins)
+
+export const LEADERS = {
+  allison: { name: 'Allison Townsend', email: 'allison.townsend@uberall.com', region: 'US/Canada' },
+  jo:      { name: 'Jo Billington',    email: 'jo.billington@uberall.com',    region: 'Northern Europe' },
+  karolina:{ name: 'Karolina Vetter',  email: 'karolina.vetter@uberall.com',  region: 'EMEA' },
+  samy:    { name: 'Samy Benmeziane', email: 'samy.benmeziane@uberall.com',   region: 'EMEA' },
+} as const
+
+export const ANA = { name: 'Ana Hernández', email: 'ana.hernandez@uberall.com' }
+
+// Rule 2 — these reps always route to Samy with Ana suggested regardless of country
+export const SPANISH_SPEAKING_OWNERS = new Set(['Javier Villar', 'Alexis Perez'])
+
+// Rule 5 — Northern Europe named reps → Jo Billington
+export const NORTHERN_EUROPE_OWNERS = new Set(['Jon Lapham', 'Barry Faulkner', 'Dusko Tomic'])
+
+// Rule 3 — US-CAN role rep but billing country is LATAM → Samy, suggest Ana
+export const LATAM_COUNTRIES = new Set([
+  'Mexico', 'Colombia', 'Argentina', 'Chile', 'Peru', 'Ecuador',
+  'Bolivia', 'Paraguay', 'Uruguay', 'Venezuela', 'Costa Rica',
+  'Guatemala', 'Honduras', 'El Salvador', 'Nicaragua', 'Dominican Republic',
+  'Cuba', 'Panama', 'Puerto Rico', 'Brazil',
+])
+
+// ── Types ───────────────────────────────────────────────────────────────────────
+
+export interface ReassignAccount {
+  id: string
+  name: string
+  ownerName: string
+  ownerEmail: string | null
+  ownerRole: string | null
+  billingCountry: string | null
+  secondaryOwnerName: string | null
+}
+
+export interface RoutedAccount {
+  account: ReassignAccount
+  leaderKey: keyof typeof LEADERS
+  leaderName: string
+  leaderEmail: string
+  suggestAna: boolean
+  routeReason: string
+}
+
+export interface UnroutedAccount {
+  account: ReassignAccount
+  reason: string
+}
+
+export interface ReassignmentPreview {
+  routedByLeader: Record<string, RoutedAccount[]>
+  unrouted: UnroutedAccount[]
+  total: number
+  fetchedAt: string
+}
+
+// ── SOQL ────────────────────────────────────────────────────────────────────────
+
+export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
+  const conn = await getServiceConnection()
+
+  const soql = `
+    SELECT Id, Name,
+           Owner.Name, Owner.Email, Owner.UserRole.Name,
+           BillingCountry,
+           KAP_CS_Owner__r.Name,
+           Account_Stage__c, GEO_Studio_Customer_Only__c, Type
+    FROM Account
+    WHERE Account_Stage__c = 'Customer'
+    AND RecordType.DeveloperName = 'Enterprise_Account_Record'
+    AND Type = 'Direct Enterprise'
+    AND Name NOT LIKE '%TEST%'
+    AND GEO_Studio_Customer_Only__c = false
+    AND (
+      Owner.UserRole.Name LIKE '%New Business%'
+      OR Owner.Name LIKE '%#%'
+      OR KAP_CS_Owner__r.Name LIKE '%#%'
+    )
+    ORDER BY Owner.Name ASC, Name ASC
+  `
+
+  interface RawAccount {
+    Id: string
+    Name: string
+    Owner?: { Name?: string; Email?: string; UserRole?: { Name?: string } | null } | null
+    BillingCountry?: string | null
+    KAP_CS_Owner__r?: { Name?: string } | null
+  }
+
+  interface SfdcPage<T> { records: T[]; done: boolean; nextRecordsUrl?: string }
+
+  const records: RawAccount[] = []
+  let nextPath: string | null = `/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+
+  while (nextPath) {
+    const resp: { data: SfdcPage<RawAccount> } = await axios.get<SfdcPage<RawAccount>>(
+      `${conn.instanceUrl}${nextPath}`,
+      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 20_000 },
+    )
+    const page: SfdcPage<RawAccount> = resp.data
+    records.push(...page.records)
+    nextPath = page.done ? null : (page.nextRecordsUrl ?? null)
+  }
+
+  return records.map((r) => ({
+    id: r.Id,
+    name: r.Name,
+    ownerName: r.Owner?.Name ?? '',
+    ownerEmail: r.Owner?.Email ?? null,
+    ownerRole: r.Owner?.UserRole?.Name ?? null,
+    billingCountry: r.BillingCountry ?? null,
+    secondaryOwnerName: r.KAP_CS_Owner__r?.Name ?? null,
+  }))
+}
+
+// ── Routing logic ───────────────────────────────────────────────────────────────
+
+export function routeAccount(
+  account: ReassignAccount,
+): { leaderKey: keyof typeof LEADERS; suggestAna: boolean; reason: string } | null {
+  const ownerName = account.ownerName
+  const ownerRole = account.ownerRole ?? ''
+  const country = account.billingCountry ?? ''
+
+  // Rule 1 & 2: Named Spanish-speaking reps → Samy, suggest Ana
+  if (SPANISH_SPEAKING_OWNERS.has(ownerName)) {
+    return { leaderKey: 'samy', suggestAna: true, reason: `Owner: ${ownerName} (Spanish-speaking)` }
+  }
+
+  // Rule 3: US-CAN role + LATAM billing country → Samy, suggest Ana
+  if (ownerRole.includes('US-CAN') && ownerRole.includes('New Business') && LATAM_COUNTRIES.has(country)) {
+    return { leaderKey: 'samy', suggestAna: true, reason: `US-CAN rep, LATAM billing country (${country})` }
+  }
+
+  // Rule 4: US-CAN New Business role → Allison
+  if (ownerRole.includes('US-CAN') && ownerRole.includes('New Business')) {
+    return { leaderKey: 'allison', suggestAna: false, reason: 'US-CAN New Business rep' }
+  }
+
+  // Rule 5: Northern Europe named reps → Jo
+  if (NORTHERN_EUROPE_OWNERS.has(ownerName)) {
+    return { leaderKey: 'jo', suggestAna: false, reason: `Northern Europe rep (${ownerName})` }
+  }
+
+  // Rule 6: Enrico Pisoni → Karolina
+  if (ownerName === 'Enrico Pisoni') {
+    return { leaderKey: 'karolina', suggestAna: false, reason: 'Owner: Enrico Pisoni' }
+  }
+
+  // Rule 7: EMEA New Business role → Samy
+  if (ownerRole.includes('EMEA') && ownerRole.includes('New Business')) {
+    return { leaderKey: 'samy', suggestAna: false, reason: 'EMEA New Business rep' }
+  }
+
+  // Rule 8: Inactive owner (# in name) — route by billing country
+  const ownerInactive = ownerName.includes('#')
+  const secondaryInactive = (account.secondaryOwnerName ?? '').includes('#')
+  if (ownerInactive || secondaryInactive) {
+    const isUSCAN = ['United States', 'Canada'].includes(country)
+    return {
+      leaderKey: isUSCAN ? 'allison' : 'samy',
+      suggestAna: false,
+      reason: `Inactive ${ownerInactive ? 'owner' : 'secondary owner'}, routed by billing country (${country || 'unknown'})`,
+    }
+  }
+
+  return null
+}
+
+export function buildPreview(accounts: ReassignAccount[]): ReassignmentPreview {
+  const routedByLeader: Record<string, RoutedAccount[]> = {}
+  const unrouted: UnroutedAccount[] = []
+
+  for (const account of accounts) {
+    const route = routeAccount(account)
+    if (!route) {
+      unrouted.push({ account, reason: 'No matching routing rule' })
+      continue
+    }
+    const leader = LEADERS[route.leaderKey]
+    if (!routedByLeader[route.leaderKey]) routedByLeader[route.leaderKey] = []
+    routedByLeader[route.leaderKey].push({
+      account,
+      leaderKey: route.leaderKey,
+      leaderName: leader.name,
+      leaderEmail: leader.email,
+      suggestAna: route.suggestAna,
+      routeReason: route.reason,
+    })
+  }
+
+  return { routedByLeader, unrouted, total: accounts.length, fetchedAt: new Date().toISOString() }
+}
+
+// ── Slack messages ──────────────────────────────────────────────────────────────
+
+function accountLine(a: ReassignAccount): string {
+  const country = a.billingCountry ?? 'Unknown country'
+  const owner = a.ownerName.startsWith('#') ? `${a.ownerName} _(inactive)_` : a.ownerName
+  return `• *${a.name}* — ${country} — ${owner}`
+}
+
+function buildLeaderBlocks(leaderName: string, accounts: RoutedAccount[], appUrl: string): KnownBlock[] {
+  const date = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+  const anaGroup  = accounts.filter((a) => a.suggestAna)
+  const teamGroup = accounts.filter((a) => !a.suggestAna)
+  const firstName = leaderName.split(' ')[0]
+
+  const blocks: KnownBlock[] = [
+    { type: 'header', text: { type: 'plain_text', text: `📋 Customers to reassign — ${date}`, emoji: true } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `Hi ${firstName}! *${accounts.length} customer account${accounts.length !== 1 ? 's' : ''}* are owned by New Business reps and need to be moved to your team.`,
+      },
+    },
+    { type: 'divider' },
+  ]
+
+  function addGroup(group: RoutedAccount[], heading: string) {
+    if (group.length === 0) return
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${heading}*` } })
+    const MAX = 20
+    const lines = group.slice(0, MAX).map((r) => accountLine(r.account))
+    if (group.length > MAX) lines.push(`_…and ${group.length - MAX} more — see Beacon for full list_`)
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } })
+  }
+
+  if (anaGroup.length > 0 && teamGroup.length > 0) {
+    addGroup(anaGroup, `🇪🇸 Suggest assigning to Ana Hernández (${anaGroup.length})`)
+    addGroup(teamGroup, `🌍 Assign to your team (${teamGroup.length})`)
+  } else if (anaGroup.length > 0) {
+    addGroup(anaGroup, `🇪🇸 Suggest assigning to Ana Hernández`)
+  } else {
+    addGroup(teamGroup, `Accounts to assign to your team`)
+  }
+
+  blocks.push({ type: 'divider' })
+  blocks.push({
+    type: 'actions',
+    elements: [{
+      type: 'button',
+      text: { type: 'plain_text', text: 'View in Beacon', emoji: true },
+      url: `${appUrl}/playbook/territory/reassignment`,
+      style: 'primary',
+    }],
+  })
+
+  return blocks
+}
+
+export async function sendReassignmentMessages(
+  preview: ReassignmentPreview,
+  appUrl: string,
+): Promise<{ sent: string[]; failed: string[] }> {
+  const sent: string[] = []
+  const failed: string[] = []
+
+  for (const [leaderKey, accounts] of Object.entries(preview.routedByLeader)) {
+    if (accounts.length === 0) continue
+    const leader = LEADERS[leaderKey as keyof typeof LEADERS]
+    try {
+      const slackId = await resolveSlackUserId(leader.email)
+      if (!slackId) {
+        console.warn(`[Reassignment] No Slack ID for ${leader.email}`)
+        failed.push(leader.name)
+        continue
+      }
+      const blocks = buildLeaderBlocks(leader.name, accounts, appUrl)
+      await sendDm(slackId, blocks, `📋 ${accounts.length} customers to reassign — ${leader.name}`)
+      console.log(`[Reassignment] Sent to ${leader.name}: ${accounts.length} accounts`)
+      sent.push(leader.name)
+    } catch (err) {
+      console.error(`[Reassignment] Failed to send to ${leader.name}:`, err)
+      failed.push(leader.name)
+    }
+  }
+
+  return { sent, failed }
+}
+
+export async function runReassignmentJob(appUrl: string): Promise<void> {
+  console.log('[Reassignment] Starting daily reassignment run...')
+  const accounts = await fetchReassignAccounts()
+  console.log(`[Reassignment] Fetched ${accounts.length} accounts`)
+  const preview = buildPreview(accounts)
+  console.log(`[Reassignment] Routed: ${preview.total - preview.unrouted.length}, unrouted: ${preview.unrouted.length}`)
+  const { sent, failed } = await sendReassignmentMessages(preview, appUrl)
+  console.log(`[Reassignment] Sent to: ${sent.join(', ')}${failed.length ? ` | Failed: ${failed.join(', ')}` : ''}`)
+}

@@ -15,12 +15,13 @@ import {
   GitCompare,
   Users,
   BarChart2,
+  ArrowLeftRight,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
 import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
-const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts']
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory']
 
 export function Layout() {
   const location = useLocation()
@@ -113,6 +114,7 @@ export function Layout() {
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Territory Management
               </p>
+              <NavItem to="/playbook/territory/reassignment" label="Reassign to Success" icon={ArrowLeftRight} />
 
             </div>
           )}
