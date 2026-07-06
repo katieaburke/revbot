@@ -75,6 +75,10 @@ interface GongFlow {
   id: string
   name: string
   status?: string  // may include 'ACTIVE', 'INACTIVE', etc.
+  // Gong may return owner email under several field names
+  ownerEmail?: string
+  ownerEmailAddress?: string
+  owner?: { email?: string; emailAddress?: string }
 }
 
 interface GongFlowsResponse {
@@ -527,10 +531,20 @@ export async function buildFlowContactIndex(
       const batch = allFlows.slice(i, i + CONCURRENCY)
       await Promise.allSettled(batch.map(async (flow) => {
         try {
+          // flowOwnerEmail is required by the Gong API — extract from whichever field is present
+          const flowOwnerEmail =
+            flow.ownerEmail ??
+            flow.ownerEmailAddress ??
+            flow.owner?.email ??
+            flow.owner?.emailAddress
+          if (!flowOwnerEmail) {
+            console.warn(`[Gong] Skipping flow ${flow.id} (${flow.name}): no owner email`)
+            return
+          }
           let contactCursor: string | undefined
           do {
             const res = await client.get<GongFlowContactsResponse>(`/flows/${flow.id}/contacts`, {
-              params: contactCursor ? { cursor: contactCursor } : {},
+              params: { flowOwnerEmail, ...(contactCursor ? { cursor: contactCursor } : {}) },
               timeout: 10_000,
             })
             for (const contact of res.data.contacts ?? []) {
