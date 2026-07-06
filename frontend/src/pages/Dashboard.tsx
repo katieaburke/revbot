@@ -348,7 +348,7 @@ export function Dashboard() {
       setManagerDraftSent(g.opportunityId)
       setTimeout(() => setManagerNotifiedOppId(null), 4000)
       qc.invalidateQueries({ queryKey: ['opp-counts'] })
-      moveOppToSkipped(g.opportunityId, 'Recently notified')
+      moveOppToSkipped(g.opportunityId, 'Manager notified', 'cooldown')
     },
   })
 
@@ -363,7 +363,7 @@ export function Dashboard() {
     onSuccess: (_data, g) => {
       setDraftSent(g.opportunityId)
       qc.invalidateQueries({ queryKey: ['opp-counts'] })
-      moveOppToSkipped(g.opportunityId, 'Recently notified')
+      moveOppToSkipped(g.opportunityId, 'Recently notified', 'cooldown')
     },
   })
 
