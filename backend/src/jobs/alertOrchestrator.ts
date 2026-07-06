@@ -1,4 +1,7 @@
 import { db } from '../db'
+// Prisma client not regenerated locally — ownerEmail/managerEmail are runtime fields on Notification
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const notifDb = (db as any)
 import { fetchOpenOpportunities, invalidateSfdcOppCache } from '../services/salesforce'
 import { buildOpportunityActivityIndex, invalidateGongCache, warmGongCallCache, isGongCacheWarm } from '../services/gong'
 import { evaluatePastDue } from '../alerts/pastDue'
@@ -188,7 +191,8 @@ async function autoResolveStale(
 ): Promise<ResolvedNotification[]> {
   const currentFlagKeys = new Set(currentAlerts.map((a) => `${a.opportunityId}:${a.alertType}`))
 
-  const active = await db.notification.findMany({
+  type ActiveNotif = { id: string; opportunityId: string; opportunityName: string; alertType: string; ownerEmail: string; managerEmail: string | null }
+  const active: ActiveNotif[] = await notifDb.notification.findMany({
     where: { status: { in: ['SENT', 'SNOOZED'] } },
     select: { id: true, opportunityId: true, opportunityName: true, alertType: true, ownerEmail: true, managerEmail: true },
   })

@@ -3,9 +3,10 @@ import { db } from '../db'
 import { requireAdmin } from '../middleware/adminAuth'
 import { triggerAlertJobNow } from '../jobs/scheduler'
 import { runDryRun } from '../jobs/alertOrchestrator'
-import { sendDm } from '../slack/bot'
+import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { buildCombinedMessage, buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildManagerAlertMessage } from '../slack/messages'
 import { AlertType } from '../types'
+import type { KnownBlock } from '@slack/web-api'
 import { getServiceConnection } from '../services/salesforce'
 import { z } from 'zod'
 
@@ -347,6 +348,214 @@ router.post('/nudge', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: String(err) })
   }
+})
+
+// Prisma client is not regenerated locally — managerEmail/ownerEmail are runtime fields
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const notifDb = (db as any)
+
+// GET /api/notifications/manager-summary-data
+// Returns open flag counts and pending flag counts per manager → rep, for the summary DM preview.
+router.get('/manager-summary-data', async (_req, res) => {
+  try {
+    type NotifRow = { managerEmail: string | null; managerName: string | null; ownerEmail: string; ownerName: string | null; opportunityId: string }
+    // 1. Open (sent/snoozed) notifications grouped by manager → owner
+    const openNotifs: NotifRow[] = await notifDb.notification.findMany({
+      where: { status: { in: ['SENT', 'SNOOZED'] }, managerEmail: { not: null } },
+      select: { managerEmail: true, managerName: true, ownerEmail: true, ownerName: true, opportunityId: true },
+    })
+
+    // Build: managerEmail → { managerName, reps: Map<ownerEmail, { ownerName, openOppIds }> }
+    type RepStat = { ownerName: string | null; openOppIds: Set<string> }
+    type MgrEntry = { managerName: string | null; reps: Map<string, RepStat> }
+    const mgrMap = new Map<string, MgrEntry>()
+
+    for (const n of openNotifs) {
+      const mgrEmail = n.managerEmail!
+      if (!mgrMap.has(mgrEmail)) mgrMap.set(mgrEmail, { managerName: n.managerName, reps: new Map() })
+      const entry = mgrMap.get(mgrEmail)!
+      if (!entry.reps.has(n.ownerEmail)) entry.reps.set(n.ownerEmail, { ownerName: n.ownerName, openOppIds: new Set() })
+      entry.reps.get(n.ownerEmail)!.openOppIds.add(n.opportunityId)
+    }
+
+    // 2. Pending flags from last dry run
+    const lastDryRunSetting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+    type DryRunAlertMin = { ownerEmail: string; ownerName: string | null; managerEmail: string | null; managerName: string | null; opportunityId: string; wouldSkip: boolean; skipType?: string }
+    const pendingByMgr = new Map<string, Map<string, { ownerName: string | null; pendingOppIds: Set<string> }>>()
+
+    if (lastDryRunSetting) {
+      const dryRun = JSON.parse(lastDryRunSetting.value) as { wouldSend: DryRunAlertMin[] }
+      for (const alert of (dryRun.wouldSend ?? [])) {
+        if (!alert.managerEmail) continue
+        if (!pendingByMgr.has(alert.managerEmail)) pendingByMgr.set(alert.managerEmail, new Map())
+        const repMap = pendingByMgr.get(alert.managerEmail)!
+        if (!repMap.has(alert.ownerEmail)) repMap.set(alert.ownerEmail, { ownerName: alert.ownerName, pendingOppIds: new Set() })
+        repMap.get(alert.ownerEmail)!.pendingOppIds.add(alert.opportunityId)
+      }
+    }
+
+    // 3. Merge into response
+    const allManagerEmails = new Set([...mgrMap.keys(), ...pendingByMgr.keys()])
+    const managers = Array.from(allManagerEmails).map((mgrEmail) => {
+      const openEntry = mgrMap.get(mgrEmail)
+      const pendingEntry = pendingByMgr.get(mgrEmail)
+      const managerName = openEntry?.managerName ?? null
+
+      const allRepEmails = new Set([
+        ...(openEntry ? openEntry.reps.keys() : []),
+        ...(pendingEntry ? pendingEntry.keys() : []),
+      ])
+
+      const reps = Array.from(allRepEmails).map((repEmail) => {
+        const openRep = openEntry?.reps.get(repEmail)
+        const pendingRep = pendingEntry?.get(repEmail)
+        return {
+          ownerEmail: repEmail,
+          ownerName: openRep?.ownerName ?? pendingRep?.ownerName ?? null,
+          openCount: openRep?.openOppIds.size ?? 0,
+          pendingCount: pendingRep?.pendingOppIds.size ?? 0,
+        }
+      }).sort((a, b) => (b.openCount + b.pendingCount) - (a.openCount + a.pendingCount))
+
+      return {
+        managerEmail: mgrEmail,
+        managerName,
+        totalOpen: reps.reduce((s, r) => s + r.openCount, 0),
+        totalPending: reps.reduce((s, r) => s + r.pendingCount, 0),
+        reps,
+      }
+    }).sort((a, b) => (a.managerName ?? a.managerEmail).localeCompare(b.managerName ?? b.managerEmail))
+
+    res.json({ managers })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// POST /api/notifications/send-manager-summary
+// Sends a Slack DM to selected managers summarising their team's open + pending flags.
+router.post('/send-manager-summary', async (req, res) => {
+  const { managerEmails } = req.body as { managerEmails: string[] }
+  if (!Array.isArray(managerEmails) || managerEmails.length === 0) {
+    return res.status(400).json({ error: 'managerEmails must be a non-empty array' })
+  }
+
+  type NotifRow2 = { managerEmail: string | null; managerName: string | null; ownerEmail: string; ownerName: string | null; opportunityId: string }
+  // Re-use the same data logic
+  const openNotifs: NotifRow2[] = await notifDb.notification.findMany({
+    where: { status: { in: ['SENT', 'SNOOZED'] }, managerEmail: { in: managerEmails } },
+    select: { managerEmail: true, managerName: true, ownerEmail: true, ownerName: true, opportunityId: true },
+  })
+
+  type RepStat = { ownerName: string | null; openOppIds: Set<string> }
+  type MgrEntry = { managerName: string | null; reps: Map<string, RepStat> }
+  const mgrMap = new Map<string, MgrEntry>()
+  for (const n of openNotifs) {
+    const mgrEmail = n.managerEmail!
+    if (!mgrMap.has(mgrEmail)) mgrMap.set(mgrEmail, { managerName: n.managerName, reps: new Map() })
+    const entry = mgrMap.get(mgrEmail)!
+    if (!entry.reps.has(n.ownerEmail)) entry.reps.set(n.ownerEmail, { ownerName: n.ownerName, openOppIds: new Set() })
+    entry.reps.get(n.ownerEmail)!.openOppIds.add(n.opportunityId)
+  }
+
+  const lastDryRunSetting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+  type DryRunAlertMin = { ownerEmail: string; ownerName: string | null; managerEmail: string | null; managerName: string | null; opportunityId: string }
+  const pendingByMgr = new Map<string, Map<string, { ownerName: string | null; pendingOppIds: Set<string> }>>()
+  if (lastDryRunSetting) {
+    const dryRun = JSON.parse(lastDryRunSetting.value) as { wouldSend: DryRunAlertMin[] }
+    for (const alert of (dryRun.wouldSend ?? [])) {
+      if (!alert.managerEmail || !managerEmails.includes(alert.managerEmail)) continue
+      if (!pendingByMgr.has(alert.managerEmail)) pendingByMgr.set(alert.managerEmail, new Map())
+      const repMap = pendingByMgr.get(alert.managerEmail)!
+      if (!repMap.has(alert.ownerEmail)) repMap.set(alert.ownerEmail, { ownerName: alert.ownerName, pendingOppIds: new Set() })
+      repMap.get(alert.ownerEmail)!.pendingOppIds.add(alert.opportunityId)
+    }
+  }
+
+  const results: { managerEmail: string; ok: boolean; error?: string }[] = []
+
+  for (const mgrEmail of managerEmails) {
+    try {
+      const slackUserId = await resolveSlackUserId(mgrEmail)
+      if (!slackUserId) {
+        results.push({ managerEmail: mgrEmail, ok: false, error: `No Slack user found for ${mgrEmail}` })
+        continue
+      }
+
+      const openEntry = mgrMap.get(mgrEmail)
+      const pendingEntry = pendingByMgr.get(mgrEmail)
+      const managerFirstName = (openEntry?.managerName ?? mgrEmail).split(' ')[0]
+
+      const allRepEmails = new Set([
+        ...(openEntry ? openEntry.reps.keys() : []),
+        ...(pendingEntry ? pendingEntry.keys() : []),
+      ])
+
+      const repRows = Array.from(allRepEmails).map((repEmail) => {
+        const openRep = openEntry?.reps.get(repEmail)
+        const pendingRep = pendingEntry?.get(repEmail)
+        return {
+          name: openRep?.ownerName ?? pendingRep?.ownerName ?? repEmail,
+          openCount: openRep?.openOppIds.size ?? 0,
+          pendingCount: pendingRep?.pendingOppIds.size ?? 0,
+        }
+      }).sort((a, b) => (b.openCount + b.pendingCount) - (a.openCount + a.pendingCount))
+
+      const totalOpen = repRows.reduce((s, r) => s + r.openCount, 0)
+      const totalPending = repRows.reduce((s, r) => s + r.pendingCount, 0)
+
+      const repLines = repRows
+        .filter((r) => r.openCount > 0 || r.pendingCount > 0)
+        .map((r) => {
+          const parts: string[] = []
+          if (r.openCount > 0) parts.push(`${r.openCount} sent & open`)
+          if (r.pendingCount > 0) parts.push(`${r.pendingCount} queued`)
+          return `• *${r.name}* — ${parts.join(', ')}`
+        })
+
+      const blocks: KnownBlock[] = [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `👋 Hey ${managerFirstName}, here's a pipeline hygiene update for your team:` },
+        },
+        { type: 'divider' },
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: repLines.length > 0
+              ? repLines.join('\n')
+              : '_No open or pending flags for your team right now._',
+          },
+        },
+        { type: 'divider' },
+        {
+          type: 'context',
+          elements: [{
+            type: 'mrkdwn',
+            text: `*${totalOpen}* flags sent & awaiting action · *${totalPending}* queued to send next · Sent via RevBot`,
+          }],
+        },
+      ]
+
+      if (totalPending > 0) {
+        blocks.splice(3, 0, {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `⏳ *${totalPending} more flag${totalPending !== 1 ? 's' : ''} queued* to send once your reps action the ones above. The sooner they respond, the sooner we can surface more.`,
+          },
+        })
+      }
+
+      await sendDm(slackUserId, blocks, `Pipeline hygiene update for your team — ${totalOpen} open, ${totalPending} queued`)
+      results.push({ managerEmail: mgrEmail, ok: true })
+    } catch (err) {
+      results.push({ managerEmail: mgrEmail, ok: false, error: String(err) })
+    }
+  }
+
+  return res.json({ results })
 })
 
 export default router

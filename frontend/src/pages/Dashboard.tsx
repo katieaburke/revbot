@@ -4,7 +4,7 @@ import { api } from '../lib/api'
 import {
   Play, RefreshCw, AlertCircle, Clock, CheckCircle, FlaskConical,
   ChevronDown, ChevronUp, ExternalLink, Trash2, MessageSquare, X, Send,
-  Briefcase, Building2, UserCheck, BellOff,
+  Briefcase, Building2, UserCheck, BellOff, Users,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -262,6 +262,9 @@ export function Dashboard() {
   const [managerDraftSent, setManagerDraftSent] = useState<string | null>(null)
   const [managerNotifiedOppId, setManagerNotifiedOppId] = useState<string | null>(null)
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS)
+  const [showManagerSummaryModal, setShowManagerSummaryModal] = useState(false)
+  const [selectedManagers, setSelectedManagers] = useState<Set<string>>(new Set())
+  const [summaryResults, setSummaryResults] = useState<{ managerEmail: string; ok: boolean; error?: string }[] | null>(null)
 
   const { data: summary, isLoading } = useQuery<Summary>({
     queryKey: ['summary'],
@@ -404,6 +407,27 @@ export function Dashboard() {
     onError: () => setDeletingId(null),
   })
 
+  // Manager summary query — only fires when modal is open
+  const { data: managerSummaryData, isLoading: managerSummaryLoading } = useQuery<{
+    managers: Array<{
+      managerEmail: string
+      managerName: string | null
+      totalOpen: number
+      totalPending: number
+      reps: Array<{ ownerEmail: string; ownerName: string | null; openCount: number; pendingCount: number }>
+    }>
+  }>({
+    queryKey: ['manager-summary-data'],
+    queryFn: () => api.get('/notifications/manager-summary-data').then((r) => r.data),
+    enabled: showManagerSummaryModal,
+  })
+
+  const sendManagerSummary = useMutation({
+    mutationFn: (emails: string[]) =>
+      api.post('/notifications/send-manager-summary', { managerEmails: emails }).then((r) => r.data as { results: { managerEmail: string; ok: boolean; error?: string }[] }),
+    onSuccess: (data) => setSummaryResults(data.results),
+  })
+
   function sfdcLink(oppId: string) {
     return sfdcBase ? `${sfdcBase}/lightning/r/Opportunity/${oppId}/view` : null
   }
@@ -438,6 +462,13 @@ export function Dashboard() {
               {new Date(lastDryRun.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
             </span>
           )}
+          <button
+            onClick={() => { setShowManagerSummaryModal(true); setSummaryResults(null); setSelectedManagers(new Set()) }}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+          >
+            <Users size={15} />
+            Manager Summary
+          </button>
           <button
             onClick={() => { setDryRunError(null); dryRun.mutate() }}
             disabled={dryRun.isPending}
@@ -854,6 +885,126 @@ export function Dashboard() {
           onSend={() => notifyManager.mutate(managerDraftOpp)}
           onClose={() => { setManagerDraftOpp(null); setManagerDraftSent(null); notifyManager.reset() }}
         />
+      )}
+
+      {/* ── MANAGER SUMMARY MODAL ─────────────────────────────────────────── */}
+      {showManagerSummaryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Send Manager Summary</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Select leaders to send a Slack DM with their team's open + queued flags</p>
+              </div>
+              <button onClick={() => { setShowManagerSummaryModal(false); setSummaryResults(null) }} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 px-6 py-4 space-y-3">
+              {managerSummaryLoading && (
+                <div className="flex items-center justify-center py-12 text-gray-400 text-sm gap-2">
+                  <RefreshCw size={16} className="animate-spin" />
+                  Loading manager data…
+                </div>
+              )}
+
+              {!managerSummaryLoading && managerSummaryData?.managers.map((mgr) => {
+                const isSelected = selectedManagers.has(mgr.managerEmail)
+                const sent = summaryResults?.find((r) => r.managerEmail === mgr.managerEmail)
+                return (
+                  <div
+                    key={mgr.managerEmail}
+                    className={clsx(
+                      'rounded-xl border p-4 transition-colors',
+                      !sent && 'cursor-pointer',
+                      isSelected && !sent ? 'border-brand-400 bg-brand-50' : !sent ? 'border-gray-200 hover:border-gray-300' : '',
+                      sent?.ok ? 'border-green-300 bg-green-50' : '',
+                      sent && !sent.ok ? 'border-red-300 bg-red-50' : '',
+                    )}
+                    onClick={() => {
+                      if (sent) return
+                      setSelectedManagers((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(mgr.managerEmail)) next.delete(mgr.managerEmail)
+                        else next.add(mgr.managerEmail)
+                        return next
+                      })
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {!sent && (
+                          <div className={clsx(
+                            'w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center',
+                            isSelected ? 'bg-brand-600 border-brand-600' : 'border-gray-300'
+                          )}>
+                            {isSelected && <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                          </div>
+                        )}
+                        {sent?.ok && <CheckCircle size={16} className="text-green-500 flex-shrink-0" />}
+                        {sent && !sent.ok && <X size={16} className="text-red-500 flex-shrink-0" />}
+                        <span className="font-medium text-sm text-gray-900 truncate">{mgr.managerName ?? mgr.managerEmail}</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs flex-shrink-0">
+                        {mgr.totalOpen > 0 && <span className="text-orange-600 font-medium">{mgr.totalOpen} sent & open</span>}
+                        {mgr.totalPending > 0 && <span className="text-blue-600 font-medium">{mgr.totalPending} queued</span>}
+                      </div>
+                    </div>
+
+                    {sent?.error && <p className="mt-1 text-xs text-red-600 pl-6">{sent.error}</p>}
+
+                    {mgr.reps.filter((r) => r.openCount > 0 || r.pendingCount > 0).length > 0 && (
+                      <div className="mt-3 space-y-1 pl-6 border-t border-gray-100 pt-3">
+                        {mgr.reps.filter((r) => r.openCount > 0 || r.pendingCount > 0).map((rep) => (
+                          <div key={rep.ownerEmail} className="flex items-center justify-between text-xs text-gray-600">
+                            <span>{rep.ownerName ?? rep.ownerEmail}</span>
+                            <div className="flex gap-3">
+                              {rep.openCount > 0 && <span className="text-orange-500">{rep.openCount} open</span>}
+                              {rep.pendingCount > 0 && <span className="text-blue-500">{rep.pendingCount} queued</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+
+              {!managerSummaryLoading && (managerSummaryData?.managers.length ?? 0) === 0 && (
+                <p className="text-sm text-gray-400 text-center py-8">No manager data found — run a scan first.</p>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-400">
+                {summaryResults
+                  ? `Sent to ${summaryResults.filter((r) => r.ok).length} of ${summaryResults.length} managers`
+                  : selectedManagers.size > 0
+                    ? `${selectedManagers.size} manager${selectedManagers.size !== 1 ? 's' : ''} selected`
+                    : 'Click a manager to select'}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setShowManagerSummaryModal(false); setSummaryResults(null) }}
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg hover:bg-gray-50"
+                >
+                  {summaryResults ? 'Close' : 'Cancel'}
+                </button>
+                {!summaryResults && (
+                  <button
+                    onClick={() => sendManagerSummary.mutate(Array.from(selectedManagers))}
+                    disabled={selectedManagers.size === 0 || sendManagerSummary.isPending}
+                    className="flex items-center gap-2 px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-40"
+                  >
+                    {sendManagerSummary.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
+                    Send to {selectedManagers.size > 0 ? `${selectedManagers.size} ` : ''}{selectedManagers.size === 1 ? 'manager' : 'managers'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
