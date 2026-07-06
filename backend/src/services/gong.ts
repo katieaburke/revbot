@@ -513,12 +513,19 @@ export async function buildFlowContactIndex(
     const allFlows: GongFlow[] = []
     let flowCursor: string | undefined
     do {
-      const res = await client.get<GongFlowsResponse>('/flows', {
-        params: flowCursor ? { cursor: flowCursor } : {},
-        timeout: 10_000,
-      })
-      allFlows.push(...(res.data.flows ?? []))
-      flowCursor = res.data.records?.cursor
+      try {
+        const res = await client.get<GongFlowsResponse>('/flows', {
+          params: flowCursor ? { cursor: flowCursor } : {},
+          timeout: 10_000,
+        })
+        allFlows.push(...(res.data.flows ?? []))
+        flowCursor = res.data.records?.cursor
+      } catch (listErr) {
+        // Gong may require auth params on the list endpoint — treat as "no flows available"
+        const axErr = listErr as { response?: { status?: number; data?: unknown }; message?: string }
+        console.warn(`[Gong] /flows list failed (${axErr.response?.status ?? 'network'}): ${JSON.stringify(axErr.response?.data ?? axErr.message)} — skipping flow contacts`)
+        break
+      }
     } while (flowCursor)
 
     console.log(`[Gong] Fetching contacts for ${allFlows.length} flows in parallel`)

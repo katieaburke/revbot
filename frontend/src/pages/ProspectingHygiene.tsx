@@ -540,8 +540,8 @@ export function ProspectingHygiene() {
             </p>
           </div>
 
-          {/* Gong Flow Error Banner */}
-          {data.flowError && (
+          {/* Gong Flow Error — shown only for non-auth errors (auth failures are gracefully degraded) */}
+          {data.flowError && !data.flowError.includes('flowOwnerEmail') && (
             <div className="mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2">
               <span className="shrink-0 font-semibold">Gong Flows:</span>
               <span className="font-mono break-all">{data.flowError}</span>
