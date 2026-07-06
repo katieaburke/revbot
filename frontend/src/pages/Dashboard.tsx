@@ -362,7 +362,6 @@ export function Dashboard() {
     }),
     onSuccess: (_data, g) => {
       setDraftSent(g.opportunityId)
-      setExpandedSection('cooldown')
       qc.invalidateQueries({ queryKey: ['opp-counts'] })
       moveOppToSkipped(g.opportunityId, 'Recently notified')
     },
