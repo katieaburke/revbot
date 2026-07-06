@@ -362,6 +362,7 @@ export function Dashboard() {
     }),
     onSuccess: (_data, g) => {
       setDraftSent(g.opportunityId)
+      setExpandedSection('cooldown')
       qc.invalidateQueries({ queryKey: ['opp-counts'] })
       moveOppToSkipped(g.opportunityId, 'Recently notified')
     },
@@ -589,7 +590,18 @@ export function Dashboard() {
                   </select>
                 )}
                 {owners.length > 1 && (
-                  <select value={filters.owner} onChange={(e) => setFilters((f) => ({ ...f, owner: e.target.value }))} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
+                  <select value={filters.owner} onChange={(e) => {
+                    const owner = e.target.value
+                    setFilters((f) => ({ ...f, owner }))
+                    // Auto-expand the first section that has items for this owner
+                    if (owner && dryRunResult) {
+                      const newFilters = { ...filters, owner }
+                      const hasWouldSend = applyFilters(groupByOpp(dryRunResult.wouldSend), newFilters, oppCounts).length > 0
+                      const hasCooldown = applyFilters(groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'cooldown' || !a.skipType)), newFilters, oppCounts).length > 0
+                      if (hasWouldSend) setExpandedSection('wouldSend')
+                      else if (hasCooldown) setExpandedSection('cooldown')
+                    }
+                  }} className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700">
                     <option value="">All owners</option>
                     {owners.map(([email, name]) => <option key={email} value={email}>{name}</option>)}
                   </select>
