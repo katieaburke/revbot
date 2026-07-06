@@ -429,7 +429,13 @@ export function Dashboard() {
           <h2 className="text-2xl font-semibold text-gray-900">Dashboard</h2>
           <p className="text-sm text-gray-500 mt-1">Pipeline and account health</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex items-center gap-3">
+          {lastDryRun?.timestamp && (
+            <span className="text-xs text-gray-400">
+              Last successful run:{' '}
+              {new Date(lastDryRun.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
           <button
             onClick={() => { setDryRunError(null); dryRun.mutate() }}
             disabled={dryRun.isPending}
