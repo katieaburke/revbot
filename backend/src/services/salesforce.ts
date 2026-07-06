@@ -326,8 +326,23 @@ export interface SfdcAccount {
   // BDR assigned (User lookup)
   BDR_Assigned__c?: string | null
   BDR_Assigned__r?: { Id: string; Name: string; Email: string } | null
-  // Contacts subquery for Gong matching
-  Contacts?: { totalSize: number; records: Array<{ Id: string; Email: string | null; Name: string }> } | null
+  // Contacts subquery — includes Gong Engage Flow fields (synced by Gong → SFDC integration)
+  Contacts?: {
+    totalSize: number
+    records: Array<{
+      Id: string
+      Email: string | null
+      Name: string
+      Gong__Actively_Being_in_a_Flow__c: boolean | null
+      Gong__Current_Flow_Name__c: string | null
+      Gong__Flow_Status__c: string | null
+      Gong__Current_Flow_Task_Due_Date__c: string | null
+      Gong__Active_Engage_Flow_Names__c: string | null
+      Gong__Number_of_Active_Engage_Flows__c: number | null
+      Gong__Engage_Flow_Owner__c: string | null
+      Gong__Added_to_Flow_Date__c: string | null
+    }>
+  } | null
 }
 
 export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterprise_Account_Record', opts: { bustCache?: boolean } = {}): Promise<SfdcAccount[]> {
@@ -366,7 +381,12 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
              OwnerId, Owner.Id, Owner.Name, Owner.Email,
              BDR_Assigned__c, BDR_Assigned__r.Id, BDR_Assigned__r.Name, BDR_Assigned__r.Email,
              RecordType.Name, RecordType.DeveloperName,
-             (SELECT Id, Email, Name FROM Contacts LIMIT 10)
+             (SELECT Id, Email, Name,
+                     Gong__Actively_Being_in_a_Flow__c, Gong__Current_Flow_Name__c,
+                     Gong__Flow_Status__c, Gong__Current_Flow_Task_Due_Date__c,
+                     Gong__Active_Engage_Flow_Names__c, Gong__Number_of_Active_Engage_Flows__c,
+                     Gong__Engage_Flow_Owner__c, Gong__Added_to_Flow_Date__c
+              FROM Contacts LIMIT 10)
       FROM Account
       WHERE Account_Stage__c = 'Prospect'
       AND Target_Prospecting_Date__c != null

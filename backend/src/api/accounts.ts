@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { requireAdmin } from '../middleware/adminAuth'
 import { fetchProspectAccounts, getSfdcInstanceUrl, updateProspectAccount } from '../services/salesforce'
-import { buildAccountActivityIndex, buildFlowContactIndex, isGongAccountCacheWarm, warmGongAccountCallCache } from '../services/gong'
+import { buildAccountActivityIndex, isGongAccountCacheWarm, warmGongAccountCallCache } from '../services/gong'
+import type { GongFlowEnrollment } from '../services/gong'
 import { evaluateProspectingHygiene, type ProspectingFlagType } from '../alerts/prospecting'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { db } from '../db'
@@ -36,22 +37,32 @@ router.get('/prospecting-hygiene', async (_req, res) => {
 
     const accountIds = accounts.map((a) => a.Id)
 
-    // Collect all contact emails across all accounts for flow lookup
-    const allContactEmails = Array.from(
-      new Set(
-        accounts.flatMap((a) => (a.Contacts?.records ?? []).map((c) => c.Email).filter(Boolean) as string[])
-      )
-    )
+    // Build Gong flow index from SFDC contact fields (Gong syncs these via native integration)
+    // Map: contact email (lowercase) → GongFlowEnrollment[]
+    const flowIndex = new Map<string, GongFlowEnrollment[]>()
+    for (const account of accounts) {
+      for (const contact of account.Contacts?.records ?? []) {
+        if (!contact.Email) continue
+        const email = contact.Email.toLowerCase()
+        if (contact.Gong__Actively_Being_in_a_Flow__c && contact.Gong__Current_Flow_Name__c) {
+          if (!flowIndex.has(email)) flowIndex.set(email, [])
+          flowIndex.get(email)!.push({
+            flowId: contact.Gong__Current_Flow_Name__c, // no separate ID exposed in SFDC fields; use name as key
+            flowName: contact.Gong__Current_Flow_Name__c,
+            status: contact.Gong__Flow_Status__c ?? 'ACTIVE',
+            nextStepDueDate: contact.Gong__Current_Flow_Task_Due_Date__c ?? null,
+            completedAt: null,
+          })
+        }
+      }
+    }
 
-    // Only fetch Gong activity if cache is warm — flow index has its own 25s internal timeout + error caching
+    // Only fetch Gong call activity if cache is warm
     const tGong = Date.now()
-    const [gongActivity, flowResult] = await Promise.all([
-      gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()),
-      buildFlowContactIndex(allContactEmails),
-    ])
-    console.log(`[Hygiene] Gong: ${Date.now() - tGong}ms (accountWarm=${gongAccountWarm}, flowErr=${flowResult.error ?? 'none'})`)
+    const gongActivity = await (gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()))
+    console.log(`[Hygiene] Gong: ${Date.now() - tGong}ms (accountWarm=${gongAccountWarm}, flowContacts=${flowIndex.size} contacts with active flows)`)
 
-    const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowResult.index)
+    const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowIndex)
 
     // Load nudge log for all accounts so the UI can show last-sent + cooldown state
     const nudgeSettings = await db.appSetting.findMany({
@@ -68,7 +79,7 @@ router.get('/prospecting-hygiene', async (_req, res) => {
       totalAccounts: accounts.length,
       flags,
       nudgeLog,
-      flowError: flowResult.error,  // null = OK, string = error message for debugging
+      flowError: null,  // flow data now comes from SFDC contact fields, not Gong API
       config: { recordTypeFilter, staleThresholdDays, recentActivityDays },
     })
   } catch (err) {
