@@ -39,7 +39,7 @@ async function runSfdcSoql<T>(
 
 const SFDC_OPP_CACHE_KEY = 'sfdc:open_opportunities'
 const SFDC_OPP_CACHE_TTL = 5 * 60
-const SFDC_ACCOUNT_CACHE_KEY = 'sfdc:prospect_accounts'
+const SFDC_ACCOUNT_CACHE_KEY = 'sfdc:prospect_accounts_v2' // v2: includes Gong flow fields on contacts
 const SFDC_ACCOUNT_CACHE_TTL = 5 * 60
 
 // In-memory cache — zero network latency, lives for the process lifetime
