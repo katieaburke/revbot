@@ -78,9 +78,9 @@ export function Layout() {
           {playbookOpen && (
             <div className="ml-3 pl-3 border-l border-gray-200 space-y-0.5 mt-0.5">
 
-              {/* Opportunities sub-section */}
+              {/* Pipeline Hygiene sub-section */}
               <p className="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
-                Opportunities
+                Pipeline Hygiene
               </p>
               <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} badge={dryRunSummary?.byAlertType['STALLED']} />
               <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} badge={dryRunSummary?.byAlertType['MEDDPICC_MISSING']} />
@@ -98,11 +98,21 @@ export function Layout() {
               <NavItem to="/close-date-risk" label="Close Date Risk" icon={AlertTriangle} badge={dryRunSummary?.byAlertType['CLOSE_DATE_RISK']} />
               <NavItem to="/playbook/stage-mismatch" label="Stage Mismatch" icon={GitCompare} badge={dryRunSummary?.byAlertType['STAGE_MISMATCH']} />
 
-              {/* Accounts sub-section */}
+              {/* Prospecting Management sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
-                Accounts
+                Prospecting Management
               </p>
               <NavItem to="/playbook/accounts" label="Prospecting Hygiene" icon={Building2} />
+
+              {/* Risk and Termination Management sub-section */}
+              <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                Risk &amp; Termination Management
+              </p>
+
+              {/* Territory Management sub-section */}
+              <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                Territory Management
+              </p>
 
             </div>
           )}
