@@ -46,6 +46,8 @@ interface ResolvedItem {
   opportunityName: string
   alertType: string
   resolveReason: 'opp_closed' | 'flag_cleared'
+  ownerEmail?: string
+  managerEmail?: string | null
 }
 
 interface DryRunResult {
@@ -485,7 +487,9 @@ export function Dashboard() {
         const cooldownGroups = groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'cooldown' || !a.skipType))
         const snoozedOwnerGroups = groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_owner'))
         const snoozedRevopsGroups = groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_revops'))
-        const resolvedCount = dryRunResult.resolved?.length ?? 0
+        const resolvedCount = (dryRunResult.resolved ?? []).filter((r) =>
+          !filters.owner || !r.ownerEmail || r.ownerEmail === filters.owner
+        ).length
         return (
           <div className="grid grid-cols-3 gap-4 mb-6">
             <StatCard label="Would Send" value={newSendGroups.length} icon={<AlertCircle size={18} className="text-red-500" />} hint="New flags, not yet notified" />
@@ -551,8 +555,8 @@ export function Dashboard() {
               <span className="text-amber-600">{groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_revops')).length} snoozed (RevOps)</span>
               <span className="text-amber-600">{groupByOpp(dryRunResult.wouldSkip.filter(a => a.skipType === 'snoozed_owner')).length} snoozed (owner)</span>
               <span className="text-orange-600">{groupByOpp(dryRunResult.unreachable).length} unreachable</span>
-              {(dryRunResult.resolved ?? []).length > 0 && (
-                <span className="text-emerald-600">{groupResolvedByOpp(dryRunResult.resolved ?? []).length} resolved</span>
+              {(dryRunResult.resolved ?? []).filter((r) => !filters.owner || !r.ownerEmail || r.ownerEmail === filters.owner).length > 0 && (
+                <span className="text-emerald-600">{groupResolvedByOpp((dryRunResult.resolved ?? []).filter((r) => !filters.owner || !r.ownerEmail || r.ownerEmail === filters.owner)).length} resolved</span>
               )}
             </div>
           </div>
@@ -803,14 +807,20 @@ export function Dashboard() {
             />
           )}
 
-          {(dryRunResult.resolved ?? []).length > 0 && (
-            <ResolvedSection
-              groups={groupResolvedByOpp(dryRunResult.resolved ?? [])}
-              expanded={expandedSection === 'resolved'}
-              onToggle={() => setExpandedSection(expandedSection === 'resolved' ? null : 'resolved')}
-              sfdcLink={sfdcLink}
-            />
-          )}
+          {(dryRunResult.resolved ?? []).length > 0 && (() => {
+            const filteredResolved = (dryRunResult.resolved ?? []).filter((r) => {
+              if (filters.owner && r.ownerEmail && r.ownerEmail !== filters.owner) return false
+              return true
+            })
+            return filteredResolved.length > 0 ? (
+              <ResolvedSection
+                groups={groupResolvedByOpp(filteredResolved)}
+                expanded={expandedSection === 'resolved'}
+                onToggle={() => setExpandedSection(expandedSection === 'resolved' ? null : 'resolved')}
+                sfdcLink={sfdcLink}
+              />
+            ) : null
+          })()}
         </div>
       )}
 

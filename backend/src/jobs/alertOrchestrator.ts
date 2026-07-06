@@ -64,6 +64,8 @@ export interface ResolvedNotification {
   opportunityName: string
   alertType: AlertType
   resolveReason: 'opp_closed' | 'flag_cleared'
+  ownerEmail: string
+  managerEmail: string | null
 }
 
 export interface DryRunResult {
@@ -188,7 +190,7 @@ async function autoResolveStale(
 
   const active = await db.notification.findMany({
     where: { status: { in: ['SENT', 'SNOOZED'] } },
-    select: { id: true, opportunityId: true, opportunityName: true, alertType: true },
+    select: { id: true, opportunityId: true, opportunityName: true, alertType: true, ownerEmail: true, managerEmail: true },
   })
 
   const toResolve = active.filter((n) => {
@@ -210,6 +212,8 @@ async function autoResolveStale(
     opportunityName: n.opportunityName,
     alertType: n.alertType as AlertType,
     resolveReason: !openOppIds.has(n.opportunityId) ? 'opp_closed' : 'flag_cleared',
+    ownerEmail: n.ownerEmail,
+    managerEmail: n.managerEmail ?? null,
   }))
 }
 
