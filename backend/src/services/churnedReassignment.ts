@@ -110,7 +110,7 @@ export async function fetchSalesReps(): Promise<SalesRep[]> {
     AND UserRole.Name LIKE '%New Business%'
     AND UserRole.Name LIKE '%Sales%'
     AND UserRole.Name LIKE '%Rep%'
-    AND UserRole.Name NOT LIKE '%BDR%'
+    AND (NOT UserRole.Name LIKE '%BDR%')
     ORDER BY Name ASC
   `
 

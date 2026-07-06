@@ -77,7 +77,7 @@ export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
     WHERE Account_Stage__c = 'Customer'
     AND RecordType.DeveloperName = 'Enterprise_Account_Record'
     AND Type = 'Direct Enterprise'
-    AND Name NOT LIKE '%TEST%'
+    AND (NOT Name LIKE '%TEST%')
     AND GEO_Studio_Customer_Only__c = false
     AND (
       Owner.UserRole.Name LIKE '%New Business%'
