@@ -182,9 +182,22 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
 //   1. The opp is no longer open in Salesforce (closed won/lost/etc.)
 //   2. The opp is open but that specific flag no longer fires
 
+const FLAG_CLEARED_LABELS: Record<string, string> = {
+  PAST_DUE_INITIAL: 'past due close date',
+  PAST_DUE_AMENDMENT: 'past due amendment',
+  PAST_DUE_RENEWAL: 'past due renewal',
+  STALLED: 'stalled deal',
+  MEDDPICC_MISSING: 'missing MEDDPICC/BANT',
+  NEXT_STEP_MISSING: 'missing next step',
+  CLOSE_DATE_RISK: 'close date risk',
+  STAGE_MISMATCH: 'stage mismatch',
+  STALE_PROSPECTING: 'stale prospecting',
+}
+
 async function autoResolveStale(
   openOppIds: Set<string>,
-  currentAlerts: Array<{ opportunityId: string; alertType: AlertType }>
+  currentAlerts: Array<{ opportunityId: string; alertType: AlertType }>,
+  notify = false,
 ): Promise<ResolvedNotification[]> {
   const currentFlagKeys = new Set(currentAlerts.map((a) => `${a.opportunityId}:${a.alertType}`))
 
@@ -209,14 +222,35 @@ async function autoResolveStale(
     console.log(`[AutoResolve] Resolved ${toResolve.length} stale notifications`)
   }
 
-  return toResolve.map((n) => ({
+  const results = toResolve.map((n) => ({
     opportunityId: n.opportunityId,
     opportunityName: n.opportunityName,
     alertType: n.alertType as AlertType,
-    resolveReason: !openOppIds.has(n.opportunityId) ? 'opp_closed' : 'flag_cleared',
+    resolveReason: (!openOppIds.has(n.opportunityId) ? 'opp_closed' : 'flag_cleared') as 'opp_closed' | 'flag_cleared',
     ownerEmail: n.owner?.slackEmail ?? '',
     managerEmail: null,
   }))
+
+  // Send confirmation DMs to reps whose flags were cleared (i.e. they fixed it in SFDC directly)
+  if (notify) {
+    const flagCleared = results.filter((r) => r.resolveReason === 'flag_cleared' && r.ownerEmail)
+    for (const r of flagCleared) {
+      try {
+        const slackId = await resolveSlackUserId(r.ownerEmail)
+        if (!slackId) continue
+        const label = FLAG_CLEARED_LABELS[r.alertType] ?? r.alertType.toLowerCase().replace(/_/g, ' ')
+        await sendDm(
+          slackId,
+          [{ type: 'section', text: { type: 'mrkdwn', text: `✅ Nice work — your *${label}* flag on *${r.opportunityName}* has been cleared. RevBot picked up your update in Salesforce!` } }],
+          `✅ Flag cleared: ${r.opportunityName}`,
+        )
+      } catch (err) {
+        console.warn(`[AutoResolve] Failed to notify ${r.ownerEmail}:`, err)
+      }
+    }
+  }
+
+  return results
 }
 
 // ─── Dry run ───────────────────────────────────────────────────────────────
@@ -466,7 +500,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
     ...closeDateRiskAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.CLOSE_DATE_RISK })),
     ...stageMismatchAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.STAGE_MISMATCH })),
   ]
-  await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts)
+  await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts, true)
 
   for (const alert of pastDueAlerts) {
     try {
