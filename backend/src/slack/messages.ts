@@ -353,7 +353,8 @@ export async function buildStageMismatchMessage(alert: StageMismatchAlert, isNud
 export async function buildCombinedMessage(
   oppId: string,
   oppName: string,
-  alerts: { alertType: string; details: Record<string, unknown> }[]
+  alerts: { alertType: string; details: Record<string, unknown> }[],
+  repPortalUrl?: string,
 ): Promise<KnownBlock[]> {
   const base = await getSfdcBase()
   const link = oppLink(base, oppId, oppName)
@@ -543,6 +544,13 @@ export async function buildCombinedMessage(
       needHelpButton(),
     ],
   })
+
+  if (repPortalUrl) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📋 <${repPortalUrl}|View all your open flags →>` }],
+    })
+  }
 
   return blocks
 }

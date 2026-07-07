@@ -16,6 +16,7 @@ import { Analytics } from './pages/Analytics'
 import { ProspectingHygiene } from './pages/ProspectingHygiene'
 import { TerritoryReassignment } from './pages/TerritoryReassignment'
 import { ChurnedReassignment } from './pages/ChurnedReassignment'
+import { RepPortal } from './pages/RepPortal'
 
 const qc = new QueryClient()
 
@@ -31,6 +32,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/my-flags" element={<RepPortal />} />
           <Route
             element={
               <RequireAuth>

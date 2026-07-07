@@ -8,7 +8,9 @@ import { evaluateNextStep } from '../alerts/nextStep'
 import { evaluateCloseDateRisk } from '../alerts/closeDate'
 import { evaluateStageMismatch } from '../alerts/stageMismatch'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
-import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildNextStepMessage, buildCloseDateRiskMessage, buildStageMismatchMessage } from '../slack/messages'
+import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildNextStepMessage, buildCloseDateRiskMessage, buildStageMismatchMessage, buildCombinedMessage } from '../slack/messages'
+import { generateRepToken } from '../lib/repToken'
+import { config } from '../config'
 import { AlertType, NotificationStatus } from '../types'
 import type { PastDueAlert } from '../alerts/pastDue'
 import type { StalledAlert } from '../alerts/stalled'
@@ -502,6 +504,13 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
   ]
   await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts)
 
+  // Helper: append "View all my flags" portal link to any block array
+  function withPortal(blocks: import('@slack/web-api').KnownBlock[], slackUserId: string): import('@slack/web-api').KnownBlock[] {
+    const token = generateRepToken(slackUserId)
+    const url = `${config.APP_URL}/my-flags?token=${token}`
+    return [...blocks, { type: 'context' as const, elements: [{ type: 'mrkdwn' as const, text: `📋 <${url}|View all your open flags →>` }] }]
+  }
+
   for (const alert of pastDueAlerts) {
     try {
       const { skip } = await isSnoozedOrRecentlySent(alert.opportunityId, alert.alertType, cooldownBusinessDays)
@@ -513,7 +522,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = await buildPastDueMessage(alert)
+      const blocks = withPortal(await buildPastDueMessage(alert), slackUserId)
       const ts = await sendDm(slackUserId, blocks, `Past due: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -546,7 +555,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = await buildStalledMessage(alert)
+      const blocks = withPortal(await buildStalledMessage(alert), slackUserId)
       const ts = await sendDm(slackUserId, blocks, `Stalled deal: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -580,7 +589,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = await buildMeddpiccMessage(alert)
+      const blocks = withPortal(await buildMeddpiccMessage(alert), slackUserId)
       const ts = await sendDm(slackUserId, blocks, `Missing MEDDPICC: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -613,7 +622,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = await buildNextStepMessage(alert)
+      const blocks = withPortal(await buildNextStepMessage(alert), slackUserId)
       const ts = await sendDm(slackUserId, blocks, `Missing next step: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -646,7 +655,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = await buildCloseDateRiskMessage(alert)
+      const blocks = withPortal(await buildCloseDateRiskMessage(alert), slackUserId)
       const ts = await sendDm(slackUserId, blocks, `Close date risk: ${alert.opportunityName}`)
 
       await db.notification.create({
@@ -679,7 +688,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
       const dbUser = await db.user.findUnique({ where: { slackUserId } })
       if (!dbUser) { skipped++; continue }
 
-      const blocks = await buildStageMismatchMessage(alert)
+      const blocks = withPortal(await buildStageMismatchMessage(alert), slackUserId)
       const ts = await sendDm(slackUserId, blocks, `Stage mismatch: ${alert.opportunityName}`)
 
       await db.notification.create({
