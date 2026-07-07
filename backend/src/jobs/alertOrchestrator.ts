@@ -500,7 +500,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
     ...closeDateRiskAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.CLOSE_DATE_RISK })),
     ...stageMismatchAlerts.map((a) => ({ opportunityId: a.opportunityId, alertType: AlertType.STAGE_MISMATCH })),
   ]
-  await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts, true)
+  await autoResolveStale(new Set(opps.map((o) => o.Id)), allCurrentAlerts)
 
   for (const alert of pastDueAlerts) {
     try {
