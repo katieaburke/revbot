@@ -218,10 +218,12 @@ export function buildPreview(accounts: ReassignAccount[], overrides?: RoutingOve
 
 // ── Slack messages ──────────────────────────────────────────────────────────────
 
+const SFDC_BASE = 'https://uberall.lightning.force.com'
+
 function accountLine(a: ReassignAccount): string {
   const country = a.billingCountry ?? 'Unknown country'
   const owner = a.ownerName.startsWith('#') ? `${a.ownerName} _(inactive)_` : a.ownerName
-  return `• *${a.name}* — ${country} — ${owner}`
+  return `• <${SFDC_BASE}/${a.id}|${a.name}> — ${country} — ${owner}`
 }
 
 function buildLeaderBlocks(leaderName: string, accounts: RoutedAccount[], appUrl: string): KnownBlock[] {
