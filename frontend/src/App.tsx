@@ -27,12 +27,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Rep portal is fully public — bypass the admin router entirely
+  if (window.location.pathname.startsWith('/my-flags')) {
+    return (
+      <QueryClientProvider client={qc}>
+        <RepPortal />
+      </QueryClientProvider>
+    )
+  }
+
   return (
     <QueryClientProvider client={qc}>
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/my-flags" element={<RepPortal />} />
           <Route
             element={
               <RequireAuth>
