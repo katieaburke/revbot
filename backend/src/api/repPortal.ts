@@ -2,7 +2,6 @@ import { Router } from 'express'
 import { db } from '../db'
 import { verifyRepToken, generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
-import { config } from '../config'
 
 const router = Router()
 
@@ -109,9 +108,8 @@ router.post('/admin/generate-link', requireAdmin, async (req, res) => {
   if (!user.slackUserId) return res.status(400).json({ error: 'User has no Slack ID on record' })
 
   const token = generateRepToken(user.slackUserId)
-  const url = `${config.APP_URL}/my-flags?token=${token}`
 
-  res.json({ url, name: user.slackName ?? user.slackEmail, expiresIn: '30d' })
+  res.json({ token, name: user.slackName ?? user.slackEmail, expiresIn: '30d' })
 })
 
 export default router

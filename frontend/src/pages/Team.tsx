@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { Trash2, KeyRound, UserPlus, X } from 'lucide-react'
+import { Trash2, KeyRound, UserPlus, X, Link, Copy, Check } from 'lucide-react'
 
 interface AdminUser {
   id: string
@@ -100,6 +100,42 @@ export function Team() {
       return
     }
     resetPassword_.mutate({ id: resetUserId!, password: resetPassword })
+  }
+
+  // ── Rep link generator ──────────────────────────────────────────────────────
+  const [repEmail, setRepEmail] = useState('')
+  const [generatedLink, setGeneratedLink] = useState<{ url: string; name: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [repLinkError, setRepLinkError] = useState('')
+
+  const generateLink = useMutation({
+    mutationFn: (email: string) =>
+      api.post('/rep/admin/generate-link', { email }).then((r) => {
+        const { token, name } = r.data as { token: string; name: string }
+        return { url: `${window.location.origin}/my-flags?token=${token}`, name }
+      }),
+    onSuccess: (data) => {
+      setGeneratedLink(data)
+      setRepLinkError('')
+    },
+    onError: (err: any) => {
+      setRepLinkError(err.response?.data?.error ?? 'Rep not found — make sure they've received at least one RevBot message')
+      setGeneratedLink(null)
+    },
+  })
+
+  function handleGenerateLink(e: React.FormEvent) {
+    e.preventDefault()
+    setGeneratedLink(null)
+    setCopied(false)
+    generateLink.mutate(repEmail)
+  }
+
+  function copyLink() {
+    if (!generatedLink) return
+    navigator.clipboard.writeText(generatedLink.url)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading...</div>
@@ -306,6 +342,57 @@ export function Team() {
             </tbody>
           </table>
         )}
+      </div>
+
+      {/* ── Rep portal link generator ──────────────────────────────────────────── */}
+      <div className="mt-10">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">Rep portal links</h3>
+        <p className="text-sm text-gray-500 mb-5">
+          Generate a magic link for any rep to see their open RevBot flags. Valid for 30 days.
+        </p>
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <form onSubmit={handleGenerateLink} className="flex gap-3 items-end">
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-gray-700 mb-1">Rep email</label>
+              <input
+                type="email"
+                required
+                value={repEmail}
+                onChange={(e) => { setRepEmail(e.target.value); setGeneratedLink(null); setRepLinkError('') }}
+                className="input w-full"
+                placeholder="rep@uberall.com"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={generateLink.isPending}
+              className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50 whitespace-nowrap"
+            >
+              <Link size={14} />
+              {generateLink.isPending ? 'Generating…' : 'Generate link'}
+            </button>
+          </form>
+
+          {repLinkError && (
+            <p className="mt-3 text-xs text-red-600">{repLinkError}</p>
+          )}
+
+          {generatedLink && (
+            <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+              <div className="flex items-center justify-between gap-3 mb-1">
+                <span className="text-xs font-medium text-gray-700">{generatedLink.name}</span>
+                <button
+                  onClick={copyLink}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-white transition-colors"
+                >
+                  {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                  {copied ? 'Copied!' : 'Copy link'}
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 truncate">{generatedLink.url}</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
