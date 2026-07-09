@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { db } from '../db'
-import { verifyRepToken } from '../lib/repToken'
+import { verifyRepToken, generateRepToken } from '../lib/repToken'
+import { requireAdmin } from '../middleware/adminAuth'
+import { config } from '../config'
 
 const router = Router()
 
@@ -91,6 +93,25 @@ router.post('/snooze', async (req, res) => {
   } catch (err) {
     res.status(401).json({ error: 'Invalid or expired link' })
   }
+})
+
+// ── Admin: generate a magic link for any rep (by email or slackUserId) ───────
+// POST /api/rep/admin/generate-link  — requires admin JWT
+
+router.post('/admin/generate-link', requireAdmin, async (req, res) => {
+  const { email, slackUserId } = req.body as { email?: string; slackUserId?: string }
+  if (!email && !slackUserId) return res.status(400).json({ error: 'Provide email or slackUserId' })
+
+  const user = await db.user.findFirst({
+    where: email ? { slackEmail: email } : { slackUserId: slackUserId! },
+  })
+  if (!user) return res.status(404).json({ error: 'User not found' })
+  if (!user.slackUserId) return res.status(400).json({ error: 'User has no Slack ID on record' })
+
+  const token = generateRepToken(user.slackUserId)
+  const url = `${config.APP_URL}/my-flags?token=${token}`
+
+  res.json({ url, name: user.slackName ?? user.slackEmail, expiresIn: '30d' })
 })
 
 export default router
