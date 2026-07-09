@@ -347,7 +347,15 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
       wouldSkip: skip,
       skipReason: reason,
       skipType,
-      details: alert as unknown as Record<string, unknown>,
+      details: {
+        ...(alert as unknown as Record<string, unknown>),
+        // Common opp fields — available on every alert type for the rep portal
+        amount: opp?.Amount ?? null,
+        closeDate: opp?.CloseDate ?? null,
+        stage: opp?.StageName ?? (alert as { stage?: string }).stage ?? null,
+        nextStep: opp?.NextStep ?? (alert as { nextStep?: string }).nextStep ?? null,
+        nextStepDate: opp?.Next_Step_Date__c ?? (alert as { nextStepDate?: string }).nextStepDate ?? null,
+      },
     }
 
     if (!ownerSlackId) {

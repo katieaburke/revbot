@@ -232,6 +232,47 @@ function NotifCard({
           )}
         </div>
 
+        {/* Deal metadata */}
+        {(() => {
+          const d = notif.alertDetails
+          const amount = d.amount != null ? Number(d.amount) : null
+          const closeDate = typeof d.closeDate === 'string' ? d.closeDate : null
+          const stage = typeof d.stage === 'string' ? d.stage : null
+          const nextStepDate = typeof d.nextStepDate === 'string' ? d.nextStepDate : null
+          const nextStep = typeof d.nextStep === 'string' ? d.nextStep : null
+          return (
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2.5">
+              {amount != null && (
+                <span className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">ACV</span>{' '}
+                  ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                </span>
+              )}
+              {closeDate && (
+                <span className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">Close</span>{' '}
+                  {fmtDate(closeDate)}
+                </span>
+              )}
+              {stage && (
+                <span className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">Stage</span>{' '}
+                  {stage}
+                </span>
+              )}
+              {nextStepDate && (
+                <span className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">Next step</span>{' '}
+                  {fmtDate(nextStepDate)}
+                  {nextStep && (
+                    <span className="text-gray-400 ml-1">· {nextStep.slice(0, 60)}{nextStep.length > 60 ? '…' : ''}</span>
+                  )}
+                </span>
+              )}
+            </div>
+          )
+        })()}
+
         {/* What to do */}
         <p className="text-sm text-gray-600 mb-3">{meta.what}</p>
 
