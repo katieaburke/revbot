@@ -1,8 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import axios from 'axios'
 import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown } from 'lucide-react'
 import clsx from 'clsx'
+
+// Plain axios instance — no admin auth interceptors, no 401→/login redirect
+const repApi = axios.create({
+  baseURL: import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api',
+})
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -51,14 +56,14 @@ export function RepPortal() {
 
   const { data, isLoading, error } = useQuery<RepData>({
     queryKey: ['rep-portal', token],
-    queryFn: () => api.get(`/rep/me?token=${token}`).then((r) => r.data),
+    queryFn: () => repApi.get(`/rep/me?token=${token}`).then((r) => r.data),
     enabled: !!token,
     retry: false,
   })
 
   const snoozeMutation = useMutation({
     mutationFn: ({ notificationId, days }: { notificationId: string; days: number }) =>
-      api.post('/rep/snooze', { token, notificationId, days }).then((r) => r.data),
+      repApi.post('/rep/snooze', { token, notificationId, days }).then((r) => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rep-portal', token] })
       setSnoozing(null)
