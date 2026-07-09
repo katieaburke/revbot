@@ -23,9 +23,17 @@ interface RepNotification {
   sfdcUrl: string
 }
 
+interface PendingFlag {
+  opportunityId: string
+  opportunityName: string
+  alertType: string
+  details: Record<string, unknown>
+}
+
 interface RepData {
   rep: { name: string; email: string | null }
   notifications: RepNotification[]
+  pending: PendingFlag[]
 }
 
 // ── Alert type display ────────────────────────────────────────────────────────
@@ -154,6 +162,54 @@ export function RepPortal() {
                 isPending={snoozeMutation.isPending}
               />
             ))}
+          </div>
+        )}
+
+        {/* Want to get ahead? */}
+        {(data?.pending ?? []).length > 0 && (
+          <div className="mt-6">
+            <div className="mb-3">
+              <p className="text-sm font-semibold text-gray-700">Want to get ahead? 🚀</p>
+              <p className="text-xs text-gray-400 mt-0.5">These deals are queued up and will be flagged soon — get a head start before RevBot sends the nudge.</p>
+            </div>
+            {data!.pending.map((flag) => {
+              const meta = ALERT_META[flag.alertType] ?? { label: flag.alertType, color: 'bg-gray-100 text-gray-600' }
+              const sfdcUrl = `https://uberall.lightning.force.com/lightning/r/Opportunity/${flag.opportunityId}/view`
+              const amount = flag.details.amount != null ? Number(flag.details.amount) : null
+              const closeDate = typeof flag.details.closeDate === 'string' ? flag.details.closeDate : null
+              const stage = typeof flag.details.stage === 'string' ? flag.details.stage : null
+              return (
+                <div key={`${flag.opportunityId}|${flag.alertType}`} className="bg-white rounded-xl border border-dashed border-gray-200 mb-2">
+                  <div className="px-5 py-4">
+                    <div className="flex items-center gap-2 mb-1.5 min-w-0">
+                      <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold opacity-70', meta.color)}>
+                        {meta.label}
+                      </span>
+                      <a href={sfdcUrl} target="_blank" rel="noopener noreferrer"
+                        className="font-medium text-gray-900 text-sm hover:text-brand-600 truncate flex items-center gap-1">
+                        {flag.opportunityName}
+                        <ExternalLink size={11} className="flex-shrink-0 text-gray-300" />
+                      </a>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3">
+                      {amount != null && (
+                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">ACV</span> ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                      )}
+                      {closeDate && (
+                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">Close</span> {fmtDate(closeDate)}</span>
+                      )}
+                      {stage && (
+                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">Stage</span> {stage}</span>
+                      )}
+                    </div>
+                    <a href={sfdcUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg hover:bg-brand-600">
+                      Open in Salesforce <ExternalLink size={11} />
+                    </a>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
 

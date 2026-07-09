@@ -1,63 +1,113 @@
 import { Router } from 'express'
+import axios from 'axios'
 import { db } from '../db'
 import { verifyRepToken, generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
+import { getServiceConnection } from '../services/salesforce'
+import { stageApiToLabel } from '../utils/stageMapping'
 
 const router = Router()
 
 const SFDC_BASE = 'https://uberall.lightning.force.com'
 
+// Fetch live opp metadata from SFDC for a list of opp IDs
+async function fetchOppMeta(oppIds: string[]): Promise<Map<string, {
+  amount: number | null; closeDate: string | null; stage: string | null
+  nextStep: string | null; nextStepDate: string | null
+}>> {
+  const map = new Map()
+  if (!oppIds.length) return map
+  try {
+    const conn = await getServiceConnection()
+    const ids = oppIds.map((id) => `'${id}'`).join(',')
+    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c FROM Opportunity WHERE Id IN (${ids})`
+    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+    const resp = await axios.get<{ records: { Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null }[] }>(
+      url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
+    )
+    for (const r of resp.data.records) {
+      map.set(r.Id, {
+        amount: r.Amount ?? null,
+        closeDate: r.CloseDate ?? null,
+        stage: stageApiToLabel(r.StageName),
+        nextStep: r.NextStep ?? null,
+        nextStepDate: r.Next_Step_Date__c ?? null,
+      })
+    }
+  } catch (err) {
+    console.warn('[RepPortal] Could not fetch live opp meta from SFDC:', err)
+  }
+  return map
+}
+
 // GET /api/rep/me?token=xxx
-// Returns the authenticated rep's open notifications
 router.get('/me', async (req, res) => {
   const { token } = req.query as { token?: string }
   if (!token) return res.status(400).json({ error: 'Missing token' })
 
   try {
     const { slackUserId } = verifyRepToken(token)
-
     const user = await db.user.findUnique({ where: { slackUserId } })
     if (!user) return res.status(404).json({ error: 'User not found' })
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const notifications = await (db as any).notification.findMany({
-      where: {
-        ownerId: user.id,
-        status: { in: ['SENT', 'SNOOZED'] },
-      },
+    const raw = await (db as any).notification.findMany({
+      where: { ownerId: user.id, status: { in: ['SENT', 'SNOOZED'] } },
       orderBy: { sentAt: 'desc' },
-      select: {
-        id: true,
-        opportunityId: true,
-        opportunityName: true,
-        alertType: true,
-        alertDetails: true,
-        status: true,
-        sentAt: true,
-        snoozedUntil: true,
-      },
+      select: { id: true, opportunityId: true, opportunityName: true, alertType: true, alertDetails: true, status: true, sentAt: true, snoozedUntil: true },
     })
 
-    res.json({
-      rep: {
-        name: user.slackName ?? user.slackEmail ?? 'Rep',
-        email: user.slackEmail,
-      },
-      notifications: notifications.map((n: {
-        id: string
-        opportunityId: string
-        opportunityName: string
-        alertType: string
-        alertDetails: unknown
-        status: string
-        sentAt: Date | null
-        snoozedUntil: Date | null
-      }) => ({
+    // Deduplicate: one notification per opportunityId+alertType, newest first
+    const seen = new Set<string>()
+    const deduped = (raw as { id: string; opportunityId: string; opportunityName: string; alertType: string; alertDetails: unknown; status: string; sentAt: Date | null; snoozedUntil: Date | null }[])
+      .filter((n) => {
+        const key = `${n.opportunityId}|${n.alertType}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+
+    // Fetch live opp data from SFDC to ensure ACV/close date/stage are current
+    const oppIds = [...new Set(deduped.map((n) => n.opportunityId))]
+    const oppMeta = await fetchOppMeta(oppIds)
+
+    const notifications = deduped.map((n) => {
+      const meta = oppMeta.get(n.opportunityId)
+      const details = (n.alertDetails as Record<string, unknown>) ?? {}
+      return {
         ...n,
+        alertDetails: {
+          ...details,
+          // Overlay with live SFDC data (always current)
+          ...(meta ?? {}),
+        },
         sfdcUrl: `${SFDC_BASE}/lightning/r/Opportunity/${n.opportunityId}/view`,
         sentAt: n.sentAt?.toISOString() ?? null,
         snoozedUntil: n.snoozedUntil?.toISOString() ?? null,
-      })),
+      }
+    })
+
+    // Pending: flags in the last dry run that would be sent to this rep
+    let pending: { opportunityId: string; opportunityName: string; alertType: string; details: Record<string, unknown> }[] = []
+    try {
+      const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+      if (setting?.value) {
+        const dryRun = JSON.parse(setting.value) as { wouldSend: { opportunityId: string; opportunityName: string; alertType: string; ownerEmail: string; details: Record<string, unknown> }[] }
+        const repEmail = user.slackEmail?.toLowerCase()
+        if (repEmail) {
+          // Exclude opps already in their active notifications
+          const notifOppAlertKeys = new Set(notifications.filter(n => n.status === 'SENT').map(n => `${n.opportunityId}|${n.alertType}`))
+          pending = (dryRun.wouldSend ?? [])
+            .filter((a) => a.ownerEmail?.toLowerCase() === repEmail && !notifOppAlertKeys.has(`${a.opportunityId}|${a.alertType}`))
+            .slice(0, 10)
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    res.json({
+      rep: { name: user.slackName ?? user.slackEmail ?? 'Rep', email: user.slackEmail },
+      notifications,
+      pending,
     })
   } catch (err) {
     res.status(401).json({ error: 'Invalid or expired link — ask RevBot for a fresh one' })

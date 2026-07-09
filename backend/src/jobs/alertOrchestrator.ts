@@ -7,6 +7,7 @@ import { evaluateMeddpicc } from '../alerts/meddpicc'
 import { evaluateNextStep } from '../alerts/nextStep'
 import { evaluateCloseDateRisk } from '../alerts/closeDate'
 import { evaluateStageMismatch } from '../alerts/stageMismatch'
+import { stageApiToLabel } from '../utils/stageMapping'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildNextStepMessage, buildCloseDateRiskMessage, buildStageMismatchMessage, buildCombinedMessage } from '../slack/messages'
 import { generateRepToken } from '../lib/repToken'
@@ -352,7 +353,7 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
         // Common opp fields — available on every alert type for the rep portal
         amount: opp?.Amount ?? null,
         closeDate: opp?.CloseDate ?? null,
-        stage: opp?.StageName ?? (alert as { stage?: string }).stage ?? null,
+        stage: opp?.StageName ? stageApiToLabel(opp.StageName) : (alert as { stage?: string }).stage ?? null,
         nextStep: opp?.NextStep ?? (alert as { nextStep?: string }).nextStep ?? null,
         nextStepDate: opp?.Next_Step_Date__c ?? (alert as { nextStepDate?: string }).nextStepDate ?? null,
       },
