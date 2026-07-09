@@ -237,17 +237,19 @@ router.delete('/sfdc-opportunity/:id', async (req, res) => {
 // RevOps snooze an opp from the dashboard (no Slack message sent)
 router.post('/revops-snooze', async (req, res) => {
   try {
-    const { opportunityId, opportunityName, alertTypes, ownerSlackId, ownerEmail, snoozeDays } = req.body as {
+    const { opportunityId, opportunityName, alertTypes, ownerSlackId, ownerEmail, snoozeDays, snoozeUntil } = req.body as {
       opportunityId: string
       opportunityName: string
       alertTypes: string[]
       ownerSlackId?: string | null
       ownerEmail?: string
-      snoozeDays: number
+      snoozeDays?: number
+      snoozeUntil?: string   // ISO date string — takes priority over snoozeDays
     }
 
-    const snoozedUntil = new Date()
-    snoozedUntil.setDate(snoozedUntil.getDate() + snoozeDays)
+    const snoozedUntil = snoozeUntil
+      ? new Date(snoozeUntil)
+      : (() => { const d = new Date(); d.setDate(d.getDate() + (snoozeDays ?? 7)); return d })();
 
     // Find the opp owner user to use as ownerId (fall back to any revops user)
     const owner = await db.user.findFirst({

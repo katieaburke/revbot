@@ -373,14 +373,14 @@ export function Dashboard() {
   })
 
   const revopsSnooze = useMutation({
-    mutationFn: ({ g, snoozeDays }: { g: OppGroup; snoozeDays: number }) =>
+    mutationFn: ({ g, snoozeUntil }: { g: OppGroup; snoozeUntil: Date }) =>
       api.post('/notifications/revops-snooze', {
         opportunityId: g.opportunityId,
         opportunityName: g.opportunityName,
         alertTypes: g.alerts.map((a) => a.alertType),
         ownerSlackId: g.alerts[0]?.ownerSlackId ?? null,
         ownerEmail: g.ownerEmail,
-        snoozeDays,
+        snoozeUntil: snoozeUntil.toISOString(),
       }).then((r) => r.data as { snoozedUntil: string }),
     onSuccess: (data, { g }) => {
       setSnoozeOpenOppId(null)
@@ -752,7 +752,7 @@ export function Dashboard() {
             confirmDeleteId={confirmDeleteId}
             deletingId={deletingId}
             oppCounts={oppCounts}
-            onSnooze={(g, days) => revopsSnooze.mutate({ g, snoozeDays: days })}
+            onSnooze={(g, until) => revopsSnooze.mutate({ g, snoozeUntil: until })}
             snoozeOpenOppId={snoozeOpenOppId}
             setSnoozeOpenOppId={setSnoozeOpenOppId}
             snoozePending={revopsSnooze.isPending}
@@ -1024,6 +1024,10 @@ function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }
 
 // ── OppSection ────────────────────────────────────────────────────────────────
 
+function addDays(d: Date, n: number): Date {
+  const r = new Date(d); r.setDate(r.getDate() + n); return r
+}
+
 const SNOOZE_OPTIONS = [
   { label: '3 days', days: 3 },
   { label: '1 week', days: 7 },
@@ -1064,12 +1068,14 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
   confirmDeleteId: string | null
   deletingId: string | null
   oppCounts: Record<string, OppCount>
-  onSnooze?: (g: OppGroup, days: number) => void
+  onSnooze?: (g: OppGroup, until: Date) => void
   snoozeOpenOppId?: string | null
   setSnoozeOpenOppId?: (id: string | null) => void
   snoozePending?: boolean
 }) {
-  function fmtDate(iso: string | undefined) {
+  const [customDate, setCustomDate] = useState<Record<string, string>>({})
+
+  function fmtDate(iso: string | undefined | null) {
     if (!iso) return ''
     const d = new Date(iso)
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
@@ -1158,6 +1164,20 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                           ))
                         )}
                       </div>
+                      {/* Next step info — only for Zombie Pipeline (STALLED) alerts */}
+                      {g.alerts.some((a) => a.alertType === 'STALLED') && (() => {
+                        const sa = g.alerts.find((a) => a.alertType === 'STALLED')
+                        const ns = sa?.details.nextStep as string | null | undefined
+                        const nsd = sa?.details.nextStepDate as string | null | undefined
+                        if (!ns && !nsd) return null
+                        return (
+                          <div className="mt-1.5 flex items-start gap-1.5 text-xs text-gray-500">
+                            <span className="font-medium text-gray-400 shrink-0">Next step:</span>
+                            {nsd && <span className="font-medium text-gray-600">{fmtDate(nsd)}</span>}
+                            {ns && <span className="text-gray-400 truncate max-w-xs" title={ns}>· {ns.length > 90 ? ns.slice(0, 90) + '…' : ns}</span>}
+                          </div>
+                        )
+                      })()}
                       <p className="text-xs text-gray-400 mt-1">
                         {g.ownerName ?? g.ownerEmail}
                         {g.managerName && <span className="ml-1 text-gray-300">· mgr: {g.managerName}</span>}
@@ -1182,27 +1202,69 @@ function OppSection({ title, groups, expanded, onToggle, emptyText, badgeClass, 
                       {onSnooze && setSnoozeOpenOppId && (
                         <div className="relative">
                           <button
-                            onClick={() => setSnoozeOpenOppId(snoozeOpenOppId === g.opportunityId ? null : g.opportunityId)}
+                            onClick={() => {
+                              setSnoozeOpenOppId(snoozeOpenOppId === g.opportunityId ? null : g.opportunityId)
+                              setCustomDate((prev) => ({ ...prev, [g.opportunityId]: '' }))
+                            }}
                             disabled={snoozePending}
                             className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium text-gray-500 hover:text-amber-700 hover:bg-amber-50 transition-colors"
                             title="Snooze this opp (no message sent)"
                           >
                             <BellOff size={11} /> Snooze
                           </button>
-                          {snoozeOpenOppId === g.opportunityId && (
-                            <div className="absolute right-0 top-7 z-20 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[120px]">
-                              <p className="px-3 py-1 text-xs font-medium text-gray-400 uppercase tracking-wide">Snooze for</p>
-                              {SNOOZE_OPTIONS.map((opt) => (
-                                <button
-                                  key={opt.days}
-                                  onClick={() => { onSnooze(g, opt.days); setSnoozeOpenOppId(null) }}
-                                  className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-amber-50 hover:text-amber-800"
-                                >
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                          {snoozeOpenOppId === g.opportunityId && (() => {
+                            // Check for a future next step date on STALLED alerts
+                            const sa = g.alerts.find((a) => a.alertType === 'STALLED')
+                            const nsd = sa?.details.nextStepDate as string | null | undefined
+                            const nextStepFuture = nsd && new Date(nsd) > new Date() ? new Date(nsd) : null
+                            return (
+                              <div className="absolute right-0 top-7 z-20 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[170px]">
+                                <p className="px-3 py-1 text-xs font-medium text-gray-400 uppercase tracking-wide">Snooze until</p>
+                                {SNOOZE_OPTIONS.map((opt) => (
+                                  <button
+                                    key={opt.days}
+                                    onClick={() => { onSnooze(g, addDays(new Date(), opt.days)); setSnoozeOpenOppId(null) }}
+                                    className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-amber-50 hover:text-amber-800"
+                                  >
+                                    {opt.label}
+                                    <span className="ml-1 text-gray-400">{fmtDate(addDays(new Date(), opt.days).toISOString())}</span>
+                                  </button>
+                                ))}
+                                {nextStepFuture && (
+                                  <button
+                                    onClick={() => { onSnooze(g, addDays(nextStepFuture, 7)); setSnoozeOpenOppId(null) }}
+                                    className="w-full text-left px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-50 border-t border-gray-100 mt-1 pt-2"
+                                  >
+                                    1 wk after next step
+                                    <span className="ml-1 text-blue-400">{fmtDate(addDays(nextStepFuture, 7).toISOString())}</span>
+                                  </button>
+                                )}
+                                <div className="border-t border-gray-100 mt-1 pt-1 px-3 pb-2">
+                                  <p className="text-xs text-gray-400 mb-1">Custom date</p>
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="date"
+                                      value={customDate[g.opportunityId] ?? ''}
+                                      min={new Date().toISOString().split('T')[0]}
+                                      onChange={(e) => setCustomDate((prev) => ({ ...prev, [g.opportunityId]: e.target.value }))}
+                                      className="text-xs border border-gray-200 rounded px-1.5 py-1 flex-1 min-w-0"
+                                    />
+                                    <button
+                                      disabled={!customDate[g.opportunityId]}
+                                      onClick={() => {
+                                        const d = new Date(customDate[g.opportunityId] + 'T12:00:00')
+                                        onSnooze(g, d)
+                                        setSnoozeOpenOppId(null)
+                                      }}
+                                      className="px-2 py-1 text-xs bg-amber-500 text-white rounded disabled:opacity-40 hover:bg-amber-600"
+                                    >
+                                      Set
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })()}
                         </div>
                       )}
                       <button

@@ -15,6 +15,8 @@ export interface StalledAlert {
   stage: string
   triggeredBy: StalledReason[]
   ruleId: string
+  nextStep: string | null
+  nextStepDate: string | null
 }
 
 export type StalledReason =
@@ -150,6 +152,8 @@ export function evaluateStalled(
         stage: opp.StageName,
         triggeredBy: reasons,
         ruleId: threshold?.id ?? stallRules.find((r) => matchesFilters(opp, r))?.id ?? '',
+        nextStep: opp.NextStep ?? null,
+        nextStepDate: opp.Next_Step_Date__c ?? null,
       })
     }
   }

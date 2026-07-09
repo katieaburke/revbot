@@ -119,7 +119,7 @@ export function Team() {
       setRepLinkError('')
     },
     onError: (err: any) => {
-      setRepLinkError(err.response?.data?.error ?? 'Rep not found — make sure they've received at least one RevBot message')
+      setRepLinkError(err.response?.data?.error ?? "Rep not found — make sure they've received at least one RevBot message")
       setGeneratedLink(null)
     },
   })
