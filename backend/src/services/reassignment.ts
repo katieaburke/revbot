@@ -62,7 +62,51 @@ export interface ReassignmentPreview {
   fetchedAt: string
 }
 
+// ── Types (continued) ──────────────────────────────────────────────────────────
+
+export interface ExistingBusinessRep {
+  id: string
+  name: string
+  email: string
+  role: string
+}
+
 // ── SOQL ────────────────────────────────────────────────────────────────────────
+
+export async function fetchExistingBusinessReps(): Promise<ExistingBusinessRep[]> {
+  const conn = await getServiceConnection()
+
+  const soql = `
+    SELECT Id, Name, Email, UserRole.Name
+    FROM User
+    WHERE IsActive = true
+    AND UserRole.Name LIKE '%Existing Business%'
+    AND UserRole.Name LIKE '%Rep%'
+    ORDER BY Name ASC
+  `
+
+  interface RawUser { Id: string; Name: string; Email: string; UserRole?: { Name?: string } | null }
+  interface SfdcPage<T> { records: T[]; done: boolean; nextRecordsUrl?: string }
+
+  const records: RawUser[] = []
+  let nextPath: string | null = `/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+
+  while (nextPath) {
+    const resp: { data: SfdcPage<RawUser> } = await axios.get<SfdcPage<RawUser>>(
+      `${conn.instanceUrl}${nextPath}`,
+      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 20_000 },
+    )
+    records.push(...resp.data.records)
+    nextPath = resp.data.done ? null : (resp.data.nextRecordsUrl ?? null)
+  }
+
+  return records.map((r) => ({
+    id: r.Id,
+    name: r.Name,
+    email: r.Email,
+    role: r.UserRole?.Name ?? '',
+  }))
+}
 
 export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
   const conn = await getServiceConnection()
@@ -226,11 +270,24 @@ function accountLine(a: ReassignAccount): string {
   return `• <${SFDC_BASE}/${a.id}|${a.name}> — ${country} — ${owner}`
 }
 
-function buildLeaderBlocks(leaderName: string, accounts: RoutedAccount[], appUrl: string): KnownBlock[] {
+function buildLeaderBlocks(
+  leaderName: string,
+  accounts: RoutedAccount[],
+  appUrl: string,
+  reps?: ExistingBusinessRep[],
+): KnownBlock[] {
   const date = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
   const anaGroup  = accounts.filter((a) => a.suggestAna)
   const teamGroup = accounts.filter((a) => !a.suggestAna)
   const firstName = leaderName.split(' ')[0]
+
+  // Build dropdown options once (max 100 Slack allows)
+  const repOptions = reps && reps.length > 0
+    ? reps.slice(0, 100).map((r) => ({
+        text: { type: 'plain_text' as const, text: r.name },
+        value: `${r.id}|${r.name}`,
+      }))
+    : null
 
   const blocks: KnownBlock[] = [
     { type: 'header', text: { type: 'plain_text', text: `📋 Customers to reassign — ${date}`, emoji: true } },
@@ -238,19 +295,46 @@ function buildLeaderBlocks(leaderName: string, accounts: RoutedAccount[], appUrl
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `Hi ${firstName}! *${accounts.length} customer account${accounts.length !== 1 ? 's' : ''}* are owned by New Business reps and need to be moved to your team.`,
+        text: `Hi ${firstName}! *${accounts.length} customer account${accounts.length !== 1 ? 's' : ''}* are owned by New Business reps and need to be moved to your team.${repOptions ? ' Use the dropdown on each row to assign.' : ''}`,
       },
     },
     { type: 'divider' },
   ]
 
+  // Max accounts per group — keep total blocks under Slack's 50-block limit
+  const MAX = repOptions ? 15 : 20
+
   function addGroup(group: RoutedAccount[], heading: string) {
     if (group.length === 0) return
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${heading}*` } })
-    const MAX = 20
-    const lines = group.slice(0, MAX).map((r) => accountLine(r.account))
-    if (group.length > MAX) lines.push(`_…and ${group.length - MAX} more — see Beacon for full list_`)
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } })
+    const shown = group.slice(0, MAX)
+
+    if (repOptions) {
+      // One section block per account with a dropdown accessory
+      for (const r of shown) {
+        blocks.push({
+          type: 'section',
+          block_id: `acct_${r.account.id}`,
+          text: { type: 'mrkdwn', text: accountLine(r.account) },
+          accessory: {
+            type: 'static_select',
+            action_id: 'assign_account_owner',
+            placeholder: { type: 'plain_text', text: 'Assign to…', emoji: false },
+            options: repOptions,
+          },
+        } as KnownBlock)
+      }
+    } else {
+      const lines = shown.map((r) => accountLine(r.account))
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } })
+    }
+
+    if (group.length > MAX) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `_…and ${group.length - MAX} more — see Beacon for the full list_` },
+      })
+    }
   }
 
   if (anaGroup.length > 0 && teamGroup.length > 0) {
@@ -283,6 +367,15 @@ export async function sendReassignmentMessages(
   const sent: string[] = []
   const failed: string[] = []
 
+  // Fetch Existing Business reps once for the dropdown options
+  let reps: ExistingBusinessRep[] = []
+  try {
+    reps = await fetchExistingBusinessReps()
+    console.log(`[Reassignment] Fetched ${reps.length} Existing Business reps for dropdowns`)
+  } catch (err) {
+    console.warn('[Reassignment] Could not fetch EB reps — dropdowns will be omitted:', err)
+  }
+
   for (const [leaderKey, accounts] of Object.entries(preview.routedByLeader)) {
     if (accounts.length === 0) continue
     const leader = LEADERS[leaderKey as keyof typeof LEADERS]
@@ -293,7 +386,7 @@ export async function sendReassignmentMessages(
         failed.push(leader.name)
         continue
       }
-      const blocks = buildLeaderBlocks(leader.name, accounts, appUrl)
+      const blocks = buildLeaderBlocks(leader.name, accounts, appUrl, reps.length > 0 ? reps : undefined)
       await sendDm(slackId, blocks, `📋 ${accounts.length} customers to reassign — ${leader.name}`)
       console.log(`[Reassignment] Sent to ${leader.name}: ${accounts.length} accounts`)
       sent.push(leader.name)

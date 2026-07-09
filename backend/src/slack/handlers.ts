@@ -2,6 +2,7 @@ import type { App, BlockAction, ViewSubmitAction } from '@slack/bolt'
 import type { KnownBlock } from '@slack/web-api'
 import { db } from '../db'
 import { updateCloseDate, updateMeddpiccFields, updateStage, updateOpportunity } from '../services/salesforce'
+import { updateAccountOwner } from '../services/churnedReassignment'
 import { config } from '../config'
 import { MEDDPICC_LABELS, type MeddpiccField } from '../alerts/meddpicc'
 import jwt from 'jsonwebtoken'
@@ -621,6 +622,72 @@ export function registerHandlers(app: App) {
   // ── Open in Salesforce (URL button — just needs ack) ──────────────────────
 
   app.action('open_sfdc', async ({ ack }) => { await ack() })
+
+  // ── Assign account owner (territory reassignment dropdowns) ───────────────
+
+  app.action('assign_account_owner', async ({ ack, body, client }) => {
+    await ack()
+
+    const blockAction = body as BlockAction
+    const action = blockAction.actions[0] as { block_id: string; selected_option: { value: string } }
+    const blockId: string = action.block_id               // e.g. 'acct_0012x000...'
+    const accountId = blockId.replace(/^acct_/, '')
+    const [repId, repName] = action.selected_option.value.split('|')
+    const actorSlackId = body.user.id
+    const channel = (body as { channel?: { id?: string } }).channel?.id
+    const messageTs = (body as { message?: { ts?: string } }).message?.ts
+
+    try {
+      await updateAccountOwner(accountId, repId)
+      console.log(`[Reassignment] Account ${accountId} assigned to ${repName} by Slack user ${actorSlackId}`)
+
+      // Update the original message: replace the dropdown block with a plain confirmed row
+      if (channel && messageTs) {
+        try {
+          const history = await client.conversations.history({
+            channel,
+            latest: messageTs,
+            inclusive: true,
+            limit: 1,
+          })
+          const originalMsg = history.messages?.[0]
+          if (originalMsg?.blocks) {
+            const updatedBlocks = (originalMsg.blocks as Array<Record<string, unknown>>).map((b) => {
+              if (b.block_id === blockId) {
+                const existingText = (b.text as { text?: string } | undefined)?.text ?? ''
+                return {
+                  type: 'section',
+                  block_id: blockId,
+                  text: { type: 'mrkdwn', text: `${existingText}  ✅ _→ ${repName}_` },
+                }
+              }
+              return b
+            })
+            await client.chat.update({
+              channel,
+              ts: messageTs,
+              blocks: updatedBlocks as unknown as KnownBlock[],
+              text: `Account assigned to ${repName}`,
+            })
+          }
+        } catch (updateErr) {
+          console.warn('[Reassignment] Could not update Slack message after assignment:', updateErr)
+          // Non-fatal — SFDC write succeeded
+        }
+      }
+
+      await client.chat.postMessage({
+        channel: actorSlackId,
+        text: `✅ Account assigned to *${repName}* in Salesforce.`,
+      })
+    } catch (err) {
+      console.error('[Reassignment] assign_account_owner failed:', err)
+      await client.chat.postMessage({
+        channel: actorSlackId,
+        text: `❌ Failed to assign account in Salesforce: ${(err as Error).message}`,
+      })
+    }
+  })
 
   // ── Update Prospecting Fields (BDR hygiene nudge) ──────────────────────────
 
