@@ -34,7 +34,7 @@ const ALERT_META: Record<string, { label: string; color: string; what: string }>
   PAST_DUE_INITIAL:    { label: 'Past Due',         color: 'bg-red-100 text-red-700',      what: 'Close date has passed — update the date or close the deal.' },
   PAST_DUE_AMENDMENT:  { label: 'Past Due Amendment',color: 'bg-red-100 text-red-700',      what: 'Amendment close date has passed — update or close.' },
   PAST_DUE_RENEWAL:    { label: 'Past Due Renewal',  color: 'bg-red-100 text-red-700',      what: 'Renewal booking date has passed — close this in Salesforce.' },
-  STALLED:             { label: 'Zombie Pipeline',     color: 'bg-orange-100 text-orange-700', what: "This deal hasn't had activity in a while. If it's a longer sales cycle, snooze this and we'll check back in — otherwise update the stage, close date, or log activity in Salesforce." },
+  STALLED:             { label: 'Zombie Pipeline',     color: 'bg-orange-100 text-orange-700', what: "This is a nudge to re-engage the deal if it needs a push — flagged based on time in stage or total deal age. If it's an active longer sales cycle, just snooze and we'll check back in." },
   MEDDPICC_MISSING:    { label: 'Missing MEDDPICC',  color: 'bg-purple-100 text-purple-700', what: 'Required MEDDPICC/BANT fields are blank for this stage.' },
   NEXT_STEP_MISSING:   { label: 'Missing Next Step', color: 'bg-yellow-100 text-yellow-700', what: 'Next step description or date is missing/overdue.' },
   CLOSE_DATE_RISK:     { label: 'Close Date Risk',   color: 'bg-amber-100 text-amber-700',   what: 'Close date is approaching but deal is still in early stage.' },
