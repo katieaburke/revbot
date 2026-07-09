@@ -16,12 +16,13 @@ import {
   Users,
   BarChart2,
   ArrowLeftRight,
+  Activity,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
 import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
-const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory']
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory', '/pipe-hygiene']
 
 export function Layout() {
   const location = useLocation()
@@ -83,6 +84,7 @@ export function Layout() {
               <p className="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Pipeline Hygiene
               </p>
+              <NavItem to="/pipe-hygiene" label="Active Flags" icon={Activity} />
               <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} badge={dryRunSummary?.byAlertType['STALLED']} />
               <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} badge={dryRunSummary?.byAlertType['MEDDPICC_MISSING']} />
               <NavItem

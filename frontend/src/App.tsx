@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Layout } from './components/Layout'
 import { Login } from './pages/Login'
 import { Dashboard } from './pages/Dashboard'
+import { PipeHygiene } from './pages/PipeHygiene'
 import { Notifications } from './pages/Notifications'
 import { StallConfig } from './pages/StallConfig'
 import { MeddpiccConfig } from './pages/MeddpiccConfig'
@@ -49,6 +50,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<Dashboard />} />
+            <Route path="/pipe-hygiene" element={<PipeHygiene />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/stall-rules" element={<StallConfig />} />
             <Route path="/meddpicc" element={<MeddpiccConfig />} />
