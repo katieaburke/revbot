@@ -138,6 +138,42 @@ export function Team() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  // ── Manager link generator ───────────────────────────────────────────────────
+  const [managerEmail, setManagerEmail] = useState('')
+  const [generatedManagerLink, setGeneratedManagerLink] = useState<{ url: string; name: string } | null>(null)
+  const [managerCopied, setManagerCopied] = useState(false)
+  const [managerLinkError, setManagerLinkError] = useState('')
+
+  const generateManagerLink = useMutation({
+    mutationFn: (email: string) =>
+      api.post('/manager/admin/generate-link', { email }).then((r) => {
+        const { token, name } = r.data as { token: string; name: string }
+        return { url: `${window.location.origin}/my-team?token=${token}`, name }
+      }),
+    onSuccess: (data) => {
+      setGeneratedManagerLink(data)
+      setManagerLinkError('')
+    },
+    onError: (err: any) => {
+      setManagerLinkError(err.response?.data?.error ?? "Manager not found — make sure they're in the system")
+      setGeneratedManagerLink(null)
+    },
+  })
+
+  function handleGenerateManagerLink(e: React.FormEvent) {
+    e.preventDefault()
+    setGeneratedManagerLink(null)
+    setManagerCopied(false)
+    generateManagerLink.mutate(managerEmail)
+  }
+
+  function copyManagerLink() {
+    if (!generatedManagerLink) return
+    navigator.clipboard.writeText(generatedManagerLink.url)
+    setManagerCopied(true)
+    setTimeout(() => setManagerCopied(false), 2000)
+  }
+
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading...</div>
 
   return (
@@ -390,6 +426,57 @@ export function Team() {
                 </button>
               </div>
               <p className="text-xs text-gray-400 truncate">{generatedLink.url}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Manager portal link generator ─────────────────────────────────────── */}
+      <div className="mt-10">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">Manager portal links</h3>
+        <p className="text-sm text-gray-500 mb-5">
+          Generate a magic link for a manager to see their team's open RevBot flags. Valid for 30 days.
+        </p>
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <form onSubmit={handleGenerateManagerLink} className="flex gap-3 items-end">
+            <div className="flex-1">
+              <label className="block text-xs font-medium text-gray-700 mb-1">Manager email</label>
+              <input
+                type="email"
+                required
+                value={managerEmail}
+                onChange={(e) => { setManagerEmail(e.target.value); setGeneratedManagerLink(null); setManagerLinkError('') }}
+                className="input w-full"
+                placeholder="manager@uberall.com"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={generateManagerLink.isPending}
+              className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50 whitespace-nowrap"
+            >
+              <Link size={14} />
+              {generateManagerLink.isPending ? 'Generating…' : 'Generate link'}
+            </button>
+          </form>
+
+          {managerLinkError && (
+            <p className="mt-3 text-xs text-red-600">{managerLinkError}</p>
+          )}
+
+          {generatedManagerLink && (
+            <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+              <div className="flex items-center justify-between gap-3 mb-1">
+                <span className="text-xs font-medium text-gray-700">{generatedManagerLink.name}</span>
+                <button
+                  onClick={copyManagerLink}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-white transition-colors"
+                >
+                  {managerCopied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                  {managerCopied ? 'Copied!' : 'Copy link'}
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 truncate">{generatedManagerLink.url}</p>
             </div>
           )}
         </div>
