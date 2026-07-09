@@ -39,6 +39,7 @@ export interface ReassignAccount {
   ownerRole: string | null
   billingCountry: string | null
   secondaryOwnerName: string | null
+  numberOfLocations: number | null
 }
 
 export interface RoutedAccount {
@@ -116,6 +117,7 @@ export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
            Owner.Name, Owner.Email, Owner.UserRole.Name,
            BillingCountry,
            KAP_CS_Owner__r.Name,
+           Number_of_locations__c,
            Account_Stage__c, GEO_Studio_Customer_Only__c, Type
     FROM Account
     WHERE Account_Stage__c = 'Customer'
@@ -137,6 +139,7 @@ export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
     Owner?: { Name?: string; Email?: string; UserRole?: { Name?: string } | null } | null
     BillingCountry?: string | null
     KAP_CS_Owner__r?: { Name?: string } | null
+    Number_of_locations__c?: number | null
   }
 
   interface SfdcPage<T> { records: T[]; done: boolean; nextRecordsUrl?: string }
@@ -162,6 +165,7 @@ export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
     ownerRole: r.Owner?.UserRole?.Name ?? null,
     billingCountry: r.BillingCountry ?? null,
     secondaryOwnerName: r.KAP_CS_Owner__r?.Name ?? null,
+    numberOfLocations: r.Number_of_locations__c ?? null,
   }))
 }
 
@@ -267,7 +271,8 @@ const SFDC_BASE = 'https://uberall.lightning.force.com'
 function accountLine(a: ReassignAccount): string {
   const country = a.billingCountry ?? 'Unknown country'
   const owner = a.ownerName.startsWith('#') ? `${a.ownerName} _(inactive)_` : a.ownerName
-  return `• <${SFDC_BASE}/${a.id}|${a.name}> — ${country} — ${owner}`
+  const locs = a.numberOfLocations != null ? ` · 📍 ${a.numberOfLocations} locs` : ''
+  return `• <${SFDC_BASE}/${a.id}|${a.name}>${locs} — ${country} — ${owner}`
 }
 
 function buildLeaderBlocks(
