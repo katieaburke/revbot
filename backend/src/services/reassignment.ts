@@ -404,6 +404,74 @@ export async function sendReassignmentMessages(
   return { sent, failed }
 }
 
+// ── Notify newly assigned AM ────────────────────────────────────────────────────
+
+export async function notifyAssignedAM(
+  accountId: string,
+  repId: string,
+  repName: string,
+  leaderName: string,
+): Promise<void> {
+  const conn = await getServiceConnection()
+
+  // Fetch rep email + account details in parallel
+  const [userResp, acctResp] = await Promise.all([
+    axios.get<{ Email: string }>(
+      `${conn.instanceUrl}/services/data/v59.0/sobjects/User/${repId}?fields=Email`,
+      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 },
+    ),
+    axios.get<{ Name: string; Number_of_locations__c?: number | null; BillingCountry?: string | null }>(
+      `${conn.instanceUrl}/services/data/v59.0/sobjects/Account/${accountId}?fields=Name,Number_of_locations__c,BillingCountry`,
+      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 },
+    ),
+  ])
+
+  const repEmail = userResp.data.Email
+  const acct = acctResp.data
+
+  const slackId = await resolveSlackUserId(repEmail)
+  if (!slackId) {
+    console.warn(`[Reassignment] No Slack ID for ${repEmail} — skipping AM notification`)
+    return
+  }
+
+  const firstName = repName.split(' ')[0]
+  const sfLink = `${SFDC_BASE}/${accountId}`
+  const locStr = acct.Number_of_locations__c != null
+    ? acct.Number_of_locations__c.toLocaleString()
+    : '—'
+
+  const blocks: KnownBlock[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `Hi ${firstName}! 👋 *${leaderName}* has assigned a new customer account to you.`,
+      },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Account*\n<${sfLink}|${acct.Name}>` },
+        { type: 'mrkdwn', text: `*Locations*\n${locStr}` },
+        { type: 'mrkdwn', text: `*Country*\n${acct.BillingCountry ?? '—'}` },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'View in Salesforce', emoji: true },
+        url: sfLink,
+        style: 'primary',
+      }],
+    },
+  ]
+
+  await sendDm(slackId, blocks, `🎉 New account assigned: ${acct.Name}`)
+  console.log(`[Reassignment] Notified ${repName} (${repEmail}) about ${acct.Name}`)
+}
+
 export async function runReassignmentJob(appUrl: string): Promise<void> {
   console.log('[Reassignment] Starting daily reassignment run...')
   const accounts = await fetchReassignAccounts()

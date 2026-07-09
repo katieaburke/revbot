@@ -3,6 +3,7 @@ import type { KnownBlock } from '@slack/web-api'
 import { db } from '../db'
 import { updateCloseDate, updateMeddpiccFields, updateStage, updateOpportunity } from '../services/salesforce'
 import { updateAccountOwner } from '../services/churnedReassignment'
+import { notifyAssignedAM } from '../services/reassignment'
 import { config } from '../config'
 import { MEDDPICC_LABELS, type MeddpiccField } from '../alerts/meddpicc'
 import jwt from 'jsonwebtoken'
@@ -640,6 +641,13 @@ export function registerHandlers(app: App) {
     try {
       await updateAccountOwner(accountId, repId)
       console.log(`[Reassignment] Account ${accountId} assigned to ${repName} by Slack user ${actorSlackId}`)
+
+      // Notify the newly assigned AM — fire and forget, non-blocking
+      const leaderProfile = await client.users.info({ user: actorSlackId }).catch(() => null)
+      const leaderName = (leaderProfile?.user as { real_name?: string } | undefined)?.real_name ?? 'Your CS leader'
+      notifyAssignedAM(accountId, repId, repName, leaderName).catch((err) =>
+        console.warn('[Reassignment] AM notification failed (non-fatal):', err)
+      )
 
       // Update the original message: replace the dropdown block with a plain confirmed row
       if (channel && messageTs) {
