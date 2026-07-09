@@ -103,6 +103,7 @@ export function Layout() {
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Prospecting Management
               </p>
+              <NavItem to="/playbook/accounts" label="Prospecting Hygiene" icon={Building2} />
 
               {/* Risk and Termination Management sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
