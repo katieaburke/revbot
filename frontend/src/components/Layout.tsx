@@ -85,7 +85,6 @@ export function Layout() {
                 Pipeline Hygiene
               </p>
               <NavItem to="/pipe-hygiene" label="Active Flags" icon={Activity} />
-              <p className="px-3 pt-2 pb-0.5 text-[10px] text-gray-400 uppercase tracking-wider font-medium">Rules</p>
               <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} badge={dryRunSummary?.byAlertType['STALLED']} />
               <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} badge={dryRunSummary?.byAlertType['MEDDPICC_MISSING']} />
               <NavItem
@@ -107,23 +106,18 @@ export function Layout() {
                 Prospecting Management
               </p>
               <NavItem to="/playbook/accounts" label="Active Flags" icon={Activity} />
-              <p className="px-3 pt-2 pb-0.5 text-[10px] text-gray-400 uppercase tracking-wider font-medium">Rules</p>
-              <NavItem to="/playbook/prospecting-rules" label="Hygiene Rules" icon={ClipboardList} />
 
               {/* Risk and Termination Management sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Risk &amp; Termination
               </p>
               <NavItem to="/playbook/risk" label="Active Flags" icon={Activity} />
-              <p className="px-3 pt-2 pb-0.5 text-[10px] text-gray-400 uppercase tracking-wider font-medium">Rules</p>
-              <NavItem to="/playbook/risk-rules" label="Risk Rules" icon={AlertTriangle} />
 
               {/* Territory Management sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Territory Management
               </p>
               <NavItem to="/playbook/territory/newlogos" label="Active Flags" icon={Activity} />
-              <p className="px-3 pt-2 pb-0.5 text-[10px] text-gray-400 uppercase tracking-wider font-medium">Queues</p>
               <NavItem to="/playbook/territory/newlogos" label="New Logos → Success" icon={ArrowLeftRight} />
               <NavItem to="/playbook/territory/churned" label="Churned → Sales" icon={ArrowLeftRight} />
 
