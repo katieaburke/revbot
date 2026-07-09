@@ -61,6 +61,7 @@ export default function App() {
             <Route path="/playbook/accounts" element={<ProspectingHygiene />} />
             <Route path="/playbook/territory/newlogos" element={<TerritoryReassignment />} />
             <Route path="/playbook/territory/churned" element={<ChurnedReassignment />} />
+            <Route path="/playbook/risk" element={<div className="p-8 text-gray-400 text-sm">Risk &amp; Termination flags coming soon.</div>} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/team" element={<Team />} />
             <Route path="/analytics" element={<Analytics />} />

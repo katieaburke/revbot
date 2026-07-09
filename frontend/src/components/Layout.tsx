@@ -22,7 +22,7 @@ import clsx from 'clsx'
 import { useState } from 'react'
 import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
-const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory', '/pipe-hygiene']
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory', '/playbook/risk', '/pipe-hygiene']
 
 export function Layout() {
   const location = useLocation()
@@ -85,6 +85,7 @@ export function Layout() {
                 Pipeline Hygiene
               </p>
               <NavItem to="/pipe-hygiene" label="Active Flags" icon={Activity} />
+              <p className="px-3 pt-2 pb-0.5 text-[10px] text-gray-400 uppercase tracking-wider font-medium">Rules</p>
               <NavItem to="/stall-rules" label="Zombie Pipeline" icon={Timer} badge={dryRunSummary?.byAlertType['STALLED']} />
               <NavItem to="/meddpicc" label="MEDDPICC + BANT" icon={ClipboardList} badge={dryRunSummary?.byAlertType['MEDDPICC_MISSING']} />
               <NavItem
@@ -105,12 +106,13 @@ export function Layout() {
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
                 Prospecting Management
               </p>
-              <NavItem to="/playbook/accounts" label="Prospecting Hygiene" icon={Building2} />
+              <NavItem to="/playbook/accounts" label="Active Flags" icon={Activity} />
 
               {/* Risk and Termination Management sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
-                Risk &amp; Termination Management
+                Risk &amp; Termination
               </p>
+              <NavItem to="/playbook/risk" label="Active Flags" icon={Activity} />
 
               {/* Territory Management sub-section */}
               <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
