@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useLocation } from 'react-router-dom'
 import { api } from '../lib/api'
 import {
   Play, RefreshCw, AlertCircle, Clock, CheckCircle, FlaskConical,
@@ -258,9 +259,20 @@ function getAlertTags(alert: DryRunAlert): { label: string; color: string }[] {
 
 export function PipeHygiene() {
   const qc = useQueryClient()
+  const location = useLocation()
+  const initialTab = new URLSearchParams(location.search).get('tab')
+
   const [dryRunOverride, setDryRunOverride] = useState<DryRunResult | null>(null)
   const [dryRunError, setDryRunError] = useState<string | null>(null)
-  const [expandedSection, setExpandedSection] = useState<'wouldSend' | 'cooldown' | 'snoozed_owner' | 'snoozed_revops' | 'unreachable' | 'resolved' | null>('wouldSend')
+  const [expandedSection, setExpandedSection] = useState<'wouldSend' | 'cooldown' | 'snoozed_owner' | 'snoozed_revops' | 'unreachable' | 'resolved' | null>(() => {
+    switch (initialTab) {
+      case 'cooldown': return 'cooldown'
+      case 'snoozedRevops': return 'snoozed_revops'
+      case 'snoozedOwner': return 'snoozed_owner'
+      case 'resolved': return 'resolved'
+      default: return 'wouldSend'
+    }
+  })
   const [snoozeOpenOppId, setSnoozeOpenOppId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
