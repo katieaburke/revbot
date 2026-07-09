@@ -18,6 +18,7 @@ import { ProspectingHygiene } from './pages/ProspectingHygiene'
 import { TerritoryReassignment } from './pages/TerritoryReassignment'
 import { ChurnedReassignment } from './pages/ChurnedReassignment'
 import { RepPortal } from './pages/RepPortal'
+import { ManagerPortal } from './pages/ManagerPortal'
 
 const qc = new QueryClient()
 
@@ -33,6 +34,15 @@ export default function App() {
     return (
       <QueryClientProvider client={qc}>
         <RepPortal />
+      </QueryClientProvider>
+    )
+  }
+
+  // Manager portal is fully public — bypass the admin router entirely
+  if (window.location.pathname.startsWith('/my-team')) {
+    return (
+      <QueryClientProvider client={qc}>
+        <ManagerPortal />
       </QueryClientProvider>
     )
   }
