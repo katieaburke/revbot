@@ -5,6 +5,7 @@ import { verifyRepToken, generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
 import { getServiceConnection } from '../services/salesforce'
 import { stageApiToLabel } from '../utils/stageMapping'
+import { recheckForRep } from '../jobs/alertOrchestrator'
 
 const router = Router()
 
@@ -143,6 +144,82 @@ router.post('/snooze', async (req, res) => {
     })
 
     res.json({ ok: true, snoozedUntil: snoozedUntil.toISOString() })
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid or expired link' })
+  }
+})
+
+// POST /api/rep/update-close-date
+router.post('/update-close-date', async (req, res) => {
+  const { token, opportunityId, closeDate } = req.body as {
+    token?: string; opportunityId?: string; closeDate?: string
+  }
+  if (!token || !opportunityId || !closeDate) return res.status(400).json({ error: 'Missing fields' })
+
+  try {
+    const { slackUserId } = verifyRepToken(token)
+    const user = await db.user.findUnique({ where: { slackUserId } })
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    const conn = await getServiceConnection()
+    await conn.sobject('Opportunity').update({ Id: opportunityId, CloseDate: closeDate })
+
+    await db.notification.updateMany({
+      where: { opportunityId, ownerId: user.id, status: { in: ['SENT', 'SNOOZED'] } },
+      data: { status: 'RESOLVED', resolvedAt: new Date(), sfdcUpdatedAt: new Date(), sfdcUpdateFields: { CloseDate: closeDate } as never },
+    })
+
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid or expired link' })
+  }
+})
+
+// POST /api/rep/update-next-step
+router.post('/update-next-step', async (req, res) => {
+  const { token, opportunityId, nextStep, nextStepDate } = req.body as {
+    token?: string; opportunityId?: string; nextStep?: string; nextStepDate?: string
+  }
+  if (!token || !opportunityId) return res.status(400).json({ error: 'Missing fields' })
+
+  try {
+    const { slackUserId } = verifyRepToken(token)
+    const user = await db.user.findUnique({ where: { slackUserId } })
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    const fields: Record<string, unknown> = {}
+    if (nextStep?.trim()) fields.NextStep = nextStep.trim()
+    if (nextStepDate) fields.Next_Step_Date__c = nextStepDate
+
+    if (!Object.keys(fields).length) return res.status(400).json({ error: 'Provide nextStep or nextStepDate' })
+
+    const conn = await getServiceConnection()
+    await conn.sobject('Opportunity').update({ Id: opportunityId, ...fields })
+
+    await db.notification.updateMany({
+      where: { opportunityId, ownerId: user.id, alertType: 'NEXT_STEP_MISSING', status: { in: ['SENT', 'SNOOZED'] } },
+      data: { status: 'RESOLVED', resolvedAt: new Date(), sfdcUpdatedAt: new Date(), sfdcUpdateFields: fields as never },
+    })
+
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid or expired link' })
+  }
+})
+
+// POST /api/rep/recheck — re-evaluate alerts for this rep using cached data
+router.post('/recheck', async (req, res) => {
+  const { token } = req.body as { token?: string }
+  if (!token) return res.status(400).json({ error: 'Missing token' })
+
+  try {
+    const { slackUserId } = verifyRepToken(token)
+    const user = await db.user.findUnique({ where: { slackUserId } })
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    if (!user.slackEmail) return res.status(400).json({ error: 'No email on record' })
+
+    const result = await recheckForRep(user.slackEmail)
+    res.json(result)
   } catch (err) {
     res.status(401).json({ error: 'Invalid or expired link' })
   }

@@ -489,6 +489,60 @@ export async function runDryRun(opts: { bustGongCache?: boolean } = {}): Promise
   }
 }
 
+// ─── Recheck for a single rep ─────────────────────────────────────────────
+// Uses cached SFDC / Gong data (no network calls if cache is warm).
+// Resolves stale flags for this rep and returns a summary.
+
+export async function recheckForRep(ownerEmail: string): Promise<{
+  currentFlags: number
+  resolved: number
+  newFlags: { opportunityId: string; opportunityName: string; alertType: AlertType }[]
+}> {
+  const { opps, pastDueAlerts, stalledAlerts, meddpiccAlerts, nextStepAlerts, closeDateRiskAlerts, stageMismatchAlerts } = await evaluate()
+
+  type AnyAlert = { opportunityId: string; opportunityName: string; ownerEmail: string; alertType?: AlertType }
+
+  const allAlerts: { opportunityId: string; opportunityName: string; alertType: AlertType }[] = [
+    ...pastDueAlerts.map((a) => ({ ...a, alertType: a.alertType as AlertType })),
+    ...stalledAlerts.map((a) => ({ ...a, alertType: AlertType.STALLED })),
+    ...meddpiccAlerts.map((a) => ({ ...a, alertType: AlertType.MEDDPICC_MISSING })),
+    ...nextStepAlerts.map((a) => ({ ...a, alertType: AlertType.NEXT_STEP_MISSING })),
+    ...closeDateRiskAlerts.map((a) => ({ ...a, alertType: AlertType.CLOSE_DATE_RISK })),
+    ...stageMismatchAlerts.map((a) => ({ ...a, alertType: AlertType.STAGE_MISMATCH })),
+  ].filter((a) => (a as unknown as AnyAlert).ownerEmail?.toLowerCase() === ownerEmail.toLowerCase())
+
+  const currentFlagKeys = new Set(allAlerts.map((a) => `${a.opportunityId}:${a.alertType}`))
+  const openOppIds = new Set(opps.map((o) => o.Id))
+
+  // Find the rep's user record
+  const user = await db.user.findFirst({ where: { slackEmail: ownerEmail } })
+  if (!user) return { currentFlags: allAlerts.length, resolved: 0, newFlags: [] }
+
+  // Load all active notifications for this rep
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const active = await (db as any).notification.findMany({
+    where: { ownerId: user.id, status: { in: ['SENT', 'SNOOZED'] } },
+    select: { id: true, opportunityId: true, alertType: true },
+  }) as { id: string; opportunityId: string; alertType: string }[]
+
+  // Stale = opp closed OR flag no longer fires
+  const stale = active.filter(
+    (n) => !openOppIds.has(n.opportunityId) || !currentFlagKeys.has(`${n.opportunityId}:${n.alertType}`)
+  )
+  if (stale.length) {
+    await db.notification.updateMany({
+      where: { id: { in: stale.map((n) => n.id) } },
+      data: { status: 'RESOLVED', resolvedAt: new Date() },
+    })
+  }
+
+  // New = flags that currently fire but have no active notification
+  const activeKeys = new Set(active.map((n) => `${n.opportunityId}:${n.alertType}`))
+  const newFlags = allAlerts.filter((a) => !activeKeys.has(`${a.opportunityId}:${a.alertType}`))
+
+  return { currentFlags: allAlerts.length, resolved: stale.length, newFlags }
+}
+
 // ─── Live run ──────────────────────────────────────────────────────────────
 
 export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promise<{ sent: number; skipped: number; errors: number }> {

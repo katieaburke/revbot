@@ -9,6 +9,8 @@ import { AlertType } from '../types'
 import type { KnownBlock } from '@slack/web-api'
 import { getServiceConnection } from '../services/salesforce'
 import { z } from 'zod'
+import { generateRepToken } from '../lib/repToken'
+import { config } from '../config'
 
 const router = Router()
 router.use(requireAdmin)
@@ -193,7 +195,14 @@ router.post('/send-draft', async (req, res) => {
 
     if (!ownerSlackId) return res.status(400).json({ error: 'No Slack ID for this owner' })
 
-    const blocks = await buildCombinedMessage(opportunityId, opportunityName, alerts)
+    const baseBlocks = await buildCombinedMessage(opportunityId, opportunityName, alerts)
+    const token = generateRepToken(ownerSlackId)
+    const portalUrl = `${config.APP_URL}/my-flags?token=${token}`
+    const portalBlock: KnownBlock = {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📋 <${portalUrl}|View all your open flags →>` }],
+    }
+    const blocks = [...baseBlocks, portalBlock]
     const ts = await sendDm(ownerSlackId, blocks, `Action needed: ${opportunityName}`)
 
     // Record each alert type as a notification

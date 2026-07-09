@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
-import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff } from 'lucide-react'
+import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 
 // Plain axios instance — no admin auth interceptors, no 401→/login redirect
@@ -78,6 +78,32 @@ export function RepPortal() {
     },
   })
 
+  const closeDateMutation = useMutation({
+    mutationFn: ({ opportunityId, closeDate }: { opportunityId: string; closeDate: string }) =>
+      repApi.post('/rep/update-close-date', { token, opportunityId, closeDate }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['rep-portal', token] }),
+  })
+
+  const nextStepMutation = useMutation({
+    mutationFn: ({ opportunityId, nextStep, nextStepDate }: { opportunityId: string; nextStep?: string; nextStepDate?: string }) =>
+      repApi.post('/rep/update-next-step', { token, opportunityId, nextStep, nextStepDate }).then((r) => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['rep-portal', token] }),
+  })
+
+  const [recheckMsg, setRecheckMsg] = useState<string | null>(null)
+  const recheckMutation = useMutation({
+    mutationFn: () => repApi.post('/rep/recheck', { token }).then((r) => r.data as { currentFlags: number; resolved: number; newFlags: { opportunityId: string; opportunityName: string; alertType: string }[] }),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ['rep-portal', token] })
+      const parts: string[] = []
+      if (result.newFlags.length) parts.push(`${result.newFlags.length} new flag${result.newFlags.length !== 1 ? 's' : ''} found`)
+      if (result.resolved) parts.push(`${result.resolved} resolved`)
+      if (!parts.length) parts.push('All clear — no changes')
+      setRecheckMsg(parts.join(' · '))
+      setTimeout(() => setRecheckMsg(null), 5000)
+    },
+  })
+
   const open = data?.notifications.filter((n) => n.status === 'SENT') ?? []
   const snoozed = data?.notifications.filter((n) => n.status === 'SNOOZED') ?? []
 
@@ -119,11 +145,28 @@ export function RepPortal() {
                 {snoozed.length} snoozed
               </span>
             )}
+            <button
+              onClick={() => recheckMutation.mutate()}
+              disabled={recheckMutation.isPending}
+              title="Re-evaluate your deals against current rules"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={clsx(recheckMutation.isPending && 'animate-spin')} />
+              {recheckMutation.isPending ? 'Checking…' : 'Recheck my deals'}
+            </button>
           </div>
         </div>
       </div>
 
       <div className="max-w-2xl mx-auto px-6 py-6 space-y-3">
+        {/* Recheck result */}
+        {recheckMsg && (
+          <div className="flex items-center gap-2 px-4 py-2.5 bg-green-50 border border-green-200 rounded-xl text-xs text-green-700 font-medium">
+            <Check size={13} className="flex-shrink-0" />
+            {recheckMsg}
+          </div>
+        )}
+
         {/* All clear */}
         {open.length === 0 && snoozed.length === 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
@@ -142,7 +185,11 @@ export function RepPortal() {
             onSnoozeOpen={() => setSnoozing(notif.id)}
             onSnoozeClose={() => setSnoozing(null)}
             onSnooze={(days, snoozeUntil) => snoozeMutation.mutate({ notificationId: notif.id, days, snoozeUntil })}
-            isPending={snoozeMutation.isPending}
+            isSnoozePending={snoozeMutation.isPending}
+            onUpdateCloseDate={(closeDate) => closeDateMutation.mutate({ opportunityId: notif.opportunityId, closeDate })}
+            isCloseDatePending={closeDateMutation.isPending}
+            onUpdateNextStep={(nextStep, nextStepDate) => nextStepMutation.mutate({ opportunityId: notif.opportunityId, nextStep, nextStepDate })}
+            isNextStepPending={nextStepMutation.isPending}
           />
         ))}
 
@@ -159,7 +206,11 @@ export function RepPortal() {
                 onSnoozeOpen={() => setSnoozing(notif.id)}
                 onSnoozeClose={() => setSnoozing(null)}
                 onSnooze={(days, snoozeUntil) => snoozeMutation.mutate({ notificationId: notif.id, days, snoozeUntil })}
-                isPending={snoozeMutation.isPending}
+                isSnoozePending={snoozeMutation.isPending}
+                onUpdateCloseDate={(closeDate) => closeDateMutation.mutate({ opportunityId: notif.opportunityId, closeDate })}
+                isCloseDatePending={closeDateMutation.isPending}
+                onUpdateNextStep={(nextStep, nextStepDate) => nextStepMutation.mutate({ opportunityId: notif.opportunityId, nextStep, nextStepDate })}
+                isNextStepPending={nextStepMutation.isPending}
               />
             ))}
           </div>
@@ -232,6 +283,47 @@ function addDays(d: Date, n: number) {
   const r = new Date(d); r.setDate(r.getDate() + n); return r
 }
 
+// ── Per-alert action config ───────────────────────────────────────────────────
+
+type ActionSpec =
+  | { kind: 'sfdc'; label: string; primary?: boolean }
+  | { kind: 'close-date'; label: string; primary?: boolean }
+  | { kind: 'next-step'; label: string; primary?: boolean }
+
+function actionsForType(alertType: string): ActionSpec[] {
+  switch (alertType) {
+    case 'PAST_DUE_INITIAL':
+    case 'PAST_DUE_AMENDMENT':
+      return [
+        { kind: 'close-date', label: 'Update Close Date', primary: true },
+        { kind: 'sfdc', label: 'Open in Salesforce' },
+      ]
+    case 'PAST_DUE_RENEWAL':
+      return [{ kind: 'sfdc', label: 'Open in Salesforce', primary: true }]
+    case 'STALLED':
+      return [
+        { kind: 'sfdc', label: 'Update Stage', primary: true },
+        { kind: 'close-date', label: 'Update Close Date' },
+      ]
+    case 'MEDDPICC_MISSING':
+      return [{ kind: 'sfdc', label: 'Update in Salesforce', primary: true }]
+    case 'NEXT_STEP_MISSING':
+      return [
+        { kind: 'next-step', label: 'Update Next Step', primary: true },
+        { kind: 'sfdc', label: 'Open in Salesforce' },
+      ]
+    case 'CLOSE_DATE_RISK':
+      return [
+        { kind: 'close-date', label: 'Update Close Date', primary: true },
+        { kind: 'sfdc', label: 'Update Stage' },
+      ]
+    case 'STAGE_MISMATCH':
+      return [{ kind: 'sfdc', label: 'Open in Salesforce', primary: true }]
+    default:
+      return [{ kind: 'sfdc', label: 'Open in Salesforce', primary: true }]
+  }
+}
+
 // ── Notification card ─────────────────────────────────────────────────────────
 
 function NotifCard({
@@ -241,7 +333,11 @@ function NotifCard({
   onSnoozeOpen,
   onSnoozeClose,
   onSnooze,
-  isPending,
+  isSnoozePending,
+  onUpdateCloseDate,
+  isCloseDatePending,
+  onUpdateNextStep,
+  isNextStepPending,
 }: {
   notif: RepNotification
   snoozed?: boolean
@@ -249,20 +345,39 @@ function NotifCard({
   onSnoozeOpen: () => void
   onSnoozeClose: () => void
   onSnooze: (days?: number, snoozeUntil?: string) => void
-  isPending: boolean
+  isSnoozePending: boolean
+  onUpdateCloseDate: (closeDate: string) => void
+  isCloseDatePending: boolean
+  onUpdateNextStep: (nextStep?: string, nextStepDate?: string) => void
+  isNextStepPending: boolean
 }) {
   const [customDate, setCustomDate] = useState('')
+  const [openForm, setOpenForm] = useState<'close-date' | 'next-step' | null>(null)
+  const [closeDateVal, setCloseDateVal] = useState('')
+  const [nsText, setNsText] = useState('')
+  const [nsDate, setNsDate] = useState('')
+
   const meta = ALERT_META[notif.alertType] ?? { label: notif.alertType, color: 'bg-gray-100 text-gray-600', what: '' }
   const isSnoozeOpen = snoozingId === notif.id
+  const actions = actionsForType(notif.alertType)
 
-  // Check for future next step date on STALLED alerts
-  const nextStepDate = notif.alertType === 'STALLED'
-    ? (notif.alertDetails.nextStepDate as string | null | undefined) ?? null
-    : null
-  const nextStepFuture = nextStepDate && new Date(nextStepDate) > new Date() ? new Date(nextStepDate) : null
+  // Future next step date used for the "1 wk after next step" snooze option
+  const rawNextStepDate = (notif.alertDetails.nextStepDate as string | null | undefined) ?? null
+  const nextStepFuture = rawNextStepDate && new Date(rawNextStepDate) > new Date() ? new Date(rawNextStepDate) : null
+
+  function handleCloseDateSubmit() {
+    if (!closeDateVal) return
+    onUpdateCloseDate(closeDateVal)
+    setOpenForm(null)
+  }
+
+  function handleNextStepSubmit() {
+    if (!nsText.trim() && !nsDate) return
+    onUpdateNextStep(nsText.trim() || undefined, nsDate || undefined)
+    setOpenForm(null)
+  }
 
   return (
-    // No overflow-hidden — needed so the snooze dropdown isn't clipped
     <div className={clsx('bg-white rounded-xl border', snoozed ? 'border-gray-100 opacity-70' : 'border-gray-200')}>
       <div className="px-5 py-4">
         {/* Opp name + SFDC link */}
@@ -295,35 +410,40 @@ function NotifCard({
           const closeDate = typeof d.closeDate === 'string' ? d.closeDate : null
           const stage = typeof d.stage === 'string' ? d.stage : null
           const nextStepDate = typeof d.nextStepDate === 'string' ? d.nextStepDate : null
-          const nextStep = typeof d.nextStep === 'string' ? d.nextStep : null
+          const nextStep = typeof d.nextStep === 'string' && d.nextStep.trim() ? d.nextStep.trim() : null
           return (
-            <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2.5">
-              {amount != null && (
-                <span className="text-xs text-gray-500">
-                  <span className="font-medium text-gray-700">ACV</span>{' '}
-                  ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                </span>
-              )}
-              {closeDate && (
-                <span className="text-xs text-gray-500">
-                  <span className="font-medium text-gray-700">Close</span>{' '}
-                  {fmtDate(closeDate)}
-                </span>
-              )}
-              {stage && (
-                <span className="text-xs text-gray-500">
-                  <span className="font-medium text-gray-700">Stage</span>{' '}
-                  {stage}
-                </span>
-              )}
-              {nextStepDate && (
-                <span className="text-xs text-gray-500">
+            <div className="mb-2.5 space-y-1.5">
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {amount != null && (
+                  <span className="text-xs text-gray-500">
+                    <span className="font-medium text-gray-700">ACV</span>{' '}
+                    ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                  </span>
+                )}
+                {closeDate && (
+                  <span className="text-xs text-gray-500">
+                    <span className="font-medium text-gray-700">Close</span>{' '}
+                    {fmtDate(closeDate)}
+                  </span>
+                )}
+                {stage && (
+                  <span className="text-xs text-gray-500">
+                    <span className="font-medium text-gray-700">Stage</span>{' '}
+                    {stage}
+                  </span>
+                )}
+                {nextStepDate && (
+                  <span className="text-xs text-gray-500">
+                    <span className="font-medium text-gray-700">Next step date</span>{' '}
+                    {fmtDate(nextStepDate)}
+                  </span>
+                )}
+              </div>
+              {nextStep && (
+                <p className="text-xs text-gray-500">
                   <span className="font-medium text-gray-700">Next step</span>{' '}
-                  {fmtDate(nextStepDate)}
-                  {nextStep && (
-                    <span className="text-gray-400 ml-1">· {nextStep.slice(0, 60)}{nextStep.length > 60 ? '…' : ''}</span>
-                  )}
-                </span>
+                  {nextStep}
+                </p>
               )}
             </div>
           )
@@ -332,17 +452,70 @@ function NotifCard({
         {/* What to do */}
         <p className="text-sm text-gray-600 mb-3">{meta.what}</p>
 
-        {/* Actions */}
+        {/* Action buttons */}
         <div className="flex items-center gap-2 flex-wrap">
-          <a
-            href={notif.sfdcUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg hover:bg-brand-600"
-          >
-            Open in Salesforce <ExternalLink size={11} />
-          </a>
+          {actions.map((action) => {
+            if (action.kind === 'sfdc') {
+              return (
+                <a
+                  key={action.label}
+                  href={notif.sfdcUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={clsx(
+                    'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg',
+                    action.primary
+                      ? 'bg-brand-500 text-white hover:bg-brand-600'
+                      : 'text-gray-500 border border-gray-200 hover:bg-gray-50',
+                  )}
+                >
+                  {action.label} <ExternalLink size={11} />
+                </a>
+              )
+            }
 
+            if (action.kind === 'close-date') {
+              return (
+                <button
+                  key={action.label}
+                  onClick={() => setOpenForm(openForm === 'close-date' ? null : 'close-date')}
+                  className={clsx(
+                    'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg',
+                    action.primary
+                      ? 'bg-brand-500 text-white hover:bg-brand-600'
+                      : 'text-gray-500 border border-gray-200 hover:bg-gray-50',
+                    openForm === 'close-date' && action.primary && 'ring-2 ring-brand-300',
+                  )}
+                >
+                  {action.label}
+                  <ChevronDown size={11} className={clsx('transition-transform', openForm === 'close-date' && 'rotate-180')} />
+                </button>
+              )
+            }
+
+            if (action.kind === 'next-step') {
+              return (
+                <button
+                  key={action.label}
+                  onClick={() => setOpenForm(openForm === 'next-step' ? null : 'next-step')}
+                  className={clsx(
+                    'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg',
+                    action.primary
+                      ? 'bg-brand-500 text-white hover:bg-brand-600'
+                      : 'text-gray-500 border border-gray-200 hover:bg-gray-50',
+                    openForm === 'next-step' && action.primary && 'ring-2 ring-brand-300',
+                  )}
+                >
+                  {action.label}
+                  <ChevronDown size={11} className={clsx('transition-transform', openForm === 'next-step' && 'rotate-180')} />
+                </button>
+              )
+            }
+
+            return null
+          })}
+
+          {/* Snooze */}
           {!snoozed && (
             <div className="relative">
               <button
@@ -363,7 +536,7 @@ function NotifCard({
                       <button
                         key={opt.days}
                         onClick={() => onSnooze(opt.days)}
-                        disabled={isPending}
+                        disabled={isSnoozePending}
                         className="w-full text-left px-3 py-2 hover:bg-amber-50 hover:text-amber-800 disabled:opacity-50 text-gray-700 flex items-center justify-between"
                       >
                         <span>{opt.label}</span>
@@ -377,7 +550,7 @@ function NotifCard({
                       <div className="border-t border-gray-100 mt-1" />
                       <button
                         onClick={() => onSnooze(undefined, addDays(nextStepFuture, 7).toISOString())}
-                        disabled={isPending}
+                        disabled={isSnoozePending}
                         className="w-full text-left px-3 py-2 hover:bg-blue-50 hover:text-blue-800 disabled:opacity-50 text-blue-600 flex items-center justify-between"
                       >
                         <span>1 wk after next step</span>
@@ -397,7 +570,7 @@ function NotifCard({
                         className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 min-w-0"
                       />
                       <button
-                        disabled={!customDate || isPending}
+                        disabled={!customDate || isSnoozePending}
                         onClick={() => onSnooze(undefined, new Date(customDate + 'T12:00:00').toISOString())}
                         className="px-2.5 py-1.5 text-xs bg-amber-500 text-white rounded-lg disabled:opacity-40 hover:bg-amber-600 font-medium"
                       >
@@ -414,6 +587,66 @@ function NotifCard({
             <span className="text-xs text-gray-300 ml-auto">Sent {fmtDate(notif.sentAt)}</span>
           )}
         </div>
+
+        {/* Inline: Update Close Date */}
+        {openForm === 'close-date' && (
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <p className="text-xs font-medium text-gray-700 mb-2">New close date</p>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={closeDateVal}
+                min={new Date().toISOString().split('T')[0]}
+                onChange={(e) => setCloseDateVal(e.target.value)}
+                className="flex-1 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+              />
+              <button
+                disabled={!closeDateVal || isCloseDatePending}
+                onClick={handleCloseDateSubmit}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg disabled:opacity-40 hover:bg-brand-600"
+              >
+                <Check size={11} /> Save to Salesforce
+              </button>
+              <button onClick={() => setOpenForm(null)} className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {/* Inline: Update Next Step */}
+        {openForm === 'next-step' && (
+          <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
+            <p className="text-xs font-medium text-gray-700">Update next step</p>
+            <textarea
+              value={nsText}
+              onChange={(e) => setNsText(e.target.value)}
+              placeholder="What's the next action on this deal?"
+              rows={2}
+              className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 resize-none"
+            />
+            <div className="flex items-center gap-2">
+              <div className="flex-1">
+                <p className="text-[10px] text-gray-400 mb-1">Next step date</p>
+                <input
+                  type="date"
+                  value={nsDate}
+                  min={new Date().toISOString().split('T')[0]}
+                  onChange={(e) => setNsDate(e.target.value)}
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5 pt-4">
+                <button
+                  disabled={(!nsText.trim() && !nsDate) || isNextStepPending}
+                  onClick={handleNextStepSubmit}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg disabled:opacity-40 hover:bg-brand-600 whitespace-nowrap"
+                >
+                  <Check size={11} /> Save to Salesforce
+                </button>
+                <button onClick={() => setOpenForm(null)} className="text-xs text-gray-400 hover:text-gray-600 text-center">Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
