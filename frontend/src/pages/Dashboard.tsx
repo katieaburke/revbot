@@ -215,8 +215,16 @@ function getAlertTags(alert: DryRunAlert): { label: string; color: string }[] {
       return [{ label: 'Past Due Close Date', color: 'text-red-600 bg-red-50' }]
     case 'PAST_DUE_RENEWAL':
       return [{ label: 'Past Due Booking Date', color: 'text-red-600 bg-red-50' }]
-    case 'STALLED':
-      return [{ label: 'Zombie Pipeline', color: 'text-yellow-700 bg-yellow-50' }]
+    case 'STALLED': {
+      const nsd = alert.details.nextStepDate as string | null | undefined
+      const daysOverdue = nsd
+        ? Math.floor((Date.now() - new Date(nsd).getTime()) / 86_400_000)
+        : null
+      const label = daysOverdue !== null && daysOverdue > 0
+        ? `Zombie Pipeline (next step ${daysOverdue}d past due)`
+        : 'Zombie Pipeline'
+      return [{ label, color: 'text-yellow-700 bg-yellow-50' }]
+    }
     case 'CLOSE_DATE_RISK':
       return [{ label: 'Close Date Risk', color: 'text-rose-600 bg-rose-50' }]
     case 'STAGE_MISMATCH':
