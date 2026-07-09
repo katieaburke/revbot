@@ -65,24 +65,28 @@ router.get('/me', async (req, res) => {
 })
 
 // POST /api/rep/snooze
-// Body: { token, notificationId, days }
+// Body: { token, notificationId, days } OR { token, notificationId, snoozeUntil: ISO string }
 router.post('/snooze', async (req, res) => {
-  const { token, notificationId, days } = req.body as { token?: string; notificationId?: string; days?: number }
-  if (!token || !notificationId || !days) return res.status(400).json({ error: 'Missing fields' })
+  const { token, notificationId, days, snoozeUntil } = req.body as {
+    token?: string; notificationId?: string; days?: number; snoozeUntil?: string
+  }
+  if (!token || !notificationId || (!days && !snoozeUntil)) return res.status(400).json({ error: 'Missing fields' })
 
   try {
     const { slackUserId } = verifyRepToken(token)
     const user = await db.user.findUnique({ where: { slackUserId } })
     if (!user) return res.status(404).json({ error: 'User not found' })
 
-    // Verify this notification belongs to this rep before updating
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const notif = await (db as any).notification.findFirst({
       where: { id: notificationId, ownerId: user.id, status: { in: ['SENT', 'SNOOZED'] } },
     })
     if (!notif) return res.status(404).json({ error: 'Notification not found' })
 
-    const snoozedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+    const snoozedUntil = snoozeUntil
+      ? new Date(snoozeUntil)
+      : new Date(Date.now() + (days ?? 7) * 24 * 60 * 60 * 1000)
+
     await db.notification.update({
       where: { id: notificationId },
       data: { status: 'SNOOZED', snoozedUntil },

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
-import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown } from 'lucide-react'
+import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff } from 'lucide-react'
 import clsx from 'clsx'
 
 // Plain axios instance — no admin auth interceptors, no 401→/login redirect
@@ -34,7 +34,7 @@ const ALERT_META: Record<string, { label: string; color: string; what: string }>
   PAST_DUE_INITIAL:    { label: 'Past Due',         color: 'bg-red-100 text-red-700',      what: 'Close date has passed — update the date or close the deal.' },
   PAST_DUE_AMENDMENT:  { label: 'Past Due Amendment',color: 'bg-red-100 text-red-700',      what: 'Amendment close date has passed — update or close.' },
   PAST_DUE_RENEWAL:    { label: 'Past Due Renewal',  color: 'bg-red-100 text-red-700',      what: 'Renewal booking date has passed — close this in Salesforce.' },
-  STALLED:             { label: 'Stalled Deal',       color: 'bg-orange-100 text-orange-700', what: 'Deal shows no recent activity — update stage, close date, or log activity.' },
+  STALLED:             { label: 'Zombie Pipeline',     color: 'bg-orange-100 text-orange-700', what: "This deal hasn't had activity in a while. If it's a longer sales cycle, snooze this and we'll check back in — otherwise update the stage, close date, or log activity in Salesforce." },
   MEDDPICC_MISSING:    { label: 'Missing MEDDPICC',  color: 'bg-purple-100 text-purple-700', what: 'Required MEDDPICC/BANT fields are blank for this stage.' },
   NEXT_STEP_MISSING:   { label: 'Missing Next Step', color: 'bg-yellow-100 text-yellow-700', what: 'Next step description or date is missing/overdue.' },
   CLOSE_DATE_RISK:     { label: 'Close Date Risk',   color: 'bg-amber-100 text-amber-700',   what: 'Close date is approaching but deal is still in early stage.' },
@@ -62,8 +62,8 @@ export function RepPortal() {
   })
 
   const snoozeMutation = useMutation({
-    mutationFn: ({ notificationId, days }: { notificationId: string; days: number }) =>
-      repApi.post('/rep/snooze', { token, notificationId, days }).then((r) => r.data),
+    mutationFn: ({ notificationId, days, snoozeUntil }: { notificationId: string; days?: number; snoozeUntil?: string }) =>
+      repApi.post('/rep/snooze', { token, notificationId, days, snoozeUntil }).then((r) => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rep-portal', token] })
       setSnoozing(null)
@@ -133,7 +133,7 @@ export function RepPortal() {
             snoozingId={snoozing}
             onSnoozeOpen={() => setSnoozing(notif.id)}
             onSnoozeClose={() => setSnoozing(null)}
-            onSnooze={(days) => snoozeMutation.mutate({ notificationId: notif.id, days })}
+            onSnooze={(days, snoozeUntil) => snoozeMutation.mutate({ notificationId: notif.id, days, snoozeUntil })}
             isPending={snoozeMutation.isPending}
           />
         ))}
@@ -150,7 +150,7 @@ export function RepPortal() {
                 snoozingId={snoozing}
                 onSnoozeOpen={() => setSnoozing(notif.id)}
                 onSnoozeClose={() => setSnoozing(null)}
-                onSnooze={(days) => snoozeMutation.mutate({ notificationId: notif.id, days })}
+                onSnooze={(days, snoozeUntil) => snoozeMutation.mutate({ notificationId: notif.id, days, snoozeUntil })}
                 isPending={snoozeMutation.isPending}
               />
             ))}
@@ -161,6 +161,19 @@ export function RepPortal() {
       </div>
     </div>
   )
+}
+
+// ── Snooze options ────────────────────────────────────────────────────────────
+
+const SNOOZE_OPTIONS = [
+  { label: '3 days', days: 3 },
+  { label: '1 week', days: 7 },
+  { label: '2 weeks', days: 14 },
+  { label: '1 month', days: 30 },
+]
+
+function addDays(d: Date, n: number) {
+  const r = new Date(d); r.setDate(r.getDate() + n); return r
 }
 
 // ── Notification card ─────────────────────────────────────────────────────────
@@ -179,14 +192,22 @@ function NotifCard({
   snoozingId: string | null
   onSnoozeOpen: () => void
   onSnoozeClose: () => void
-  onSnooze: (days: number) => void
+  onSnooze: (days?: number, snoozeUntil?: string) => void
   isPending: boolean
 }) {
+  const [customDate, setCustomDate] = useState('')
   const meta = ALERT_META[notif.alertType] ?? { label: notif.alertType, color: 'bg-gray-100 text-gray-600', what: '' }
   const isSnoozeOpen = snoozingId === notif.id
 
+  // Check for future next step date on STALLED alerts
+  const nextStepDate = notif.alertType === 'STALLED'
+    ? (notif.alertDetails.nextStepDate as string | null | undefined) ?? null
+    : null
+  const nextStepFuture = nextStepDate && new Date(nextStepDate) > new Date() ? new Date(nextStepDate) : null
+
   return (
-    <div className={clsx('bg-white rounded-xl border overflow-hidden', snoozed ? 'border-gray-100 opacity-70' : 'border-gray-200')}>
+    // No overflow-hidden — needed so the snooze dropdown isn't clipped
+    <div className={clsx('bg-white rounded-xl border', snoozed ? 'border-gray-100 opacity-70' : 'border-gray-200')}>
       <div className="px-5 py-4">
         {/* Opp name + SFDC link */}
         <div className="flex items-start justify-between gap-3 mb-2">
@@ -215,7 +236,7 @@ function NotifCard({
         <p className="text-sm text-gray-600 mb-3">{meta.what}</p>
 
         {/* Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <a
             href={notif.sfdcUrl}
             target="_blank"
@@ -229,22 +250,64 @@ function NotifCard({
             <div className="relative">
               <button
                 onClick={isSnoozeOpen ? onSnoozeClose : onSnoozeOpen}
-                className="flex items-center gap-1 px-3 py-1.5 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
               >
+                <BellOff size={11} />
                 Snooze <ChevronDown size={11} className={clsx('transition-transform', isSnoozeOpen && 'rotate-180')} />
               </button>
+
               {isSnoozeOpen && (
-                <div className="absolute left-0 top-full mt-1 z-10 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden text-xs min-w-[120px]">
-                  {[['3 days', 3], ['1 week', 7], ['2 weeks', 14], ['1 month', 30]].map(([label, days]) => (
-                    <button
-                      key={days}
-                      onClick={() => onSnooze(days as number)}
-                      disabled={isPending}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-50 disabled:opacity-50 text-gray-700"
-                    >
-                      {label}
-                    </button>
-                  ))}
+                <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-xl shadow-xl text-xs min-w-[200px]">
+                  <p className="px-3 pt-2.5 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Snooze until</p>
+
+                  {SNOOZE_OPTIONS.map((opt) => {
+                    const until = addDays(new Date(), opt.days)
+                    return (
+                      <button
+                        key={opt.days}
+                        onClick={() => onSnooze(opt.days)}
+                        disabled={isPending}
+                        className="w-full text-left px-3 py-2 hover:bg-amber-50 hover:text-amber-800 disabled:opacity-50 text-gray-700 flex items-center justify-between"
+                      >
+                        <span>{opt.label}</span>
+                        <span className="text-gray-400">{until.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                      </button>
+                    )
+                  })}
+
+                  {nextStepFuture && (
+                    <>
+                      <div className="border-t border-gray-100 mt-1" />
+                      <button
+                        onClick={() => onSnooze(undefined, addDays(nextStepFuture, 7).toISOString())}
+                        disabled={isPending}
+                        className="w-full text-left px-3 py-2 hover:bg-blue-50 hover:text-blue-800 disabled:opacity-50 text-blue-600 flex items-center justify-between"
+                      >
+                        <span>1 wk after next step</span>
+                        <span className="text-blue-400">{addDays(nextStepFuture, 7).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                      </button>
+                    </>
+                  )}
+
+                  <div className="border-t border-gray-100 mt-1 px-3 py-2.5">
+                    <p className="text-[10px] text-gray-400 mb-1.5 font-medium">Custom date</p>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="date"
+                        value={customDate}
+                        min={new Date().toISOString().split('T')[0]}
+                        onChange={(e) => setCustomDate(e.target.value)}
+                        className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 min-w-0"
+                      />
+                      <button
+                        disabled={!customDate || isPending}
+                        onClick={() => onSnooze(undefined, new Date(customDate + 'T12:00:00').toISOString())}
+                        className="px-2.5 py-1.5 text-xs bg-amber-500 text-white rounded-lg disabled:opacity-40 hover:bg-amber-600 font-medium"
+                      >
+                        Set
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
