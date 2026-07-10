@@ -570,7 +570,7 @@ export async function runAlertJob(opts: { bustGongCache?: boolean } = {}): Promi
   // Helper: append "View all my flags" portal link to any block array
   function withPortal(blocks: import('@slack/web-api').KnownBlock[], slackUserId: string): import('@slack/web-api').KnownBlock[] {
     const token = generateRepToken(slackUserId)
-    const url = `${config.APP_URL}/my-flags?token=${token}`
+    const url = `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${token}`
     return [...blocks, { type: 'context' as const, elements: [{ type: 'mrkdwn' as const, text: `📋 <${url}|View all your open flags →>` }] }]
   }
 

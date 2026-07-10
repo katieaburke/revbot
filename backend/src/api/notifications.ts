@@ -197,7 +197,7 @@ router.post('/send-draft', async (req, res) => {
 
     const baseBlocks = await buildCombinedMessage(opportunityId, opportunityName, alerts)
     const token = generateRepToken(ownerSlackId)
-    const portalUrl = `${config.APP_URL}/my-flags?token=${token}`
+    const portalUrl = `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${token}`
     const portalBlock: KnownBlock = {
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `📋 <${portalUrl}|View all your open flags →>` }],

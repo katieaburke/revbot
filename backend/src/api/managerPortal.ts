@@ -4,7 +4,7 @@ import { db } from '../db'
 import { verifyManagerToken, generateManagerToken } from '../lib/managerToken'
 import { generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
-import { getServiceConnection } from '../services/salesforce'
+import { getServiceConnection, fetchOpenOpportunities } from '../services/salesforce'
 import { sendDm } from '../slack/bot'
 import { config } from '../config'
 import { stageApiToLabel } from '../utils/stageMapping'
@@ -57,79 +57,68 @@ router.get('/me', async (req, res) => {
     const managerEmail = managerUser.slackEmail
     if (!managerEmail) return res.status(400).json({ error: 'Manager has no email on record' })
 
-    // Look up the manager's SFDC user ID
-    let directReports: { Id: string; Name: string; Email: string }[] = []
-    try {
-      const conn = await getServiceConnection()
-      const managerSoql = `SELECT Id FROM User WHERE Email = '${managerEmail}'`
-      const managerUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(managerSoql)}`
-      const managerResp = await axios.get<{ records: { Id: string }[] }>(
-        managerUrl,
-        { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
-      )
-      const managerId = managerResp.data.records[0]?.Id
-      if (managerId) {
-        const reportsSoql = `SELECT Id, Name, Email FROM User WHERE ManagerId = '${managerId}' AND IsActive = true`
-        const reportsUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(reportsSoql)}`
-        const reportsResp = await axios.get<{ records: { Id: string; Name: string; Email: string }[] }>(
-          reportsUrl,
-          { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
-        )
-        directReports = reportsResp.data.records
+    // Derive direct reports from open opportunity Owner.Manager relationship
+    // (uses cached SFDC opp data — same source RevBot alert job uses)
+    const opps = await fetchOpenOpportunities()
+    const repMap = new Map<string, { name: string; email: string }>()
+    for (const opp of opps) {
+      const mgr = opp.Owner?.Manager
+      if (!mgr?.Email) continue
+      if (mgr.Email.toLowerCase() !== managerEmail.toLowerCase()) continue
+      const ownerEmail = opp.Owner?.Email
+      const ownerName = opp.Owner?.Name
+      if (ownerEmail && !repMap.has(ownerEmail.toLowerCase())) {
+        repMap.set(ownerEmail.toLowerCase(), { name: ownerName ?? ownerEmail, email: ownerEmail })
       }
-    } catch (err) {
-      console.warn('[ManagerPortal] Could not fetch direct reports from SFDC:', err)
     }
+    const directReports = [...repMap.values()]
 
-    // Build rep summaries
+    // Build rep summaries — include all direct reports even if not in our DB yet
     const reps = []
-    // Collect all opp IDs across all reps to batch-fetch SFDC meta
     const allOppIds: string[] = []
-    const repNotifMap = new Map<string, { user: typeof managerUser; notifs: { id: string; opportunityId: string; opportunityName: string; alertType: string; alertDetails: unknown; status: string; sentAt: Date | null; snoozedUntil: Date | null }[] }>()
+    type RawNotif = { id: string; opportunityId: string; opportunityName: string; alertType: string; alertDetails: unknown; status: string; sentAt: Date | null; snoozedUntil: Date | null }
+    const repNotifMap = new Map<string, { repUser: typeof managerUser | null; sfdcName: string; notifs: RawNotif[] }>()
 
-    for (const sfdcRep of directReports) {
-      const repUser = await db.user.findFirst({ where: { slackEmail: sfdcRep.Email } })
-      if (!repUser) continue
+    for (const rep of directReports) {
+      const repUser = await db.user.findFirst({ where: { slackEmail: { equals: rep.email, mode: 'insensitive' } } })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const raw = await (db as any).notification.findMany({
-        where: { ownerId: repUser.id, status: { in: ['SENT', 'SNOOZED'] } },
-        orderBy: { sentAt: 'desc' },
-        select: { id: true, opportunityId: true, opportunityName: true, alertType: true, alertDetails: true, status: true, sentAt: true, snoozedUntil: true },
-      })
+      let notifs: RawNotif[] = []
+      if (repUser) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const raw = await (db as any).notification.findMany({
+          where: { ownerId: repUser.id, status: { in: ['SENT', 'SNOOZED'] } },
+          orderBy: { sentAt: 'desc' },
+          select: { id: true, opportunityId: true, opportunityName: true, alertType: true, alertDetails: true, status: true, sentAt: true, snoozedUntil: true },
+        }) as RawNotif[]
 
-      // Deduplicate: one per opportunityId+alertType, newest first
-      const seen = new Set<string>()
-      const deduped = (raw as { id: string; opportunityId: string; opportunityName: string; alertType: string; alertDetails: unknown; status: string; sentAt: Date | null; snoozedUntil: Date | null }[])
-        .filter((n) => {
+        // Deduplicate: one per opportunityId+alertType, newest first
+        const seen = new Set<string>()
+        notifs = raw.filter((n) => {
           const key = `${n.opportunityId}|${n.alertType}`
           if (seen.has(key)) return false
           seen.add(key)
           return true
         })
+        for (const n of notifs) allOppIds.push(n.opportunityId)
+      }
 
-      for (const n of deduped) allOppIds.push(n.opportunityId)
-      repNotifMap.set(sfdcRep.Email, { user: repUser, notifs: deduped })
+      repNotifMap.set(rep.email.toLowerCase(), { repUser, sfdcName: rep.name, notifs })
     }
 
-    // Batch fetch all opp meta
+    // Batch fetch live opp meta
     const oppMeta = await fetchOppMeta([...new Set(allOppIds)])
 
-    for (const sfdcRep of directReports) {
-      const entry = repNotifMap.get(sfdcRep.Email)
+    for (const rep of directReports) {
+      const entry = repNotifMap.get(rep.email.toLowerCase())
       if (!entry) continue
+      const { repUser, sfdcName, notifs } = entry
 
-      const { user: repUser, notifs: deduped } = entry
-
-      const notifications = deduped.map((n) => {
+      const notifications = notifs.map((n) => {
         const meta = oppMeta.get(n.opportunityId)
         const details = (n.alertDetails as Record<string, unknown>) ?? {}
         return {
           ...n,
-          alertDetails: {
-            ...details,
-            ...(meta ?? {}),
-          },
+          alertDetails: { ...details, ...(meta ?? {}) },
           sfdcUrl: `${SFDC_BASE}/lightning/r/Opportunity/${n.opportunityId}/view`,
           sentAt: n.sentAt?.toISOString() ?? null,
           snoozedUntil: n.snoozedUntil?.toISOString() ?? null,
@@ -138,13 +127,13 @@ router.get('/me', async (req, res) => {
 
       const openCount = notifications.filter((n) => n.status === 'SENT').length
       const snoozedCount = notifications.filter((n) => n.status === 'SNOOZED').length
-      const portalToken = generateRepToken(repUser.slackUserId)
-      const portalUrl = `${config.APP_URL}/my-flags?token=${portalToken}`
+      const portalToken = repUser?.slackUserId ? generateRepToken(repUser.slackUserId) : null
+      const portalUrl = portalToken ? `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${portalToken}` : null
 
       reps.push({
-        name: repUser.slackName ?? sfdcRep.Name ?? repUser.slackEmail ?? 'Rep',
-        email: repUser.slackEmail,
-        slackUserId: repUser.slackUserId,
+        name: repUser?.slackName ?? sfdcName ?? rep.email,
+        email: rep.email,
+        slackUserId: repUser?.slackUserId ?? null,
         portalUrl,
         openCount,
         snoozedCount,
@@ -219,7 +208,7 @@ router.post('/send-portal-link', async (req, res) => {
     if (!repUser) return res.status(404).json({ error: 'Rep not found' })
 
     const portalToken = generateRepToken(repSlackUserId)
-    const portalUrl = `${config.APP_URL}/my-flags?token=${portalToken}`
+    const portalUrl = `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${portalToken}`
 
     const blocks: KnownBlock[] = [
       {
