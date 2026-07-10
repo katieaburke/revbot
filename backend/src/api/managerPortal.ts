@@ -100,9 +100,9 @@ router.get('/me', async (req, res) => {
           select: { id: true, opportunityId: true, opportunityName: true, alertType: true, alertDetails: true, status: true, sentAt: true, snoozedUntil: true },
         }) as RawNotif[]
 
-        // Total unique opps ever notified (distinct opportunityId, all time)
+        // Unique opps with an open (non-resolved) flag
         const notifiedOpps = await db.notification.findMany({
-          where: { ownerId: repUser.id },
+          where: { ownerId: repUser.id, status: { in: ['SENT', 'SNOOZED'] } },
           select: { opportunityId: true },
           distinct: ['opportunityId'],
         })
