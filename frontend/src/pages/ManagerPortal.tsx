@@ -184,6 +184,7 @@ interface OppGroup {
   alertDetails: Record<string, unknown>
   totalFlagsForOpp: number
   flags: ManagerNotification[]
+  pendingFlags: PendingFlag[]
 }
 
 function FlagRow({
@@ -309,12 +310,32 @@ function OppCard({
         </p>
       )}
 
-      {/* One row per flag */}
-      <div className="space-y-1.5 mt-2 pt-2 border-t border-gray-100">
-        {group.flags.map((notif) => (
-          <FlagRow key={notif.id} notif={notif} repSlackUserId={repSlackUserId} token={token} />
-        ))}
-      </div>
+      {/* Active + snoozed flags */}
+      {group.flags.length > 0 && (
+        <div className="space-y-1.5 mt-2 pt-2 border-t border-gray-100">
+          {group.flags.map((notif) => (
+            <FlagRow key={notif.id} notif={notif} repSlackUserId={repSlackUserId} token={token} />
+          ))}
+        </div>
+      )}
+
+      {/* Pending (queued) flags for this same opp */}
+      {group.pendingFlags.length > 0 && (
+        <div className="space-y-1 mt-2 pt-2 border-t border-dashed border-blue-100">
+          <p className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider mb-1">Queued — not yet sent</p>
+          {group.pendingFlags.map((flag) => {
+            const meta = ALERT_META[flag.alertType] ?? { label: flag.alertType, color: 'bg-gray-100 text-gray-600' }
+            return (
+              <div key={flag.alertType} className="flex items-center gap-2">
+                <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold opacity-75', meta.color)}>
+                  {meta.label}
+                </span>
+                <span className="text-xs text-blue-400">queued</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -356,7 +377,9 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
   const hasExpandable = hasFlags || hasPending
 
   // Group notifications by opportunityId — one card per opp, all flags together
+  const SFDC_BASE = 'https://uberall.lightning.force.com'
   const oppGroupMap = new Map<string, OppGroup>()
+
   for (const notif of rep.notifications) {
     const existing = oppGroupMap.get(notif.opportunityId)
     if (existing) {
@@ -369,12 +392,34 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
         alertDetails: notif.alertDetails,
         totalFlagsForOpp: notif.totalFlagsForOpp,
         flags: [notif],
+        pendingFlags: [],
       })
     }
   }
-  // Active groups first (any flag is SENT), then all-snoozed
+
+  // Merge pending flags into existing opp groups, or create new opp-only groups
+  for (const flag of (rep.pending ?? [])) {
+    const existing = oppGroupMap.get(flag.opportunityId)
+    if (existing) {
+      existing.pendingFlags.push(flag)
+    } else {
+      const sfdcUrl = `${SFDC_BASE}/lightning/r/Opportunity/${flag.opportunityId}/view`
+      oppGroupMap.set(flag.opportunityId, {
+        opportunityId: flag.opportunityId,
+        opportunityName: flag.opportunityName,
+        sfdcUrl,
+        alertDetails: flag.details ?? {},
+        totalFlagsForOpp: 0,
+        flags: [],
+        pendingFlags: [flag],
+      })
+    }
+  }
+
+  // Active groups first (any flag is SENT), then all-snoozed, then pending-only
   const activeGroups = [...oppGroupMap.values()].filter((g) => g.flags.some((f) => f.status === 'SENT'))
-  const snoozedGroups = [...oppGroupMap.values()].filter((g) => g.flags.every((f) => f.status === 'SNOOZED'))
+  const snoozedGroups = [...oppGroupMap.values()].filter((g) => g.flags.length > 0 && g.flags.every((f) => f.status === 'SNOOZED'))
+  const pendingOnlyGroups = [...oppGroupMap.values()].filter((g) => g.flags.length === 0 && g.pendingFlags.length > 0)
 
   return (
     <div className={clsx('bg-white rounded-xl border', hasExpandable ? 'border-gray-200' : 'border-gray-100 opacity-60')}>
@@ -480,74 +525,12 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
             </>
           )}
 
-          {hasPending && (
+          {pendingOnlyGroups.length > 0 && (
             <>
-              <p className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider pt-2">
-                Queued — not yet sent
-              </p>
-              {rep.pending.map((flag) => {
-                const meta = ALERT_META[flag.alertType] ?? { label: flag.alertType, color: 'bg-gray-100 text-gray-600' }
-                const d = flag.details ?? {}
-                const amount = d.amount != null ? Number(d.amount) : null
-                const closeDate = typeof d.closeDate === 'string' ? d.closeDate : null
-                const stage = typeof d.stage === 'string' ? d.stage : null
-                const nextStep = typeof d.nextStep === 'string' && d.nextStep.trim() ? d.nextStep.trim() : null
-                const nextStepDate = typeof d.nextStepDate === 'string' ? d.nextStepDate : null
-                const sfdcUrl = `https://uberall.lightning.force.com/lightning/r/Opportunity/${flag.opportunityId}/view`
-                return (
-                  <div
-                    key={`${flag.opportunityId}|${flag.alertType}`}
-                    className="bg-blue-50/40 rounded-lg border border-blue-100 border-dashed px-4 py-3"
-                  >
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold', meta.color)}>
-                        {meta.label}
-                      </span>
-                      <a
-                        href={sfdcUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-medium text-gray-800 text-sm hover:text-blue-600 truncate flex items-center gap-1"
-                      >
-                        {flag.opportunityName}
-                        <ExternalLink size={10} className="flex-shrink-0 text-gray-300" />
-                      </a>
-                    </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 mb-1.5">
-                      {amount != null && (
-                        <span className="text-xs text-gray-500">
-                          <span className="font-medium text-gray-700">ACV</span>{' '}
-                          ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                        </span>
-                      )}
-                      {closeDate && (
-                        <span className="text-xs text-gray-500">
-                          <span className="font-medium text-gray-700">Close</span>{' '}
-                          {fmtDate(closeDate)}
-                        </span>
-                      )}
-                      {stage && (
-                        <span className="text-xs text-gray-500">
-                          <span className="font-medium text-gray-700">Stage</span>{' '}
-                          {stage}
-                        </span>
-                      )}
-                      {nextStepDate && (
-                        <span className="text-xs text-gray-500">
-                          <span className="font-medium text-gray-700">Next step date</span>{' '}
-                          {fmtDate(nextStepDate)}
-                        </span>
-                      )}
-                    </div>
-                    {nextStep && (
-                      <p className="text-xs text-gray-500">
-                        <span className="font-medium text-gray-700">Next step</span>{' '}
-                        {nextStep}
-                      </p>
-                    )}
-                  </div>
-                )
-              })}
+              <p className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider pt-1">Queued — not yet sent</p>
+              {pendingOnlyGroups.map((group) => (
+                <OppCard key={group.opportunityId} group={group} repSlackUserId={rep.slackUserId} token={token} />
+              ))}
             </>
           )}
         </div>
