@@ -175,9 +175,18 @@ function SnoozeDropdown({
   )
 }
 
-// ── Compact notification card (inside rep expand) ─────────────────────────────
+// ── Opp-level card — one per opportunity, all flags grouped together ──────────
 
-function ManagerNotifCard({
+interface OppGroup {
+  opportunityId: string
+  opportunityName: string
+  sfdcUrl: string
+  alertDetails: Record<string, unknown>
+  totalFlagsForOpp: number
+  flags: ManagerNotification[]
+}
+
+function FlagRow({
   notif,
   repSlackUserId,
   token,
@@ -188,48 +197,86 @@ function ManagerNotifCard({
 }) {
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const meta = ALERT_META[notif.alertType] ?? { label: notif.alertType, color: 'bg-gray-100 text-gray-600' }
-  const d = notif.alertDetails
+  const isSnoozed = notif.status === 'SNOOZED'
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold', meta.color)}>
+        {meta.label}
+      </span>
+      {isSnoozed && notif.snoozedUntil ? (
+        <span className="text-xs text-gray-400 flex items-center gap-1">
+          <Clock size={10} /> snoozed until {fmtDate(notif.snoozedUntil)}
+        </span>
+      ) : (
+        <div className="relative">
+          <button
+            onClick={() => setSnoozeOpen((v) => !v)}
+            className="flex items-center gap-1 px-2 py-0.5 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+          >
+            <BellOff size={10} />
+            Snooze
+            <ChevronDown size={10} className={clsx('transition-transform', snoozeOpen && 'rotate-180')} />
+          </button>
+          {snoozeOpen && (
+            <SnoozeDropdown
+              notificationId={notif.id}
+              repSlackUserId={repSlackUserId}
+              token={token}
+              onClose={() => setSnoozeOpen(false)}
+            />
+          )}
+        </div>
+      )}
+      {notif.sentAt && (
+        <span className="text-xs text-gray-300">· sent {fmtDate(notif.sentAt)}</span>
+      )}
+    </div>
+  )
+}
+
+function OppCard({
+  group,
+  repSlackUserId,
+  token,
+}: {
+  group: OppGroup
+  repSlackUserId: string
+  token: string
+}) {
+  const d = group.alertDetails
   const amount = d.amount != null ? Number(d.amount) : null
   const closeDate = typeof d.closeDate === 'string' ? d.closeDate : null
   const stage = typeof d.stage === 'string' ? d.stage : null
   const nextStep = typeof d.nextStep === 'string' && d.nextStep.trim() ? d.nextStep.trim() : null
   const nextStepDate = typeof d.nextStepDate === 'string' ? d.nextStepDate : null
-  const isSnoozed = notif.status === 'SNOOZED'
-  const flagCount = notif.totalFlagsForOpp ?? 1
+  const allSnoozed = group.flags.every((f) => f.status === 'SNOOZED')
 
   return (
-    <div className={clsx('bg-gray-50 rounded-lg border px-4 py-3', isSnoozed ? 'border-gray-100 opacity-70' : 'border-gray-200')}>
-      <div className="flex items-start justify-between gap-2 mb-1.5">
-        <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold', meta.color)}>
-            {meta.label}
-          </span>
-          <a
-            href={notif.sfdcUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-medium text-gray-800 text-sm hover:text-blue-600 truncate flex items-center gap-1"
+    <div className={clsx('bg-gray-50 rounded-lg border px-4 py-3', allSnoozed ? 'border-gray-100 opacity-70' : 'border-gray-200')}>
+      {/* Opp header */}
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <a
+          href={group.sfdcUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-semibold text-gray-800 text-sm hover:text-blue-600 flex items-center gap-1"
+        >
+          {group.opportunityName}
+          <ExternalLink size={10} className="flex-shrink-0 text-gray-400" />
+        </a>
+        {group.totalFlagsForOpp > 1 && (
+          <span
+            className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-500"
+            title={`This opportunity has been flagged ${group.totalFlagsForOpp} times total`}
           >
-            {notif.opportunityName}
-            <ExternalLink size={10} className="flex-shrink-0 text-gray-300" />
-          </a>
-          {flagCount > 1 && (
-            <span
-              className="flex-shrink-0 inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-500"
-              title={`This opportunity has been flagged ${flagCount} times total`}
-            >
-              flagged {flagCount}×
-            </span>
-          )}
-        </div>
-        {isSnoozed && notif.snoozedUntil && (
-          <span className="flex-shrink-0 text-xs text-gray-400 flex items-center gap-1">
-            <Clock size={10} /> until {fmtDate(notif.snoozedUntil)}
+            flagged {group.totalFlagsForOpp}×
           </span>
         )}
       </div>
 
-      <div className="flex flex-wrap gap-x-4 gap-y-0.5 mb-2">
+      {/* Deal metadata */}
+      <div className="flex flex-wrap gap-x-4 gap-y-0.5 mb-1.5">
         {amount != null && (
           <span className="text-xs text-gray-500">
             <span className="font-medium text-gray-700">ACV</span>{' '}
@@ -255,7 +302,6 @@ function ManagerNotifCard({
           </span>
         )}
       </div>
-
       {nextStep && (
         <p className="text-xs text-gray-500 mb-2">
           <span className="font-medium text-gray-700">Next step</span>{' '}
@@ -263,40 +309,11 @@ function ManagerNotifCard({
         </p>
       )}
 
-      <div className="flex items-center gap-2">
-        <a
-          href={notif.sfdcUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-white"
-        >
-          Open in Salesforce <ExternalLink size={10} />
-        </a>
-
-        {!isSnoozed && (
-          <div className="relative">
-            <button
-              onClick={() => setSnoozeOpen((v) => !v)}
-              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-white"
-            >
-              <BellOff size={10} />
-              Snooze
-              <ChevronDown size={10} className={clsx('transition-transform', snoozeOpen && 'rotate-180')} />
-            </button>
-            {snoozeOpen && (
-              <SnoozeDropdown
-                notificationId={notif.id}
-                repSlackUserId={repSlackUserId}
-                token={token}
-                onClose={() => setSnoozeOpen(false)}
-              />
-            )}
-          </div>
-        )}
-
-        {notif.sentAt && (
-          <span className="text-xs text-gray-300 ml-auto">Sent {fmtDate(notif.sentAt)}</span>
-        )}
+      {/* One row per flag */}
+      <div className="space-y-1.5 mt-2 pt-2 border-t border-gray-100">
+        {group.flags.map((notif) => (
+          <FlagRow key={notif.id} notif={notif} repSlackUserId={repSlackUserId} token={token} />
+        ))}
       </div>
     </div>
   )
@@ -337,8 +354,27 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
   const hasPending = rep.pending?.length > 0
   const hasFlags = rep.openCount > 0 || rep.snoozedCount > 0
   const hasExpandable = hasFlags || hasPending
-  const openNotifs = rep.notifications.filter((n) => n.status === 'SENT')
-  const snoozedNotifs = rep.notifications.filter((n) => n.status === 'SNOOZED')
+
+  // Group notifications by opportunityId — one card per opp, all flags together
+  const oppGroupMap = new Map<string, OppGroup>()
+  for (const notif of rep.notifications) {
+    const existing = oppGroupMap.get(notif.opportunityId)
+    if (existing) {
+      existing.flags.push(notif)
+    } else {
+      oppGroupMap.set(notif.opportunityId, {
+        opportunityId: notif.opportunityId,
+        opportunityName: notif.opportunityName,
+        sfdcUrl: notif.sfdcUrl,
+        alertDetails: notif.alertDetails,
+        totalFlagsForOpp: notif.totalFlagsForOpp,
+        flags: [notif],
+      })
+    }
+  }
+  // Active groups first (any flag is SENT), then all-snoozed
+  const activeGroups = [...oppGroupMap.values()].filter((g) => g.flags.some((f) => f.status === 'SENT'))
+  const snoozedGroups = [...oppGroupMap.values()].filter((g) => g.flags.every((f) => f.status === 'SNOOZED'))
 
   return (
     <div className={clsx('bg-white rounded-xl border', hasExpandable ? 'border-gray-200' : 'border-gray-100 opacity-60')}>
@@ -431,15 +467,15 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
       {/* Expanded notifications */}
       {expanded && hasExpandable && (
         <div className="border-t border-gray-100 px-5 py-4 space-y-2">
-          {openNotifs.map((notif) => (
-            <ManagerNotifCard key={notif.id} notif={notif} repSlackUserId={rep.slackUserId} token={token} />
+          {activeGroups.map((group) => (
+            <OppCard key={group.opportunityId} group={group} repSlackUserId={rep.slackUserId} token={token} />
           ))}
 
-          {snoozedNotifs.length > 0 && (
+          {snoozedGroups.length > 0 && (
             <>
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider pt-1">Snoozed</p>
-              {snoozedNotifs.map((notif) => (
-                <ManagerNotifCard key={notif.id} notif={notif} repSlackUserId={rep.slackUserId} token={token} />
+              {snoozedGroups.map((group) => (
+                <OppCard key={group.opportunityId} group={group} repSlackUserId={rep.slackUserId} token={token} />
               ))}
             </>
           )}
