@@ -351,9 +351,9 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
               {rep.totalNotified > 0 && (
                 <span
                   className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-50 text-orange-600"
-                  title="Total RevBot notifications sent to this rep (all time)"
+                  title="Unique opportunities RevBot has flagged for this rep (all time)"
                 >
-                  notified {rep.totalNotified}×
+                  {rep.totalNotified} opp{rep.totalNotified !== 1 ? 's' : ''} flagged
                 </span>
               )}
             </div>

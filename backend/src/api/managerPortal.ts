@@ -99,8 +99,13 @@ router.get('/me', async (req, res) => {
           select: { id: true, opportunityId: true, opportunityName: true, alertType: true, alertDetails: true, status: true, sentAt: true, snoozedUntil: true },
         }) as RawNotif[]
 
-        // Total times notified = all notifications ever sent (including resolved)
-        totalNotified = await db.notification.count({ where: { ownerId: repUser.id } })
+        // Total unique opps ever notified (distinct opportunityId, all time)
+        const notifiedOpps = await db.notification.findMany({
+          where: { ownerId: repUser.id },
+          select: { opportunityId: true },
+          distinct: ['opportunityId'],
+        })
+        totalNotified = notifiedOpps.length
 
         // Deduplicate active ones: one per opportunityId+alertType, newest first
         const seen = new Set<string>()
