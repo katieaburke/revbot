@@ -436,7 +436,17 @@ export function ManagerPortal() {
   }
 
   if (error) {
-    return <ErrorScreen message="This link has expired or is invalid. Contact your RevOps admin for a fresh link." />
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const status = (error as any)?.response?.status
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const msg = (error as any)?.response?.data?.error
+    if (status === 401) {
+      return <ErrorScreen message="This link has expired or is invalid. Ask your RevOps admin to generate a fresh manager link from the Team tab." />
+    }
+    if (status === 404) {
+      return <ErrorScreen message={msg ?? "Manager not found — make sure your RevOps team has you in the system."} />
+    }
+    return <ErrorScreen message={msg ?? "Something went wrong loading your team data. Please try again or contact RevOps."} />
   }
 
   const firstName = data!.manager.name.split(' ')[0]

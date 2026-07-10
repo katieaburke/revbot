@@ -49,10 +49,17 @@ router.get('/me', async (req, res) => {
   const { token } = req.query as { token?: string }
   if (!token) return res.status(400).json({ error: 'Missing token' })
 
+  // Verify token first — this is the only step that should return 401
+  let slackUserId: string
   try {
-    const { slackUserId } = verifyManagerToken(token)
+    ;({ slackUserId } = verifyManagerToken(token))
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired link — ask RevOps for a fresh one' })
+  }
+
+  try {
     const managerUser = await db.user.findUnique({ where: { slackUserId } })
-    if (!managerUser) return res.status(404).json({ error: 'Manager not found' })
+    if (!managerUser) return res.status(404).json({ error: 'Manager not found — make sure you have received a RevBot message' })
 
     const managerEmail = managerUser.slackEmail
     if (!managerEmail) return res.status(400).json({ error: 'Manager has no email on record' })
@@ -152,7 +159,8 @@ router.get('/me', async (req, res) => {
       reps,
     })
   } catch (err) {
-    res.status(401).json({ error: 'Invalid or expired link — ask RevBot for a fresh one' })
+    console.error('[ManagerPortal] /me error:', err)
+    res.status(500).json({ error: 'Something went wrong loading your team data. Please try again.' })
   }
 })
 
