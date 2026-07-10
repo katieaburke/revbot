@@ -116,6 +116,17 @@ router.get('/me', async (req, res) => {
       repNotifMap.set(rep.email.toLowerCase(), { repUser, sfdcName: rep.name, notifs, totalNotified })
     }
 
+    // Load dry run pending flags once, then slice per rep
+    type DryRunEntry = { opportunityId: string; opportunityName: string; alertType: string; ownerEmail: string; details: Record<string, unknown> }
+    let dryRunWouldSend: DryRunEntry[] = []
+    try {
+      const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+      if (setting?.value) {
+        const parsed = JSON.parse(setting.value) as { wouldSend: DryRunEntry[] }
+        dryRunWouldSend = parsed.wouldSend ?? []
+      }
+    } catch { /* non-fatal */ }
+
     // Batch fetch live opp meta
     const oppMeta = await fetchOppMeta([...new Set(allOppIds)])
 
@@ -141,6 +152,12 @@ router.get('/me', async (req, res) => {
       const portalToken = repUser?.slackUserId ? generateRepToken(repUser.slackUserId) : null
       const portalUrl = portalToken ? `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${portalToken}` : null
 
+      // Pending: dry-run flags queued for this rep that aren't already active
+      const activeKeys = new Set(notifications.filter((n) => n.status === 'SENT').map((n) => `${n.opportunityId}|${n.alertType}`))
+      const pending = dryRunWouldSend
+        .filter((f) => f.ownerEmail?.toLowerCase() === rep.email.toLowerCase() && !activeKeys.has(`${f.opportunityId}|${f.alertType}`))
+        .slice(0, 10)
+
       reps.push({
         name: repUser?.slackName ?? sfdcName ?? rep.email,
         email: rep.email,
@@ -149,6 +166,7 @@ router.get('/me', async (req, res) => {
         openCount,
         snoozedCount,
         totalNotified,
+        pending,
         notifications,
       })
     }

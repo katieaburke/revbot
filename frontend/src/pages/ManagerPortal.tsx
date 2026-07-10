@@ -33,6 +33,14 @@ interface ManagerNotification {
   sfdcUrl: string
 }
 
+interface PendingFlag {
+  opportunityId: string
+  opportunityName: string
+  alertType: string
+  ownerEmail: string
+  details: Record<string, unknown>
+}
+
 interface RepSummary {
   name: string
   email: string
@@ -41,6 +49,7 @@ interface RepSummary {
   openCount: number
   snoozedCount: number
   totalNotified: number
+  pending: PendingFlag[]
   notifications: ManagerNotification[]
 }
 
@@ -315,12 +324,14 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
       return acc
     }, {})
 
+  const hasPending = rep.pending?.length > 0
   const hasFlags = rep.openCount > 0 || rep.snoozedCount > 0
+  const hasExpandable = hasFlags || hasPending
   const openNotifs = rep.notifications.filter((n) => n.status === 'SENT')
   const snoozedNotifs = rep.notifications.filter((n) => n.status === 'SNOOZED')
 
   return (
-    <div className={clsx('bg-white rounded-xl border', hasFlags ? 'border-gray-200' : 'border-gray-100 opacity-60')}>
+    <div className={clsx('bg-white rounded-xl border', hasExpandable ? 'border-gray-200' : 'border-gray-100 opacity-60')}>
       <div className="px-5 py-4">
         <div className="flex items-start justify-between gap-3">
           {/* Rep info */}
@@ -357,6 +368,17 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
                     </span>
                   )
                 })}
+                {hasPending && (
+                  <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">
+                    {rep.pending.length} queued
+                  </span>
+                )}
+              </div>
+            ) : hasPending ? (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">
+                  {rep.pending.length} queued (not yet sent)
+                </span>
               </div>
             ) : (
               <p className="text-xs text-gray-400 mt-1">No active flags 🎉</p>
@@ -384,7 +406,7 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
               {copyDone ? 'Copied!' : 'Copy link'}
             </button>
 
-            {hasFlags && (
+            {hasExpandable && (
               <button
                 onClick={() => setExpanded((v) => !v)}
                 className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
@@ -397,7 +419,7 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
       </div>
 
       {/* Expanded notifications */}
-      {expanded && hasFlags && (
+      {expanded && hasExpandable && (
         <div className="border-t border-gray-100 px-5 py-4 space-y-2">
           {openNotifs.map((notif) => (
             <ManagerNotifCard key={notif.id} notif={notif} repSlackUserId={rep.slackUserId} token={token} />
@@ -409,6 +431,63 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
               {snoozedNotifs.map((notif) => (
                 <ManagerNotifCard key={notif.id} notif={notif} repSlackUserId={rep.slackUserId} token={token} />
               ))}
+            </>
+          )}
+
+          {hasPending && (
+            <>
+              <p className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider pt-2">
+                Queued — not yet sent
+              </p>
+              {rep.pending.map((flag) => {
+                const meta = ALERT_META[flag.alertType] ?? { label: flag.alertType, color: 'bg-gray-100 text-gray-600' }
+                const d = flag.details ?? {}
+                const amount = d.amount != null ? Number(d.amount) : null
+                const closeDate = typeof d.closeDate === 'string' ? d.closeDate : null
+                const stage = typeof d.stage === 'string' ? d.stage : null
+                const sfdcUrl = `https://uberall.lightning.force.com/lightning/r/Opportunity/${flag.opportunityId}/view`
+                return (
+                  <div
+                    key={`${flag.opportunityId}|${flag.alertType}`}
+                    className="bg-blue-50/40 rounded-lg border border-blue-100 border-dashed px-4 py-3"
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold', meta.color)}>
+                        {meta.label}
+                      </span>
+                      <a
+                        href={sfdcUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-gray-800 text-sm hover:text-blue-600 truncate flex items-center gap-1"
+                      >
+                        {flag.opportunityName}
+                        <ExternalLink size={10} className="flex-shrink-0 text-gray-300" />
+                      </a>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                      {amount != null && (
+                        <span className="text-xs text-gray-500">
+                          <span className="font-medium text-gray-700">ACV</span>{' '}
+                          ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                        </span>
+                      )}
+                      {closeDate && (
+                        <span className="text-xs text-gray-500">
+                          <span className="font-medium text-gray-700">Close</span>{' '}
+                          {fmtDate(closeDate)}
+                        </span>
+                      )}
+                      {stage && (
+                        <span className="text-xs text-gray-500">
+                          <span className="font-medium text-gray-700">Stage</span>{' '}
+                          {stage}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </>
           )}
         </div>
