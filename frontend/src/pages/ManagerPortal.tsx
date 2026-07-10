@@ -455,6 +455,8 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
                 const amount = d.amount != null ? Number(d.amount) : null
                 const closeDate = typeof d.closeDate === 'string' ? d.closeDate : null
                 const stage = typeof d.stage === 'string' ? d.stage : null
+                const nextStep = typeof d.nextStep === 'string' && d.nextStep.trim() ? d.nextStep.trim() : null
+                const nextStepDate = typeof d.nextStepDate === 'string' ? d.nextStepDate : null
                 const sfdcUrl = `https://uberall.lightning.force.com/lightning/r/Opportunity/${flag.opportunityId}/view`
                 return (
                   <div
@@ -475,7 +477,7 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
                         <ExternalLink size={10} className="flex-shrink-0 text-gray-300" />
                       </a>
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 mb-1.5">
                       {amount != null && (
                         <span className="text-xs text-gray-500">
                           <span className="font-medium text-gray-700">ACV</span>{' '}
@@ -494,7 +496,19 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
                           {stage}
                         </span>
                       )}
+                      {nextStepDate && (
+                        <span className="text-xs text-gray-500">
+                          <span className="font-medium text-gray-700">Next step date</span>{' '}
+                          {fmtDate(nextStepDate)}
+                        </span>
+                      )}
                     </div>
+                    {nextStep && (
+                      <p className="text-xs text-gray-500">
+                        <span className="font-medium text-gray-700">Next step</span>{' '}
+                        {nextStep}
+                      </p>
+                    )}
                   </div>
                 )
               })}
