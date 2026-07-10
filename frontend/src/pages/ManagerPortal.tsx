@@ -31,6 +31,7 @@ interface ManagerNotification {
   sentAt: string | null
   snoozedUntil: string | null
   sfdcUrl: string
+  totalFlagsForOpp: number
 }
 
 interface PendingFlag {
@@ -194,11 +195,12 @@ function ManagerNotifCard({
   const nextStep = typeof d.nextStep === 'string' && d.nextStep.trim() ? d.nextStep.trim() : null
   const nextStepDate = typeof d.nextStepDate === 'string' ? d.nextStepDate : null
   const isSnoozed = notif.status === 'SNOOZED'
+  const flagCount = notif.totalFlagsForOpp ?? 1
 
   return (
     <div className={clsx('bg-gray-50 rounded-lg border px-4 py-3', isSnoozed ? 'border-gray-100 opacity-70' : 'border-gray-200')}>
       <div className="flex items-start justify-between gap-2 mb-1.5">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold', meta.color)}>
             {meta.label}
           </span>
@@ -211,6 +213,14 @@ function ManagerNotifCard({
             {notif.opportunityName}
             <ExternalLink size={10} className="flex-shrink-0 text-gray-300" />
           </a>
+          {flagCount > 1 && (
+            <span
+              className="flex-shrink-0 inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-500"
+              title={`This opportunity has been flagged ${flagCount} times total`}
+            >
+              flagged {flagCount}×
+            </span>
+          )}
         </div>
         {isSnoozed && notif.snoozedUntil && (
           <span className="flex-shrink-0 text-xs text-gray-400 flex items-center gap-1">

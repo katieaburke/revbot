@@ -84,13 +84,14 @@ router.get('/me', async (req, res) => {
     const reps = []
     const allOppIds: string[] = []
     type RawNotif = { id: string; opportunityId: string; opportunityName: string; alertType: string; alertDetails: unknown; status: string; sentAt: Date | null; snoozedUntil: Date | null }
-    const repNotifMap = new Map<string, { repUser: typeof managerUser | null; sfdcName: string; notifs: RawNotif[]; totalNotified: number }>()
+    const repNotifMap = new Map<string, { repUser: typeof managerUser | null; sfdcName: string; notifs: RawNotif[]; totalNotified: number; oppNotifCounts: Map<string, number> }>()
 
     for (const rep of directReports) {
       const repUser = await db.user.findFirst({ where: { slackEmail: { equals: rep.email, mode: 'insensitive' } } })
 
       let notifs: RawNotif[] = []
       let totalNotified = 0
+      let oppNotifCounts = new Map<string, number>()
       if (repUser) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const raw = await (db as any).notification.findMany({
@@ -107,6 +108,14 @@ router.get('/me', async (req, res) => {
         })
         totalNotified = notifiedOpps.length
 
+        // All-time notification count per opp (for "flagged N times" display)
+        const oppCounts = await db.notification.groupBy({
+          by: ['opportunityId'],
+          where: { ownerId: repUser.id },
+          _count: { id: true },
+        })
+        oppNotifCounts = new Map(oppCounts.map((r) => [r.opportunityId, r._count.id]))
+
         // Deduplicate active ones: one per opportunityId+alertType, newest first
         const seen = new Set<string>()
         notifs = raw.filter((n) => {
@@ -118,7 +127,7 @@ router.get('/me', async (req, res) => {
         for (const n of notifs) allOppIds.push(n.opportunityId)
       }
 
-      repNotifMap.set(rep.email.toLowerCase(), { repUser, sfdcName: rep.name, notifs, totalNotified })
+      repNotifMap.set(rep.email.toLowerCase(), { repUser, sfdcName: rep.name, notifs, totalNotified, oppNotifCounts })
     }
 
     // Load dry run pending flags once, then slice per rep
@@ -138,7 +147,7 @@ router.get('/me', async (req, res) => {
     for (const rep of directReports) {
       const entry = repNotifMap.get(rep.email.toLowerCase())
       if (!entry) continue
-      const { repUser, sfdcName, notifs, totalNotified } = entry
+      const { repUser, sfdcName, notifs, totalNotified, oppNotifCounts } = entry
 
       const notifications = notifs.map((n) => {
         const meta = oppMeta.get(n.opportunityId)
@@ -146,6 +155,7 @@ router.get('/me', async (req, res) => {
         return {
           ...n,
           alertDetails: { ...details, ...(meta ?? {}) },
+          totalFlagsForOpp: oppNotifCounts.get(n.opportunityId) ?? 1,
           sfdcUrl: `${SFDC_BASE}/lightning/r/Opportunity/${n.opportunityId}/view`,
           sentAt: n.sentAt?.toISOString() ?? null,
           snoozedUntil: n.snoozedUntil?.toISOString() ?? null,
