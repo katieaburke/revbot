@@ -244,7 +244,7 @@ export function RepPortal() {
                     </div>
                     <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3">
                       {amount != null && (
-                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">ACV</span> ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">ACV</span> {amount.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}</span>
                       )}
                       {closeDate && (
                         <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">Close</span> {fmtDate(closeDate)}</span>
@@ -417,7 +417,7 @@ function NotifCard({
                 {amount != null && (
                   <span className="text-xs text-gray-500">
                     <span className="font-medium text-gray-700">ACV</span>{' '}
-                    ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                    {amount.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}
                   </span>
                 )}
                 {closeDate && (

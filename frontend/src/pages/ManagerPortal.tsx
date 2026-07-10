@@ -281,7 +281,7 @@ function OppCard({
         {amount != null && (
           <span className="text-xs text-gray-500">
             <span className="font-medium text-gray-700">ACV</span>{' '}
-            ${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+            {amount.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}
           </span>
         )}
         {closeDate && (
