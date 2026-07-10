@@ -84,12 +84,13 @@ router.get('/me', async (req, res) => {
     const reps = []
     const allOppIds: string[] = []
     type RawNotif = { id: string; opportunityId: string; opportunityName: string; alertType: string; alertDetails: unknown; status: string; sentAt: Date | null; snoozedUntil: Date | null }
-    const repNotifMap = new Map<string, { repUser: typeof managerUser | null; sfdcName: string; notifs: RawNotif[] }>()
+    const repNotifMap = new Map<string, { repUser: typeof managerUser | null; sfdcName: string; notifs: RawNotif[]; totalNotified: number }>()
 
     for (const rep of directReports) {
       const repUser = await db.user.findFirst({ where: { slackEmail: { equals: rep.email, mode: 'insensitive' } } })
 
       let notifs: RawNotif[] = []
+      let totalNotified = 0
       if (repUser) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const raw = await (db as any).notification.findMany({
@@ -98,7 +99,10 @@ router.get('/me', async (req, res) => {
           select: { id: true, opportunityId: true, opportunityName: true, alertType: true, alertDetails: true, status: true, sentAt: true, snoozedUntil: true },
         }) as RawNotif[]
 
-        // Deduplicate: one per opportunityId+alertType, newest first
+        // Total times notified = all notifications ever sent (including resolved)
+        totalNotified = await db.notification.count({ where: { ownerId: repUser.id } })
+
+        // Deduplicate active ones: one per opportunityId+alertType, newest first
         const seen = new Set<string>()
         notifs = raw.filter((n) => {
           const key = `${n.opportunityId}|${n.alertType}`
@@ -109,7 +113,7 @@ router.get('/me', async (req, res) => {
         for (const n of notifs) allOppIds.push(n.opportunityId)
       }
 
-      repNotifMap.set(rep.email.toLowerCase(), { repUser, sfdcName: rep.name, notifs })
+      repNotifMap.set(rep.email.toLowerCase(), { repUser, sfdcName: rep.name, notifs, totalNotified })
     }
 
     // Batch fetch live opp meta
@@ -118,7 +122,7 @@ router.get('/me', async (req, res) => {
     for (const rep of directReports) {
       const entry = repNotifMap.get(rep.email.toLowerCase())
       if (!entry) continue
-      const { repUser, sfdcName, notifs } = entry
+      const { repUser, sfdcName, notifs, totalNotified } = entry
 
       const notifications = notifs.map((n) => {
         const meta = oppMeta.get(n.opportunityId)
@@ -144,6 +148,7 @@ router.get('/me', async (req, res) => {
         portalUrl,
         openCount,
         snoozedCount,
+        totalNotified,
         notifications,
       })
     }

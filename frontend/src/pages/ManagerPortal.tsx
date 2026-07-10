@@ -37,9 +37,10 @@ interface RepSummary {
   name: string
   email: string
   slackUserId: string
-  portalUrl: string
+  portalUrl: string | null
   openCount: number
   snoozedCount: number
+  totalNotified: number
   notifications: ManagerNotification[]
 }
 
@@ -299,6 +300,7 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
   })
 
   function handleCopy() {
+    if (!rep.portalUrl) return
     navigator.clipboard.writeText(rep.portalUrl).then(() => {
       setCopyDone(true)
       setTimeout(() => setCopyDone(false), 3000)
@@ -333,6 +335,14 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
               {rep.snoozedCount > 0 && (
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-500">
                   {rep.snoozedCount} snoozed
+                </span>
+              )}
+              {rep.totalNotified > 0 && (
+                <span
+                  className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-50 text-orange-600"
+                  title="Total RevBot notifications sent to this rep (all time)"
+                >
+                  notified {rep.totalNotified}×
                 </span>
               )}
             </div>
