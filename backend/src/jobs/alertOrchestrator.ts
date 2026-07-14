@@ -242,9 +242,14 @@ async function autoResolveStale(
         const slackId = await resolveSlackUserId(r.ownerEmail)
         if (!slackId) continue
         const label = FLAG_CLEARED_LABELS[r.alertType] ?? r.alertType.toLowerCase().replace(/_/g, ' ')
+        const portalToken = generateRepToken(slackId)
+        const portalUrl = `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${portalToken}`
         await sendDm(
           slackId,
-          [{ type: 'section', text: { type: 'mrkdwn', text: `✅ Nice work — your *${label}* flag on *${r.opportunityName}* has been cleared. RevBot picked up your update in Salesforce!` } }],
+          [
+            { type: 'section', text: { type: 'mrkdwn', text: `✅ Nice work — your *${label}* flag on *${r.opportunityName}* has been cleared. RevBot picked up your update in Salesforce!` } },
+            { type: 'context', elements: [{ type: 'mrkdwn', text: `📋 <${portalUrl}|See all your open flags →>` }] },
+          ],
           `✅ Flag cleared: ${r.opportunityName}`,
         )
       } catch (err) {
