@@ -250,7 +250,7 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `Hey ${firstName}! You have *${count} ${contactWord}* who raised their hand in the last 30 days with no sales follow-up recorded yet. Can you reach out and log your outreach in Salesforce?`,
+          text: `Hey ${firstName}! You have *${count} ${contactWord}* who raised their hand in the last 30 days with no sales follow-up recorded yet. Inbounds are automatically enrolled in a Gong flow — please ensure each contact is in their flow and actively execute on it.`,
         },
       },
       {
@@ -263,7 +263,7 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
       {
         type: 'context',
         elements: [
-          { type: 'mrkdwn', text: `_Sent by RevBot · Log your outreach on each contact in Salesforce so this clears automatically._` },
+          { type: 'mrkdwn', text: `_Sent by RevBot · Ensure each contact is enrolled in their Gong flow and actively follow up._` },
         ],
       },
     ]

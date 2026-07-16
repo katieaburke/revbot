@@ -100,7 +100,7 @@ function SlackPreview({ group }: { group: OwnerGroup }) {
       {/* Intro */}
       <div className="text-[#d1d2d3] text-xs leading-relaxed px-1">
         Hey <span className="font-semibold text-white">{firstName}</span>! You have{' '}
-        <span className="font-semibold text-white">{count} {contactWord}</span> who raised their hand in the last 30 days with no sales follow-up recorded yet. Can you reach out and log your outreach in Salesforce?
+        <span className="font-semibold text-white">{count} {contactWord}</span> who raised their hand in the last 30 days with no sales follow-up recorded yet. Inbounds are automatically enrolled in a Gong flow — please ensure each contact is in their flow and actively execute on it.
       </div>
 
       {/* Contact list */}
@@ -126,7 +126,7 @@ function SlackPreview({ group }: { group: OwnerGroup }) {
 
       {/* Footer */}
       <div className="text-[#7a7a7a] text-[10px] px-1 border-t border-[#2c2d30] pt-2">
-        Sent by RevBot · Log your outreach on each contact in Salesforce so this clears automatically.
+        Sent by RevBot · Ensure each contact is enrolled in their Gong flow and actively follow up.
       </div>
     </div>
   )
