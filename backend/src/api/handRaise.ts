@@ -115,10 +115,15 @@ router.get('/leads', requireAdmin, async (_req, res) => {
     const VALID_RECORD_TYPES = new Set(['Partner Account Record', 'Enterprise Account Record'])
 
     const filtered = resp.data.records.filter((r) => {
-      // Must not be followed up: last rep comm date is null, or it's before the hand raise date
+      // Must not be followed up.
+      // Last_Rep_Communication_Date__c is a bare date (midnight UTC), Hand_Raise_Date_Time__c is a
+      // datetime — comparing them directly causes timezone false-positives. We use a 1-day buffer:
+      // only exclude a record as "followed up" if the last rep comm is >= (hand raise date − 1 day).
+      // i.e. if last comm is more than 1 day before the hand raise, it doesn't count as follow-up.
       const handRaiseDate = r.Hand_Raise_Date_Time__c ? new Date(r.Hand_Raise_Date_Time__c) : null
       const lastRepComm = r.Last_Rep_Communication_Date__c ? new Date(r.Last_Rep_Communication_Date__c) : null
-      const followedUp = handRaiseDate && lastRepComm && lastRepComm >= handRaiseDate
+      const threshold = handRaiseDate ? new Date(handRaiseDate.getTime() - 86_400_000) : null
+      const followedUp = threshold && lastRepComm && lastRepComm >= threshold
       if (followedUp) return false
 
       // Contact stage must not be Disqualified or Closed
