@@ -342,7 +342,7 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Can you take 5 mins to fill these in?* It helps us calculate expansion potential and ARR opportunity across your accounts.`,
+          text: `*Can you take 10–15 mins to fill these in?* It helps us calculate expansion potential and ARR opportunity across your accounts.`,
         },
       },
       {

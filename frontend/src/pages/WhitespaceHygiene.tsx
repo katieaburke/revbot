@@ -436,7 +436,7 @@ function SlackMessagePreview({ am, filters }: { am: AmGroup; filters: ActiveFilt
           </div>
         )}
         <p className="text-[#b0b3b8]">
-          <span className="font-semibold text-white">Can you take 5 mins to fill these in?</span> It helps us calculate expansion potential and ARR opportunity across your accounts.
+          <span className="font-semibold text-white">Can you take 10–15 mins to fill these in?</span> It helps us calculate expansion potential and ARR opportunity across your accounts.
         </p>
       </div>
 
