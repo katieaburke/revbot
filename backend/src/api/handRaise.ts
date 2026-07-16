@@ -7,17 +7,24 @@ const router = Router()
 
 const SFDC_BASE = 'https://uberall.lightning.force.com'
 
-interface SfdcLeadRecord {
+interface SfdcContactRecord {
   Id: string
   Name: string
-  Company: string | null
   Email: string | null
-  Status: string | null
-  LeadSource: string | null
+  AccountId: string | null
+  Account: {
+    Name: string | null
+    RecordType: { Name: string | null } | null
+  } | null
+  Contact_Stage__c: string | null
+  Account_Stage__c: string | null
+  Hand_Raise__c: boolean
   Hand_Raise_Date_Time__c: string | null
-  Type_of_Hand_Raise__c: string | null
   Hand_Raise_Comment__c: string | null
-  LastActivityDate: string | null
+  Is_Marketing_Qualified__c: boolean
+  Last_Rep_Communication_Date__c: string | null
+  Type_of_Hand_Raise__c: string | null
+  LeadSource: string | null
   CreatedDate: string
   Owner: {
     Name: string
@@ -26,16 +33,19 @@ interface SfdcLeadRecord {
   }
 }
 
-interface LeadEntry {
+interface ContactEntry {
   id: string
   name: string
-  company: string | null
   email: string | null
-  status: string | null
-  leadSource: string | null
+  accountId: string | null
+  accountName: string | null
+  accountRecordType: string | null
+  contactStage: string | null
+  accountStage: string | null
   handRaiseDate: string | null
   typeOfHandRaise: string | null
   comment: string | null
+  lastRepCommDate: string | null
   createdDate: string
   sfdcUrl: string
 }
@@ -44,7 +54,7 @@ interface OwnerGroup {
   ownerName: string
   ownerEmail: string | null
   ownerRole: string | null
-  leads: LeadEntry[]
+  contacts: ContactEntry[]
 }
 
 // GET /api/hand-raise/leads
@@ -52,54 +62,87 @@ router.get('/leads', requireAdmin, async (_req, res) => {
   try {
     const conn = await getServiceConnection()
 
+    // Replicate the Salesforce report filters:
+    // - Hand Raise = true
+    // - Marketing Qualified = true
+    // - Hand Raise Date/Time in last 30 days
+    // - Account Name does not contain 'test' or 'uberall'
+    // - Email does not contain 'uberall'
+    // - Owner Name does not contain 'Zamin'
+    // NOTE: "Followed Up?" = No is a row-level formula (Last_Rep_Communication_Date__c > Hand_Raise_Date_Time__c)
+    //       SOQL can't compare two fields, so we filter that in JS post-query.
+    // NOTE: Contact Stage != Disqualified, Account Stage != Customer, Account RecordType filtering
+    //       also applied in JS since formula/cross-object fields can be unreliable in WHERE.
     const soql = `
-      SELECT Id, Name, Company, Email, Status, LeadSource,
-             Hand_Raise_Date_Time__c, Type_of_Hand_Raise__c, Hand_Raise_Comment__c,
-             LastActivityDate, CreatedDate,
+      SELECT Id, Name, Email, AccountId,
+             Account.Name, Account.RecordType.Name,
+             Contact_Stage__c, Account_Stage__c,
+             Hand_Raise__c, Hand_Raise_Date_Time__c, Hand_Raise_Comment__c,
+             Is_Marketing_Qualified__c, Last_Rep_Communication_Date__c,
+             Type_of_Hand_Raise__c, LeadSource, CreatedDate,
              Owner.Name, Owner.Email, Owner.UserRole.Name
-      FROM Lead
+      FROM Contact
       WHERE Hand_Raise__c = true
-        AND IsConverted = false
-        AND LastActivityDate = null
-        AND Status != 'Closed'
-        AND Status != 'Closed/Disqualified'
+        AND Is_Marketing_Qualified__c = true
+        AND Hand_Raise_Date_Time__c >= LAST_N_DAYS:30
+        AND (NOT Account.Name LIKE '%test%')
+        AND (NOT Account.Name LIKE '%uberall%')
+        AND (NOT Email LIKE '%uberall%')
+        AND (NOT Owner.Name LIKE '%Zamin%')
         AND Owner.IsActive = true
-      ORDER BY Hand_Raise_Date_Time__c DESC
       LIMIT 500
     `.trim()
 
-    let records: SfdcLeadRecord[]
+    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+    const resp = await axios.get<{ records: SfdcContactRecord[] }>(url, {
+      headers: { Authorization: `Bearer ${conn.accessToken!}` },
+      timeout: 20_000,
+    })
 
-    try {
-      const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-      const resp = await axios.get<{ records: SfdcLeadRecord[] }>(url, {
-        headers: { Authorization: `Bearer ${conn.accessToken!}` },
-        timeout: 20_000,
-      })
-      records = resp.data.records
-    } catch (orderByErr) {
-      // Salesforce REST API sometimes can't ORDER BY relationship fields — retry without ORDER BY
-      console.warn('[HandRaise] ORDER BY failed, retrying without ORDER BY:', orderByErr)
+    console.log(`[HandRaise] SFDC returned ${resp.data.records.length} raw records`)
 
-      const soqlNoOrder = soql.replace(/\s*ORDER BY Hand_Raise_Date_Time__c DESC/, '')
-      const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soqlNoOrder)}`
-      const resp = await axios.get<{ records: SfdcLeadRecord[] }>(url, {
-        headers: { Authorization: `Bearer ${conn.accessToken!}` },
-        timeout: 20_000,
-      })
-      records = resp.data.records.slice().sort((a, b) => {
-        const dateA = a.Hand_Raise_Date_Time__c ?? ''
-        const dateB = b.Hand_Raise_Date_Time__c ?? ''
-        return dateB.localeCompare(dateA)
-      })
-    }
+    // JS-side filters to replicate report logic:
+    // 1. "Followed Up? = No" — Last_Rep_Communication_Date__c is null OR before Hand_Raise_Date_Time__c
+    // 2. Contact Stage != Disqualified (and != Closed per contact lifecycle)
+    // 3. Account Stage != Customer
+    // 4. Account RecordType = Partner Account Record OR Enterprise Account Record
+    const VALID_RECORD_TYPES = new Set(['Partner Account Record', 'Enterprise Account Record'])
 
-    console.log(`[HandRaise] SFDC returned ${records.length} records`)
+    const filtered = resp.data.records.filter((r) => {
+      // Must not be followed up: last rep comm date is null, or it's before the hand raise date
+      const handRaiseDate = r.Hand_Raise_Date_Time__c ? new Date(r.Hand_Raise_Date_Time__c) : null
+      const lastRepComm = r.Last_Rep_Communication_Date__c ? new Date(r.Last_Rep_Communication_Date__c) : null
+      const followedUp = handRaiseDate && lastRepComm && lastRepComm >= handRaiseDate
+      if (followedUp) return false
 
-    // Group records by owner
+      // Contact stage must not be Disqualified or Closed
+      const stage = r.Contact_Stage__c?.toLowerCase() ?? ''
+      if (stage === 'disqualified' || stage === 'closed') return false
+
+      // Account stage must not be Customer
+      const accountStage = r.Account_Stage__c?.toLowerCase() ?? ''
+      if (accountStage === 'customer') return false
+
+      // Account record type must be Partner or Enterprise
+      const recordType = r.Account?.RecordType?.Name ?? ''
+      if (!VALID_RECORD_TYPES.has(recordType)) return false
+
+      return true
+    })
+
+    console.log(`[HandRaise] After JS filtering: ${filtered.length} records`)
+
+    // Sort by hand raise date descending
+    filtered.sort((a, b) => {
+      const dateA = a.Hand_Raise_Date_Time__c ?? ''
+      const dateB = b.Hand_Raise_Date_Time__c ?? ''
+      return dateB.localeCompare(dateA)
+    })
+
+    // Group by owner
     const groupMap = new Map<string, OwnerGroup>()
 
-    for (const r of records) {
+    for (const r of filtered) {
       const ownerKey = r.Owner?.Email ?? r.Owner?.Name ?? '__unknown__'
 
       if (!groupMap.has(ownerKey)) {
@@ -107,36 +150,38 @@ router.get('/leads', requireAdmin, async (_req, res) => {
           ownerName: r.Owner?.Name ?? ownerKey,
           ownerEmail: r.Owner?.Email ?? null,
           ownerRole: r.Owner?.UserRole?.Name ?? null,
-          leads: [],
+          contacts: [],
         })
       }
 
-      const group = groupMap.get(ownerKey)!
-      group.leads.push({
+      groupMap.get(ownerKey)!.contacts.push({
         id: r.Id,
         name: r.Name,
-        company: r.Company,
         email: r.Email,
-        status: r.Status,
-        leadSource: r.LeadSource,
+        accountId: r.AccountId,
+        accountName: r.Account?.Name ?? null,
+        accountRecordType: r.Account?.RecordType?.Name ?? null,
+        contactStage: r.Contact_Stage__c,
+        accountStage: r.Account_Stage__c,
         handRaiseDate: r.Hand_Raise_Date_Time__c,
         typeOfHandRaise: r.Type_of_Hand_Raise__c,
         comment: r.Hand_Raise_Comment__c,
+        lastRepCommDate: r.Last_Rep_Communication_Date__c,
         createdDate: r.CreatedDate,
-        sfdcUrl: `${SFDC_BASE}/lightning/r/Lead/${r.Id}/view`,
+        sfdcUrl: `${SFDC_BASE}/lightning/r/Contact/${r.Id}/view`,
       })
     }
 
-    // Sort groups by lead count descending
+    // Sort groups by contact count descending
     const groups: OwnerGroup[] = Array.from(groupMap.values()).sort(
-      (a, b) => b.leads.length - a.leads.length
+      (a, b) => b.contacts.length - a.contacts.length
     )
 
-    console.log(`[HandRaise] Returning ${groups.length} owner groups`)
-    res.json({ groups, total: records.length })
+    console.log(`[HandRaise] Returning ${groups.length} owner groups, ${filtered.length} total contacts`)
+    res.json({ groups, total: filtered.length })
   } catch (err) {
     console.error('[HandRaise] /leads error:', err)
-    res.status(500).json({ error: 'Failed to load hand raise leads from Salesforce' })
+    res.status(500).json({ error: 'Failed to load hand raise contacts from Salesforce' })
   }
 })
 

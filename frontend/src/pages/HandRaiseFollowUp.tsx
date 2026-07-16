@@ -13,16 +13,19 @@ import clsx from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface LeadEntry {
+interface ContactEntry {
   id: string
   name: string
-  company: string | null
   email: string | null
-  status: string | null
-  leadSource: string | null
+  accountId: string | null
+  accountName: string | null
+  accountRecordType: string | null
+  contactStage: string | null
+  accountStage: string | null
   handRaiseDate: string | null
   typeOfHandRaise: string | null
   comment: string | null
+  lastRepCommDate: string | null
   createdDate: string
   sfdcUrl: string
 }
@@ -31,7 +34,7 @@ interface OwnerGroup {
   ownerName: string
   ownerEmail: string | null
   ownerRole: string | null
-  leads: LeadEntry[]
+  contacts: ContactEntry[]
 }
 
 interface HandRaiseResponse {
@@ -62,18 +65,15 @@ function daysAgoClass(days: number | null): string {
   return 'text-red-600 font-medium'
 }
 
-function statusBadgeClass(status: string | null): string {
-  switch (status) {
-    case 'Sales Ready':
-      return 'bg-green-100 text-green-700'
-    case 'Engaged':
-      return 'bg-blue-100 text-blue-700'
-    case 'New':
-      return 'bg-gray-100 text-gray-500'
-    case 'Working':
-      return 'bg-purple-100 text-purple-700'
-    default:
-      return 'bg-gray-100 text-gray-500'
+function stageBadgeClass(stage: string | null): string {
+  switch (stage) {
+    case 'Sales Ready': return 'bg-green-100 text-green-700'
+    case 'Working':     return 'bg-purple-100 text-purple-700'
+    case 'Meeting':     return 'bg-blue-100 text-blue-700'
+    case 'Nurture':     return 'bg-yellow-100 text-yellow-700'
+    case 'Target':      return 'bg-gray-100 text-gray-500'
+    case 'Pipeline':    return 'bg-indigo-100 text-indigo-700'
+    default:            return 'bg-gray-100 text-gray-500'
   }
 }
 
@@ -83,11 +83,10 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
   const [open, setOpen] = useState(false)
 
   const displayName = group.ownerName || group.ownerEmail || 'Unknown Owner'
-  const leadCount = group.leads.length
+  const count = group.contacts.length
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      {/* Card header — clickable to expand */}
       <button
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 text-left"
@@ -95,12 +94,12 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
         <div className="flex items-center gap-3 min-w-0">
           <span className="text-sm font-semibold text-gray-900 truncate">{displayName}</span>
           {group.ownerRole && (
-            <span className="shrink-0 text-xs text-gray-400 truncate max-w-[180px]">
+            <span className="shrink-0 text-xs text-gray-400 truncate max-w-[200px]">
               {group.ownerRole}
             </span>
           )}
           <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">
-            {leadCount} {leadCount === 1 ? 'lead' : 'leads'}
+            {count} {count === 1 ? 'contact' : 'contacts'}
           </span>
         </div>
         <div className="shrink-0 ml-3 text-gray-400">
@@ -108,81 +107,71 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
         </div>
       </button>
 
-      {/* Expanded: leads table */}
       {open && (
         <div className="border-t border-gray-100 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 text-left">
-                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
-                  Lead Name
-                </th>
-                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
-                  Company
-                </th>
-                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
-                  Status
-                </th>
-                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
-                  Hand Raise Date
-                </th>
-                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
-                  Days Ago
-                </th>
-                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                  Comment
-                </th>
-                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
-                  SF
-                </th>
+                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Contact</th>
+                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Account</th>
+                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Stage</th>
+                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Hand Raise Date</th>
+                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Days Ago</th>
+                <th className="px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">Comment</th>
+                <th className="px-4 py-2.5 w-8"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {group.leads.map((lead) => {
-                const days = daysAgo(lead.handRaiseDate)
+              {group.contacts.map((contact) => {
+                const days = daysAgo(contact.handRaiseDate)
                 const truncatedComment =
-                  lead.comment && lead.comment.length > 100
-                    ? lead.comment.slice(0, 100) + '…'
-                    : (lead.comment ?? '')
+                  contact.comment && contact.comment.length > 120
+                    ? contact.comment.slice(0, 120) + '…'
+                    : (contact.comment ?? '')
 
                 return (
-                  <tr key={lead.id} className="hover:bg-gray-50/50">
-                    {/* Lead name — linked to SFDC */}
+                  <tr key={contact.id} className="hover:bg-gray-50/50">
+                    {/* Contact name */}
                     <td className="px-4 py-3 whitespace-nowrap">
                       <a
-                        href={lead.sfdcUrl}
+                        href={contact.sfdcUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="font-medium text-brand-600 hover:text-brand-700 hover:underline"
                       >
-                        {lead.name}
+                        {contact.name}
                       </a>
+                      {contact.email && (
+                        <p className="text-xs text-gray-400 mt-0.5">{contact.email}</p>
+                      )}
                     </td>
 
-                    {/* Company */}
-                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                      {lead.company ?? <span className="text-gray-400">—</span>}
-                    </td>
-
-                    {/* Status badge */}
+                    {/* Account */}
                     <td className="px-4 py-3 whitespace-nowrap">
-                      {lead.status ? (
-                        <span
-                          className={clsx(
-                            'inline-block text-xs font-medium px-2 py-0.5 rounded-full',
-                            statusBadgeClass(lead.status)
-                          )}
-                        >
-                          {lead.status}
+                      {contact.accountName ? (
+                        <span className="text-gray-700 text-xs font-medium">{contact.accountName}</span>
+                      ) : (
+                        <span className="text-gray-400 text-xs">—</span>
+                      )}
+                      {contact.accountRecordType && (
+                        <p className="text-[10px] text-gray-400 mt-0.5">{contact.accountRecordType}</p>
+                      )}
+                    </td>
+
+                    {/* Contact Stage */}
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {contact.contactStage ? (
+                        <span className={clsx('inline-block text-xs font-medium px-2 py-0.5 rounded-full', stageBadgeClass(contact.contactStage))}>
+                          {contact.contactStage}
                         </span>
                       ) : (
-                        <span className="text-gray-400">—</span>
+                        <span className="text-gray-400 text-xs">—</span>
                       )}
                     </td>
 
                     {/* Hand Raise Date */}
                     <td className="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">
-                      {formatDate(lead.handRaiseDate)}
+                      {formatDate(contact.handRaiseDate)}
                     </td>
 
                     {/* Days ago */}
@@ -195,18 +184,18 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
                     </td>
 
                     {/* Comment */}
-                    <td className="px-4 py-3 text-gray-500 text-xs max-w-[200px]">
+                    <td className="px-4 py-3 text-gray-500 text-xs max-w-xs">
                       {truncatedComment ? (
-                        <span title={lead.comment ?? undefined}>{truncatedComment}</span>
+                        <span title={contact.comment ?? undefined}>{truncatedComment}</span>
                       ) : (
                         <span className="text-gray-400">—</span>
                       )}
                     </td>
 
-                    {/* Open in SF icon */}
+                    {/* Open in SF */}
                     <td className="px-4 py-3 whitespace-nowrap">
                       <a
-                        href={lead.sfdcUrl}
+                        href={contact.sfdcUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-gray-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
@@ -231,7 +220,6 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
 export function HandRaiseFollowUp() {
   const qc = useQueryClient()
 
-  // Filter state
   const [maxDays, setMaxDays] = useState<number | ''>('')
   const [roleFilter, setRoleFilter] = useState<string>('')
 
@@ -241,20 +229,20 @@ export function HandRaiseFollowUp() {
     refetchOnWindowFocus: false,
   })
 
-  // Client-side filtering
+  // Client-side filtering on top of server-side filters
   const filteredGroups = (data?.groups ?? [])
     .map((group) => ({
       ...group,
-      leads: group.leads.filter((lead) => {
+      contacts: group.contacts.filter((c) => {
         if (maxDays !== '') {
-          const days = daysAgo(lead.handRaiseDate)
+          const days = daysAgo(c.handRaiseDate)
           if (days === null || days > maxDays) return false
         }
         return true
       }),
     }))
     .filter((group) => {
-      if (group.leads.length === 0) return false
+      if (group.contacts.length === 0) return false
       if (roleFilter.trim()) {
         const needle = roleFilter.trim().toLowerCase()
         if (!group.ownerRole?.toLowerCase().includes(needle)) return false
@@ -262,8 +250,7 @@ export function HandRaiseFollowUp() {
       return true
     })
 
-  const totalVisible = filteredGroups.reduce((s, g) => s + g.leads.length, 0)
-
+  const totalVisible = filteredGroups.reduce((s, g) => s + g.contacts.length, 0)
   const hasActiveFilters = maxDays !== '' || roleFilter.trim() !== ''
 
   function clearFilters() {
@@ -280,29 +267,24 @@ export function HandRaiseFollowUp() {
             <Megaphone size={22} className="text-orange-500 mt-0.5 shrink-0" />
             <div>
               <h1 className="text-xl font-semibold text-gray-900">Hand Raise Follow Up</h1>
-              <p className="text-sm text-gray-500 mt-0.5">Inbound hand raises with no sales activity</p>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Marketing-qualified hand raises in the last 30 days with no rep follow-up
+              </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Total badge */}
             {data && (
               <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-orange-100 text-orange-700">
-                {data.total} total lead{data.total !== 1 ? 's' : ''}
+                {data.total} total
               </span>
             )}
-
-            {/* Refresh button */}
             <button
               onClick={() => qc.invalidateQueries({ queryKey: ['hand-raise-leads'] })}
               disabled={isFetching}
               className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50 transition-colors"
             >
-              {isFetching ? (
-                <RefreshCw size={14} className="animate-spin" />
-              ) : (
-                <RefreshCw size={14} />
-              )}
+              <RefreshCw size={14} className={clsx(isFetching && 'animate-spin')} />
               Refresh
             </button>
           </div>
@@ -312,7 +294,6 @@ export function HandRaiseFollowUp() {
       {/* Filter bar */}
       <div className="bg-gray-50 border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-6 py-3 flex flex-wrap items-end gap-4">
-          {/* Max days since hand raise */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">
               Max days since hand raise
@@ -327,21 +308,19 @@ export function HandRaiseFollowUp() {
             />
           </div>
 
-          {/* Owner role contains */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">
               Owner role contains
             </label>
             <input
               type="text"
-              placeholder="e.g. AE, SDR"
+              placeholder="e.g. New Business"
               value={roleFilter}
               onChange={(e) => setRoleFilter(e.target.value)}
-              className="w-40 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400"
+              className="w-44 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400"
             />
           </div>
 
-          {/* Clear filters */}
           {hasActiveFilters && (
             <button
               onClick={clearFilters}
@@ -351,33 +330,29 @@ export function HandRaiseFollowUp() {
             </button>
           )}
 
-          {/* Filtered count */}
           {data && hasActiveFilters && (
             <span className="text-xs text-gray-500 pb-0.5 ml-auto">
-              Showing{' '}
-              <span className="font-semibold text-gray-700">{totalVisible}</span> lead
-              {totalVisible !== 1 ? 's' : ''} in{' '}
-              <span className="font-semibold text-gray-700">{filteredGroups.length}</span> group
+              Showing <span className="font-semibold text-gray-700">{totalVisible}</span> contact
+              {totalVisible !== 1 ? 's' : ''} across{' '}
+              <span className="font-semibold text-gray-700">{filteredGroups.length}</span> rep
               {filteredGroups.length !== 1 ? 's' : ''}
             </span>
           )}
         </div>
       </div>
 
-      {/* Content area */}
+      {/* Content */}
       <div className="max-w-5xl mx-auto px-6 py-6 space-y-3">
-        {/* Loading */}
         {isFetching && (
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-8 flex flex-col items-center gap-3 text-center">
             <RefreshCw size={28} className="animate-spin text-blue-500" />
             <div>
               <p className="font-medium text-blue-800">Loading hand raise data…</p>
-              <p className="text-sm text-blue-600 mt-0.5">Fetching inbound leads from Salesforce</p>
+              <p className="text-sm text-blue-600 mt-0.5">Fetching contacts from Salesforce</p>
             </div>
           </div>
         )}
 
-        {/* Error */}
         {isError && !isFetching && (
           <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
             <strong>Failed to load:</strong>{' '}
@@ -385,20 +360,17 @@ export function HandRaiseFollowUp() {
           </div>
         )}
 
-        {/* Empty state */}
         {data && !isFetching && filteredGroups.length === 0 && (
-          <div className="px-4 py-8 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700 text-center">
+          <div className="px-4 py-10 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700 text-center">
             {hasActiveFilters
-              ? 'No leads match the current filters.'
-              : 'No hand raises without sales follow-up — great work!'}
+              ? 'No contacts match the current filters.'
+              : 'No unmatched hand raises — great work! 🎉'}
           </div>
         )}
 
-        {/* Owner group cards */}
-        {!isFetching &&
-          filteredGroups.map((group) => (
-            <OwnerCard key={group.ownerEmail ?? group.ownerName} group={group} />
-          ))}
+        {!isFetching && filteredGroups.map((group) => (
+          <OwnerCard key={group.ownerEmail ?? group.ownerName} group={group} />
+        ))}
       </div>
     </div>
   )
