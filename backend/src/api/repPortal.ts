@@ -11,19 +11,21 @@ const router = Router()
 
 const SFDC_BASE = 'https://uberall.lightning.force.com'
 
-// Fetch live opp metadata from SFDC for a list of opp IDs
-async function fetchOppMeta(oppIds: string[]): Promise<Map<string, {
-  amount: number | null; closeDate: string | null; stage: string | null
-  nextStep: string | null; nextStepDate: string | null; isClosed: boolean
-}>> {
+// Fetch live opp metadata from SFDC for a list of opp IDs.
+// Returns { map, sfdcOk } — sfdcOk=false means the call failed and we should not act on missing IDs.
+async function fetchOppMeta(oppIds: string[]): Promise<{
+  map: Map<string, { amount: number | null; closeDate: string | null; stage: string | null; nextStep: string | null; nextStepDate: string | null; isClosed: boolean }>
+  sfdcOk: boolean
+}> {
   const map = new Map()
-  if (!oppIds.length) return map
+  if (!oppIds.length) return { map, sfdcOk: true }
   try {
     const conn = await getServiceConnection()
     const ids = oppIds.map((id) => `'${id}'`).join(',')
-    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c FROM Opportunity WHERE Id IN (${ids})`
+    // Use SFDC's native IsClosed boolean — reliable for Closed Won AND Closed Lost regardless of custom stage names
+    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c, IsClosed FROM Opportunity WHERE Id IN (${ids})`
     const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{ records: { Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null }[] }>(
+    const resp = await axios.get<{ records: { Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null; IsClosed: boolean }[] }>(
       url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
     )
     for (const r of resp.data.records) {
@@ -33,13 +35,14 @@ async function fetchOppMeta(oppIds: string[]): Promise<Map<string, {
         stage: stageApiToLabel(r.StageName),
         nextStep: r.NextStep ?? null,
         nextStepDate: r.Next_Step_Date__c ?? null,
-        isClosed: r.StageName?.toLowerCase().startsWith('closed') ?? false,
+        isClosed: r.IsClosed ?? false,
       })
     }
+    return { map, sfdcOk: true }
   } catch (err) {
     console.warn('[RepPortal] Could not fetch live opp meta from SFDC:', err)
+    return { map, sfdcOk: false }
   }
-  return map
 }
 
 // GET /api/rep/me?token=xxx
@@ -69,22 +72,52 @@ router.get('/me', async (req, res) => {
         return true
       })
 
-    // Fetch live opp data from SFDC to ensure ACV/close date/stage are current
-    const oppIds = [...new Set(deduped.map((n) => n.opportunityId))]
-    const oppMeta = await fetchOppMeta(oppIds)
+    // Load pending flags first so we can include their opp IDs in the SFDC meta fetch
+    let rawPending: { opportunityId: string; opportunityName: string; alertType: string; ownerEmail: string; details: Record<string, unknown> }[] = []
+    try {
+      const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
+      if (setting?.value) {
+        const dryRun = JSON.parse(setting.value) as { wouldSend: typeof rawPending }
+        const repEmail = user.slackEmail?.toLowerCase()
+        if (repEmail) {
+          rawPending = (dryRun.wouldSend ?? []).filter((a) => a.ownerEmail?.toLowerCase() === repEmail)
+        }
+      }
+    } catch { /* non-fatal */ }
 
-    // Auto-resolve notifications for opps that are now Closed Lost or Closed Won
-    const closedOppIds = oppIds.filter((id) => oppMeta.get(id)?.isClosed === true)
-    if (closedOppIds.length > 0) {
-      await db.notification.updateMany({
-        where: { opportunityId: { in: closedOppIds }, ownerId: user.id, status: { in: ['SENT', 'SNOOZED'] } },
-        data: { status: 'RESOLVED', resolvedAt: new Date() },
-      })
-      console.log(`[RepPortal] Auto-resolved ${closedOppIds.length} notifications for closed opps for user ${user.id}`)
+    // Fetch live opp data from SFDC for ALL opp IDs (notifications + pending)
+    // Using SFDC's native IsClosed field — reliable across custom stage names
+    const dedupedOppIds = [...new Set(deduped.map((n) => n.opportunityId))]
+    const pendingOppIds = [...new Set(rawPending.map((a) => a.opportunityId))]
+    const allOppIds = [...new Set([...dedupedOppIds, ...pendingOppIds])]
+    const { map: oppMeta, sfdcOk } = await fetchOppMeta(allOppIds)
+
+    // Identify closed opp IDs:
+    // - Opps explicitly marked IsClosed=true in SFDC
+    // - Opps completely absent from SFDC (deleted) — only when SFDC call succeeded
+    const closedOppIds = new Set<string>()
+    for (const id of allOppIds) {
+      const meta = oppMeta.get(id)
+      if (meta?.isClosed) {
+        closedOppIds.add(id)
+      } else if (sfdcOk && !meta) {
+        // Not returned by SFDC at all — opp was deleted or otherwise gone
+        closedOppIds.add(id)
+      }
     }
 
-    // Filter out closed opps from what we show
-    const openDeduped = deduped.filter((n) => !closedOppIds.includes(n.opportunityId))
+    // Auto-resolve DB notifications for closed/deleted opps
+    if (closedOppIds.size > 0) {
+      const closedArr = [...closedOppIds]
+      await db.notification.updateMany({
+        where: { opportunityId: { in: closedArr }, ownerId: user.id, status: { in: ['SENT', 'SNOOZED'] } },
+        data: { status: 'RESOLVED', resolvedAt: new Date() },
+      })
+      console.log(`[RepPortal] Auto-resolved notifications for ${closedOppIds.size} closed/deleted opps for user ${user.id}`)
+    }
+
+    // Filter out closed opps from DB notifications
+    const openDeduped = deduped.filter((n) => !closedOppIds.has(n.opportunityId))
 
     const notifications = openDeduped.map((n) => {
       const meta = oppMeta.get(n.opportunityId)
@@ -102,22 +135,11 @@ router.get('/me', async (req, res) => {
       }
     })
 
-    // Pending: flags in the last dry run that would be sent to this rep
-    let pending: { opportunityId: string; opportunityName: string; alertType: string; details: Record<string, unknown> }[] = []
-    try {
-      const setting = await db.appSetting.findUnique({ where: { key: 'lastDryRunFullResults' } })
-      if (setting?.value) {
-        const dryRun = JSON.parse(setting.value) as { wouldSend: { opportunityId: string; opportunityName: string; alertType: string; ownerEmail: string; details: Record<string, unknown> }[] }
-        const repEmail = user.slackEmail?.toLowerCase()
-        if (repEmail) {
-          // Exclude opps already in their active notifications
-          const notifOppAlertKeys = new Set(notifications.filter(n => n.status === 'SENT').map(n => `${n.opportunityId}|${n.alertType}`))
-          pending = (dryRun.wouldSend ?? [])
-            .filter((a) => a.ownerEmail?.toLowerCase() === repEmail && !notifOppAlertKeys.has(`${a.opportunityId}|${a.alertType}`))
-            .slice(0, 10)
-        }
-      }
-    } catch { /* non-fatal */ }
+    // Build pending — filtered to exclude closed opps and already-active notification keys
+    const notifOppAlertKeys = new Set(notifications.filter(n => n.status === 'SENT').map(n => `${n.opportunityId}|${n.alertType}`))
+    const pending = rawPending
+      .filter((a) => !closedOppIds.has(a.opportunityId) && !notifOppAlertKeys.has(`${a.opportunityId}|${a.alertType}`))
+      .slice(0, 10)
 
     res.json({
       rep: { name: user.slackName ?? user.slackEmail ?? 'Rep', email: user.slackEmail },
