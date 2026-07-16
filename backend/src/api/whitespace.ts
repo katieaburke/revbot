@@ -29,7 +29,8 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         Total_Locations_Fit__c,
         Expansion_Potential__c,
         ARR_Potential__c,
-        Priority__c
+        Priority__c,
+        Price_per_location__c
       FROM Product_Coverage__c
       WHERE Current_Status__c = 'Has'
         AND (Total_Locations_Fit__c = null OR Total_Locations_Fit__c = 0)
@@ -43,7 +44,7 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         AND (NOT Product_Coverage_Name__c LIKE '%fee%')
         AND (NOT Product_Coverage_Name__c LIKE '%bundle%')
         AND (NOT Product_Coverage_Name__c LIKE '%additional%')
-      ORDER BY Account__r.Name ASC
+      ORDER BY Account__r.Owner.Name ASC, Account__r.Name ASC
     `.trim()
 
     const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
@@ -61,53 +62,21 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         Expansion_Potential__c: number | null
         ARR_Potential__c: number | null
         Priority__c: string | null
+        Price_per_location__c: number | null
       }[]
     }>(url, {
       headers: { Authorization: `Bearer ${conn.accessToken!}` },
       timeout: 20_000,
     })
 
-    // Group by account, sorted alphabetically (ORDER BY already covers it)
-    const accountMap = new Map<string, {
-      accountId: string
-      accountName: string
-      ownerEmail: string | null
-      ownerName: string | null
-      records: unknown[]
-    }>()
-
-    for (const r of resp.data.records) {
-      const accountId = r.Account__c
-      const accountName = r.Account__r?.Name ?? accountId
-      const ownerEmail = r.Account__r?.Owner?.Email ?? null
-      const ownerName = r.Account__r?.Owner?.Name ?? null
-
-      if (!accountMap.has(accountId)) {
-        accountMap.set(accountId, { accountId, accountName, ownerEmail, ownerName, records: [] })
-      }
-
-      accountMap.get(accountId)!.records.push({
-        id: r.Id,
-        name: r.Name,
-        productCoverageName: r.Product_Coverage_Name__c,
-        accountId,
-        accountName,
-        currentStatus: r.Current_Status__c,
-        fitUseCase: r.Fit_Use_Case__c,
-        currentLocationsCovered: r.Current_Locations_Covered__c,
-        totalLocationsFit: r.Total_Locations_Fit__c,
-        expansionPotential: r.Expansion_Potential__c,
-        arrPotential: r.ARR_Potential__c,
-        priority: r.Priority__c,
-      })
-    }
-
-    const accountsRaw = Array.from(accountMap.values()).sort((a, b) =>
-      a.accountName.localeCompare(b.accountName)
-    )
-
-    // Look up slackUserId for each unique owner email
-    const uniqueOwnerEmails = [...new Set(accountsRaw.map((a) => a.ownerEmail).filter(Boolean))] as string[]
+    // Collect unique owner emails for Slack lookup
+    const uniqueOwnerEmails = [
+      ...new Set(
+        resp.data.records
+          .map((r) => r.Account__r?.Owner?.Email ?? null)
+          .filter((e): e is string => e !== null)
+      ),
+    ]
     const ownerSlackMap = new Map<string, string | null>()
     await Promise.all(
       uniqueOwnerEmails.map(async (email) => {
@@ -118,12 +87,119 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
       })
     )
 
-    const accounts = accountsRaw.map((a) => ({
-      ...a,
-      ownerSlackUserId: a.ownerEmail ? (ownerSlackMap.get(a.ownerEmail.toLowerCase()) ?? null) : null,
-    }))
+    // Group by AM owner email, then by account within each AM
+    type RecordShape = {
+      id: string
+      name: string
+      productCoverageName: string | null
+      accountId: string
+      accountName: string
+      currentStatus: string | null
+      fitUseCase: string | null
+      currentLocationsCovered: number | null
+      totalLocationsFit: number | null
+      arrPotential: number | null
+      priority: string | null
+      pricePerLocation: number | null
+      currentArr: number
+    }
 
-    res.json({ accounts })
+    type AccountShape = {
+      accountId: string
+      accountName: string
+      totalCurrentArr: number
+      records: RecordShape[]
+    }
+
+    type AmShape = {
+      ownerEmail: string | null
+      ownerName: string | null
+      ownerSlackUserId: string | null
+      totalLines: number
+      totalCurrentArr: number
+      accounts: AccountShape[]
+    }
+
+    // ownerKey -> AM accumulator
+    const amMap = new Map<string, AmShape & { accountMap: Map<string, AccountShape> }>()
+
+    for (const r of resp.data.records) {
+      const accountId = r.Account__c
+      const accountName = r.Account__r?.Name ?? accountId
+      const ownerEmail = r.Account__r?.Owner?.Email ?? null
+      const ownerName = r.Account__r?.Owner?.Name ?? null
+      const ownerSlackUserId = ownerEmail
+        ? (ownerSlackMap.get(ownerEmail.toLowerCase()) ?? null)
+        : null
+
+      const ownerKey = ownerEmail?.toLowerCase() ?? `__no_owner__${ownerName ?? accountId}`
+
+      const pricePerLocation = r.Price_per_location__c ?? 0
+      const currentLocationsCovered = r.Current_Locations_Covered__c ?? 0
+      const currentArr = currentLocationsCovered * pricePerLocation * 12
+
+      const record: RecordShape = {
+        id: r.Id,
+        name: r.Name,
+        productCoverageName: r.Product_Coverage_Name__c,
+        accountId,
+        accountName,
+        currentStatus: r.Current_Status__c,
+        fitUseCase: r.Fit_Use_Case__c,
+        currentLocationsCovered: r.Current_Locations_Covered__c,
+        totalLocationsFit: r.Total_Locations_Fit__c,
+        arrPotential: r.ARR_Potential__c,
+        priority: r.Priority__c,
+        pricePerLocation: r.Price_per_location__c,
+        currentArr,
+      }
+
+      if (!amMap.has(ownerKey)) {
+        amMap.set(ownerKey, {
+          ownerEmail,
+          ownerName,
+          ownerSlackUserId,
+          totalLines: 0,
+          totalCurrentArr: 0,
+          accounts: [],
+          accountMap: new Map(),
+        })
+      }
+
+      const am = amMap.get(ownerKey)!
+      am.totalLines += 1
+      am.totalCurrentArr += currentArr
+
+      if (!am.accountMap.has(accountId)) {
+        const acct: AccountShape = { accountId, accountName, totalCurrentArr: 0, records: [] }
+        am.accountMap.set(accountId, acct)
+        am.accounts.push(acct)
+      }
+
+      const acct = am.accountMap.get(accountId)!
+      acct.totalCurrentArr += currentArr
+      acct.records.push(record)
+    }
+
+    // Build final response: sort AMs alphabetically by ownerName
+    const ams: AmShape[] = Array.from(amMap.values())
+      .map((am) => {
+        // Sort accounts by totalCurrentArr descending
+        am.accounts.sort((a, b) => b.totalCurrentArr - a.totalCurrentArr)
+        // Sort records within each account by currentArr descending
+        for (const acct of am.accounts) {
+          acct.records.sort((a, b) => b.currentArr - a.currentArr)
+        }
+        const { accountMap: _accountMap, ...rest } = am
+        return rest
+      })
+      .sort((a, b) => {
+        const nameA = a.ownerName ?? ''
+        const nameB = b.ownerName ?? ''
+        return nameA.localeCompare(nameB)
+      })
+
+    res.json({ ams })
   } catch (err) {
     console.error('[Whitespace] /expansion-potential error:', err)
     res.status(500).json({ error: 'Failed to load expansion potential data from Salesforce' })
@@ -163,12 +239,13 @@ router.patch('/product-coverage/:id', requireAdmin, async (req, res) => {
 
 // POST /api/whitespace/send-prompt
 router.post('/send-prompt', requireAdmin, async (req, res) => {
-  const { repSlackUserId, repEmail, repName, accountCount, lineCount } = req.body as {
+  const { repSlackUserId, repEmail, repName, accountCount, lineCount, currentArr } = req.body as {
     repSlackUserId?: string
     repEmail?: string
     repName?: string
     accountCount?: number
     lineCount?: number
+    currentArr?: number
   }
 
   if (!repSlackUserId || !repEmail || !repName || accountCount === undefined || lineCount === undefined) {
@@ -183,6 +260,14 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
     const lineWord = lineCount === 1 ? 'line' : 'lines'
     const accountWord = accountCount === 1 ? 'account' : 'accounts'
 
+    const fmtEur = (val: number) =>
+      new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(val)
+
+    const arrText =
+      currentArr != null && currentArr > 0
+        ? `Your accounts represent *${fmtEur(currentArr)}* in current ARR — there may be significant expansion potential we're not capturing.`
+        : null
+
     const blocks = [
       {
         type: 'header',
@@ -195,6 +280,17 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
           text: `Hey ${repName}! We're building out whitespace data across your book and need your help filling in a few gaps.\n\nYou have *${lineCount} product coverage ${lineWord}* across *${accountCount} ${accountWord}* where we're missing the total location fit count.`,
         },
       },
+      ...(arrText
+        ? [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: arrText,
+              },
+            },
+          ]
+        : []),
       {
         type: 'section',
         text: {

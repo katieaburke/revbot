@@ -96,10 +96,13 @@ function wsStatusBadgeClass(status: string | null): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+type PortalTab = 'pipeline' | 'whitespace'
+
 export function RepPortal() {
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
   const qc = useQueryClient()
   const [snoozing, setSnoozing] = useState<string | null>(null) // notif id being snoozed
+  const [activeTab, setActiveTab] = useState<PortalTab>('pipeline')
 
   const { data, isLoading, error } = useQuery<RepData>({
     queryKey: ['rep-portal', token],
@@ -146,12 +149,11 @@ export function RepPortal() {
   const whitespaceQuery = useQuery<WhitespaceResponse>({
     queryKey: ['rep-whitespace', token],
     queryFn: () => repApi.get(`/rep/whitespace?token=${token}`).then((r) => r.data),
-    enabled: !!token,
+    enabled: !!token && activeTab === 'whitespace',
     retry: false,
   })
 
   const [wsRemovedIds, setWsRemovedIds] = useState<Set<string>>(new Set())
-  const [wsOpen, setWsOpen] = useState(false)
 
   const wsRecords = (whitespaceQuery.data?.records ?? [])
     .map((group) => ({
@@ -159,8 +161,6 @@ export function RepPortal() {
       lines: group.lines.filter((l) => !wsRemovedIds.has(l.id)),
     }))
     .filter((group) => group.lines.length > 0)
-
-  const wsTotalLines = wsRecords.reduce((sum, g) => sum + g.lines.length, 0)
 
   const open = data?.notifications.filter((n) => n.status === 'SENT') ?? []
   const snoozed = data?.notifications.filter((n) => n.status === 'SNOOZED') ?? []
@@ -216,50 +216,61 @@ export function RepPortal() {
         </div>
       </div>
 
+      {/* Tab bar */}
+      <div className="bg-white border-b border-gray-200 px-6">
+        <div className="max-w-2xl mx-auto flex gap-0">
+          <button
+            onClick={() => setActiveTab('pipeline')}
+            className={clsx(
+              'px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors',
+              activeTab === 'pipeline'
+                ? 'border-brand-500 text-brand-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            )}
+          >
+            Pipeline
+          </button>
+          <button
+            onClick={() => setActiveTab('whitespace')}
+            className={clsx(
+              'px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors',
+              activeTab === 'whitespace'
+                ? 'border-brand-500 text-brand-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            )}
+          >
+            📊 Whitespace
+          </button>
+        </div>
+      </div>
+
       <div className="max-w-2xl mx-auto px-6 py-6 space-y-3">
-        {/* Recheck result */}
-        {recheckMsg && (
-          <div className="flex items-center gap-2 px-4 py-2.5 bg-green-50 border border-green-200 rounded-xl text-xs text-green-700 font-medium">
-            <Check size={13} className="flex-shrink-0" />
-            {recheckMsg}
-          </div>
-        )}
 
-        {/* All clear */}
-        {open.length === 0 && snoozed.length === 0 && (
-          <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
-            <CheckCircle size={32} className="mx-auto text-green-400 mb-3" />
-            <p className="text-sm font-medium text-gray-700">All clear — no open flags!</p>
-            <p className="text-xs text-gray-400 mt-1">RevBot will message you when something needs attention.</p>
-          </div>
-        )}
+        {/* ── Pipeline tab ── */}
+        {activeTab === 'pipeline' && (
+          <>
+            {/* Recheck result */}
+            {recheckMsg && (
+              <div className="flex items-center gap-2 px-4 py-2.5 bg-green-50 border border-green-200 rounded-xl text-xs text-green-700 font-medium">
+                <Check size={13} className="flex-shrink-0" />
+                {recheckMsg}
+              </div>
+            )}
 
-        {/* Open flags */}
-        {open.map((notif) => (
-          <NotifCard
-            key={notif.id}
-            notif={notif}
-            snoozingId={snoozing}
-            onSnoozeOpen={() => setSnoozing(notif.id)}
-            onSnoozeClose={() => setSnoozing(null)}
-            onSnooze={(days, snoozeUntil) => snoozeMutation.mutate({ notificationId: notif.id, days, snoozeUntil })}
-            isSnoozePending={snoozeMutation.isPending}
-            onUpdateCloseDate={(closeDate) => closeDateMutation.mutate({ opportunityId: notif.opportunityId, closeDate })}
-            isCloseDatePending={closeDateMutation.isPending}
-            onUpdateNextStep={(nextStep, nextStepDate) => nextStepMutation.mutate({ opportunityId: notif.opportunityId, nextStep, nextStepDate })}
-            isNextStepPending={nextStepMutation.isPending}
-          />
-        ))}
+            {/* All clear */}
+            {open.length === 0 && snoozed.length === 0 && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <CheckCircle size={32} className="mx-auto text-green-400 mb-3" />
+                <p className="text-sm font-medium text-gray-700">All clear — no open flags!</p>
+                <p className="text-xs text-gray-400 mt-1">RevBot will message you when something needs attention.</p>
+              </div>
+            )}
 
-        {/* Snoozed */}
-        {snoozed.length > 0 && (
-          <div>
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 mt-4">Snoozed</p>
-            {snoozed.map((notif) => (
+            {/* Open flags */}
+            {open.map((notif) => (
               <NotifCard
                 key={notif.id}
                 notif={notif}
-                snoozed
                 snoozingId={snoozing}
                 onSnoozeOpen={() => setSnoozing(notif.id)}
                 onSnoozeClose={() => setSnoozing(null)}
@@ -271,78 +282,100 @@ export function RepPortal() {
                 isNextStepPending={nextStepMutation.isPending}
               />
             ))}
-          </div>
-        )}
 
-        {/* Want to get ahead? */}
-        {(data?.pending ?? []).length > 0 && (
-          <div className="mt-6">
-            <div className="mb-3">
-              <p className="text-sm font-semibold text-gray-700">Want to get ahead? 🚀</p>
-              <p className="text-xs text-gray-400 mt-0.5">These deals are queued up and will be flagged soon — get a head start before RevBot sends the nudge.</p>
-            </div>
-            {data!.pending.map((flag) => {
-              const meta = ALERT_META[flag.alertType] ?? { label: flag.alertType, color: 'bg-gray-100 text-gray-600' }
-              const sfdcUrl = `https://uberall.lightning.force.com/lightning/r/Opportunity/${flag.opportunityId}/view`
-              const amount = flag.details.amount != null ? Number(flag.details.amount) : null
-              const closeDate = typeof flag.details.closeDate === 'string' ? flag.details.closeDate : null
-              const stage = typeof flag.details.stage === 'string' ? flag.details.stage : null
-              return (
-                <div key={`${flag.opportunityId}|${flag.alertType}`} className="bg-white rounded-xl border border-dashed border-gray-200 mb-2">
-                  <div className="px-5 py-4">
-                    <div className="flex items-center gap-2 mb-1.5 min-w-0">
-                      <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold opacity-70', meta.color)}>
-                        {meta.label}
-                      </span>
-                      <a href={sfdcUrl} target="_blank" rel="noopener noreferrer"
-                        className="font-medium text-gray-900 text-sm hover:text-brand-600 truncate flex items-center gap-1">
-                        {flag.opportunityName}
-                        <ExternalLink size={11} className="flex-shrink-0 text-gray-300" />
-                      </a>
-                    </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3">
-                      {amount != null && (
-                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">ACV</span> {amount.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}</span>
-                      )}
-                      {closeDate && (
-                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">Close</span> {fmtDate(closeDate)}</span>
-                      )}
-                      {stage && (
-                        <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">Stage</span> {stage}</span>
-                      )}
-                    </div>
-                    <a href={sfdcUrl} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg hover:bg-brand-600">
-                      Open in Salesforce <ExternalLink size={11} />
-                    </a>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* Whitespace / Expansion potential section */}
-        {wsTotalLines > 0 && (
-          <div className="mt-6">
-            <button
-              onClick={() => setWsOpen((o) => !o)}
-              className="w-full flex items-center justify-between px-5 py-4 bg-white rounded-xl border border-gray-200 hover:bg-gray-50 text-left"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <span className="text-sm font-semibold text-gray-900">📊 Expansion potential — help fill in your accounts</span>
-                <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
-                  {wsTotalLines} line{wsTotalLines !== 1 ? 's' : ''} need data
-                </span>
+            {/* Snoozed */}
+            {snoozed.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 mt-4">Snoozed</p>
+                {snoozed.map((notif) => (
+                  <NotifCard
+                    key={notif.id}
+                    notif={notif}
+                    snoozed
+                    snoozingId={snoozing}
+                    onSnoozeOpen={() => setSnoozing(notif.id)}
+                    onSnoozeClose={() => setSnoozing(null)}
+                    onSnooze={(days, snoozeUntil) => snoozeMutation.mutate({ notificationId: notif.id, days, snoozeUntil })}
+                    isSnoozePending={snoozeMutation.isPending}
+                    onUpdateCloseDate={(closeDate) => closeDateMutation.mutate({ opportunityId: notif.opportunityId, closeDate })}
+                    isCloseDatePending={closeDateMutation.isPending}
+                    onUpdateNextStep={(nextStep, nextStepDate) => nextStepMutation.mutate({ opportunityId: notif.opportunityId, nextStep, nextStepDate })}
+                    isNextStepPending={nextStepMutation.isPending}
+                  />
+                ))}
               </div>
-              {wsOpen
-                ? <ChevronUp size={14} className="text-gray-400 shrink-0" />
-                : <ChevronDown size={14} className="text-gray-400 shrink-0" />
-              }
-            </button>
+            )}
 
-            {wsOpen && (
-              <div className="mt-2 space-y-3">
+            {/* Want to get ahead? */}
+            {(data?.pending ?? []).length > 0 && (
+              <div className="mt-6">
+                <div className="mb-3">
+                  <p className="text-sm font-semibold text-gray-700">Want to get ahead? 🚀</p>
+                  <p className="text-xs text-gray-400 mt-0.5">These deals are queued up and will be flagged soon — get a head start before RevBot sends the nudge.</p>
+                </div>
+                {data!.pending.map((flag) => {
+                  const meta = ALERT_META[flag.alertType] ?? { label: flag.alertType, color: 'bg-gray-100 text-gray-600' }
+                  const sfdcUrl = `https://uberall.lightning.force.com/lightning/r/Opportunity/${flag.opportunityId}/view`
+                  const amount = flag.details.amount != null ? Number(flag.details.amount) : null
+                  const closeDate = typeof flag.details.closeDate === 'string' ? flag.details.closeDate : null
+                  const stage = typeof flag.details.stage === 'string' ? flag.details.stage : null
+                  return (
+                    <div key={`${flag.opportunityId}|${flag.alertType}`} className="bg-white rounded-xl border border-dashed border-gray-200 mb-2">
+                      <div className="px-5 py-4">
+                        <div className="flex items-center gap-2 mb-1.5 min-w-0">
+                          <span className={clsx('inline-flex flex-shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold opacity-70', meta.color)}>
+                            {meta.label}
+                          </span>
+                          <a href={sfdcUrl} target="_blank" rel="noopener noreferrer"
+                            className="font-medium text-gray-900 text-sm hover:text-brand-600 truncate flex items-center gap-1">
+                            {flag.opportunityName}
+                            <ExternalLink size={11} className="flex-shrink-0 text-gray-300" />
+                          </a>
+                        </div>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3">
+                          {amount != null && (
+                            <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">ACV</span> {amount.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}</span>
+                          )}
+                          {closeDate && (
+                            <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">Close</span> {fmtDate(closeDate)}</span>
+                          )}
+                          {stage && (
+                            <span className="text-xs text-gray-500"><span className="font-medium text-gray-700">Stage</span> {stage}</span>
+                          )}
+                        </div>
+                        <a href={sfdcUrl} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg hover:bg-brand-600">
+                          Open in Salesforce <ExternalLink size={11} />
+                        </a>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── Whitespace tab ── */}
+        {activeTab === 'whitespace' && (
+          <>
+            {whitespaceQuery.isLoading && (
+              <div className="flex flex-col items-center gap-3 py-16 text-center">
+                <RefreshCw size={28} className="animate-spin text-blue-400" />
+                <p className="text-sm text-gray-400">Loading expansion potential data…</p>
+              </div>
+            )}
+
+            {!whitespaceQuery.isLoading && wsRecords.length === 0 && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <CheckCircle size={32} className="mx-auto text-green-400 mb-3" />
+                <p className="text-sm font-medium text-gray-700">All caught up — no expansion potential data needed 🎉</p>
+                <p className="text-xs text-gray-400 mt-1">RevBot will reach out when there's something to fill in.</p>
+              </div>
+            )}
+
+            {wsRecords.length > 0 && (
+              <div className="space-y-3">
                 {wsRecords.map((group) => (
                   <WhitespaceAccountCard
                     key={group.accountId}
@@ -353,7 +386,7 @@ export function RepPortal() {
                 ))}
               </div>
             )}
-          </div>
+          </>
         )}
 
         <p className="text-center text-xs text-gray-300 pt-4">Powered by Beacon · RevOps</p>

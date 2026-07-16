@@ -1,7 +1,17 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { RefreshCw, ChevronDown, ChevronUp, Save, Send, Check } from 'lucide-react'
+import {
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  Save,
+  Send,
+  Check,
+  Filter,
+  Target,
+  TrendingUp,
+} from 'lucide-react'
 import clsx from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -16,50 +26,39 @@ interface ProductCoverageRecord {
   fitUseCase: string | null
   currentLocationsCovered: number | null
   totalLocationsFit: number | null
-  expansionPotential: number | null
   arrPotential: number | null
   priority: string | null
+  pricePerLocation: number | null
+  currentArr: number
 }
 
 interface AccountGroup {
   accountId: string
   accountName: string
-  ownerEmail: string | null
-  ownerName: string | null
-  ownerSlackUserId: string | null
+  totalCurrentArr: number
   records: ProductCoverageRecord[]
 }
 
-interface ExpansionPotentialResponse {
+interface AmGroup {
+  ownerEmail: string | null
+  ownerName: string | null
+  ownerSlackUserId: string | null
+  totalLines: number
+  totalCurrentArr: number
   accounts: AccountGroup[]
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function statusBadgeClass(status: string | null): string {
-  switch (status) {
-    case 'Has':
-      return 'bg-green-100 text-green-700'
-    case 'Pitching / Does Not Have':
-      return 'bg-blue-100 text-blue-700'
-    case 'Does Not Have / Not Pitching Yet':
-      return 'bg-gray-100 text-gray-600'
-    case 'Used to have':
-      return 'bg-orange-100 text-orange-700'
-    default:
-      return 'bg-gray-100 text-gray-500'
-  }
+interface ExpansionPotentialResponse {
+  ams: AmGroup[]
 }
 
-function fitBadgeClass(fit: string | null): string {
-  switch (fit) {
-    case 'Strong Fit':
-      return 'bg-green-100 text-green-700'
-    case 'Possible Fit':
-      return 'bg-yellow-100 text-yellow-700'
-    default:
-      return 'bg-gray-100 text-gray-500'
-  }
+type SortMode = 'arr' | 'locations'
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function fmtCurrency(val: number | null | undefined): string {
+  if (val === null || val === undefined) return '—'
+  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(val)
 }
 
 function priorityBadgeClass(priority: string | null): string {
@@ -68,99 +67,9 @@ function priorityBadgeClass(priority: string | null): string {
       return 'bg-red-100 text-red-700'
     case 'Medium':
       return 'bg-amber-100 text-amber-700'
-    case 'Low':
-      return 'bg-gray-100 text-gray-500'
     default:
       return 'bg-gray-100 text-gray-500'
   }
-}
-
-function fmtCurrency(val: number | null): string {
-  if (val === null || val === undefined) return '—'
-  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(val)
-}
-
-// ── AccountCard ───────────────────────────────────────────────────────────────
-
-function AccountCard({
-  group,
-  onRowSaved,
-  onSendPrompt,
-}: {
-  group: AccountGroup
-  onRowSaved: (recordId: string) => void
-  onSendPrompt: (group: AccountGroup) => void
-}) {
-  const [open, setOpen] = useState(false)
-
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 hover:bg-gray-50">
-        <button
-          onClick={() => setOpen((o) => !o)}
-          className="flex items-center gap-3 min-w-0 flex-1 text-left"
-        >
-          <span className="text-sm font-semibold text-gray-900 truncate">{group.accountName}</span>
-          <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-            {group.records.length} line{group.records.length !== 1 ? 's' : ''}
-          </span>
-        </button>
-        <div className="flex items-center gap-2 shrink-0">
-          {group.ownerSlackUserId && (
-            <SendPromptButton group={group} onSendPrompt={onSendPrompt} />
-          )}
-          {open
-            ? <ChevronUp size={14} className="text-gray-400" />
-            : <ChevronDown size={14} className="text-gray-400" />
-          }
-        </div>
-      </div>
-
-      {open && (
-        <div className="border-t border-gray-100 divide-y divide-gray-100">
-          {group.records.map((record) => (
-            <CoverageRow key={record.id} record={record} onSaved={() => onRowSaved(record.id)} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── SendPromptButton ──────────────────────────────────────────────────────────
-
-function SendPromptButton({
-  group,
-  onSendPrompt,
-}: {
-  group: AccountGroup
-  onSendPrompt: (group: AccountGroup) => void
-}) {
-  const [sent, setSent] = useState(false)
-
-  function handleClick(e: React.MouseEvent) {
-    e.stopPropagation()
-    onSendPrompt(group)
-    setSent(true)
-    setTimeout(() => setSent(false), 3000)
-  }
-
-  return (
-    <button
-      onClick={handleClick}
-      disabled={sent}
-      title={`Send whitespace prompt to ${group.ownerName ?? group.ownerEmail ?? 'owner'}`}
-      className={clsx(
-        'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
-        sent
-          ? 'bg-green-100 text-green-700'
-          : 'text-gray-500 border border-gray-200 hover:bg-gray-50 hover:text-gray-700',
-      )}
-    >
-      {sent ? <Check size={11} /> : <Send size={11} />}
-      {sent ? 'Sent!' : 'Send prompt'}
-    </button>
-  )
 }
 
 // ── CoverageRow ───────────────────────────────────────────────────────────────
@@ -185,24 +94,13 @@ function CoverageRow({ record, onSaved }: { record: ProductCoverageRecord; onSav
   const displayName = record.productCoverageName ?? record.name
 
   return (
-    <div className="px-5 py-3 flex items-center gap-4 flex-wrap text-sm">
-
+    <div className="px-5 py-3 flex items-center gap-3 flex-wrap text-sm bg-gray-50/50">
       {/* Product name */}
       <div className="flex-1 min-w-0">
         <span className="font-medium text-gray-800 truncate block">{displayName}</span>
       </div>
 
-      {/* Current Status badge */}
-      <span className={clsx('shrink-0 text-xs font-medium px-2 py-0.5 rounded-full', statusBadgeClass(record.currentStatus))}>
-        {record.currentStatus ?? '—'}
-      </span>
-
-      {/* Fit badge */}
-      <span className={clsx('shrink-0 text-xs font-medium px-2 py-0.5 rounded-full', fitBadgeClass(record.fitUseCase))}>
-        {record.fitUseCase ?? '—'}
-      </span>
-
-      {/* Priority badge — only if set */}
+      {/* Priority badge */}
       {record.priority && (
         <span className={clsx('shrink-0 text-xs font-medium px-2 py-0.5 rounded-full', priorityBadgeClass(record.priority))}>
           {record.priority}
@@ -215,10 +113,18 @@ function CoverageRow({ record, onSaved }: { record: ProductCoverageRecord; onSav
         <span className="font-medium text-gray-700">{record.currentLocationsCovered ?? '—'}</span>
       </div>
 
-      {/* ARR Potential */}
-      <div className="shrink-0 text-xs text-gray-500 w-28 text-right">
-        <span className="text-gray-400">ARR: </span>
-        <span className="font-medium text-gray-700">{fmtCurrency(record.arrPotential)}</span>
+      {/* Price per location */}
+      <div className="shrink-0 text-xs text-gray-500 w-20 text-right">
+        <span className="text-gray-400">€/loc: </span>
+        <span className="font-medium text-gray-700">
+          {record.pricePerLocation != null ? record.pricePerLocation.toLocaleString('de-DE') : '—'}
+        </span>
+      </div>
+
+      {/* Current ARR */}
+      <div className="shrink-0 text-xs w-28 text-right">
+        <span className="text-gray-400">Curr ARR: </span>
+        <span className="font-semibold text-gray-800">{fmtCurrency(record.currentArr)}</span>
       </div>
 
       {/* Total Locations Fit input + Save */}
@@ -251,7 +157,6 @@ function CoverageRow({ record, onSaved }: { record: ProductCoverageRecord; onSav
         </button>
       </div>
 
-      {/* Error */}
       {save.isError && (
         <p className="w-full text-xs text-red-600 mt-1">
           Save failed — check your Salesforce connection
@@ -261,29 +166,125 @@ function CoverageRow({ record, onSaved }: { record: ProductCoverageRecord; onSav
   )
 }
 
+// ── AccountSubCard ────────────────────────────────────────────────────────────
+
+function AccountSubCard({
+  account,
+  onRowSaved,
+}: {
+  account: AccountGroup
+  onRowSaved: (recordId: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="border border-gray-100 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-left"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-medium text-gray-800 truncate">{account.accountName}</span>
+          <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+            {account.records.length} line{account.records.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="text-xs font-semibold text-gray-700">{fmtCurrency(account.totalCurrentArr)}</span>
+          {open
+            ? <ChevronUp size={13} className="text-gray-400" />
+            : <ChevronDown size={13} className="text-gray-400" />
+          }
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100 divide-y divide-gray-100">
+          {account.records.map((record) => (
+            <CoverageRow key={record.id} record={record} onSaved={() => onRowSaved(record.id)} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── AmCard ────────────────────────────────────────────────────────────────────
+
+function AmCard({
+  am,
+  isChecked,
+  onCheckChange,
+  onRowSaved,
+  sendSuccessKey,
+}: {
+  am: AmGroup
+  isChecked: boolean
+  onCheckChange: (checked: boolean) => void
+  onRowSaved: (recordId: string) => void
+  sendSuccessKey: number | null
+}) {
+  const [open, setOpen] = useState(false)
+
+  const displayName = am.ownerName ?? am.ownerEmail ?? 'Unknown AM'
+  const totalAccounts = am.accounts.length
+
+  return (
+    <div className={clsx('bg-white rounded-xl border overflow-hidden', isChecked ? 'border-brand-400 ring-1 ring-brand-300' : 'border-gray-200')}>
+      <div className="flex items-center gap-3 px-5 py-4">
+        {/* Checkbox */}
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onChange={(e) => onCheckChange(e.target.checked)}
+          className="w-4 h-4 rounded border-gray-300 text-brand-500 focus:ring-brand-300 shrink-0 cursor-pointer"
+          title={am.ownerSlackUserId ? undefined : 'No Slack user found for this AM'}
+        />
+
+        {/* Name + stats — clicking expands */}
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex-1 min-w-0 text-left flex items-center gap-3"
+        >
+          <span className="text-sm font-semibold text-gray-900 truncate">{displayName}</span>
+          <span className="shrink-0 text-xs text-gray-500">
+            {totalAccounts} {totalAccounts === 1 ? 'account' : 'accounts'} · {am.totalLines} {am.totalLines === 1 ? 'line' : 'lines'} · {fmtCurrency(am.totalCurrentArr)}
+          </span>
+        </button>
+
+        {/* Send success indicator */}
+        {sendSuccessKey !== null && (
+          <span className="shrink-0 flex items-center gap-1 text-xs text-green-600 font-medium">
+            <Check size={12} /> Sent!
+          </span>
+        )}
+
+        {/* Expand/collapse */}
+        <button onClick={() => setOpen((o) => !o)} className="shrink-0 text-gray-400 hover:text-gray-600">
+          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+      </div>
+
+      {open && (
+        <div className="border-t border-gray-100 px-5 py-4 space-y-2">
+          {am.accounts.map((account) => (
+            <AccountSubCard key={account.accountId} account={account} onRowSaved={onRowSaved} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── WhitespaceHygiene page ────────────────────────────────────────────────────
 
 export function WhitespaceHygiene() {
   const qc = useQueryClient()
-  const [activeTab] = useState<'expansion-potential'>('expansion-potential')
-
-  // Local state for dismissed rows (removed from list on save success)
+  const [sortMode, setSortMode] = useState<SortMode>('arr')
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
-
-  const sendPromptMutation = useMutation({
-    mutationFn: (group: AccountGroup) =>
-      api.post('/whitespace/send-prompt', {
-        repSlackUserId: group.ownerSlackUserId,
-        repEmail: group.ownerEmail,
-        repName: group.ownerName ?? group.ownerEmail,
-        accountCount: 1,
-        lineCount: group.records.length,
-      }),
-  })
-
-  function handleSendPrompt(group: AccountGroup) {
-    sendPromptMutation.mutate(group)
-  }
+  const [checkedAms, setCheckedAms] = useState<Set<string>>(new Set())
+  // map ownerKey -> timestamp of send success (for 3s checkmark)
+  const [sendSuccessKeys, setSendSuccessKeys] = useState<Map<string, number>>(new Map())
 
   const { data, isFetching, isError, error } = useQuery<ExpansionPotentialResponse>({
     queryKey: ['whitespace-expansion-potential'],
@@ -291,24 +292,91 @@ export function WhitespaceHygiene() {
     refetchOnWindowFocus: false,
   })
 
+  const sendPromptMutation = useMutation({
+    mutationFn: ({ am }: { am: AmGroup; ownerKey: string }) =>
+      api.post('/whitespace/send-prompt', {
+        repSlackUserId: am.ownerSlackUserId,
+        repEmail: am.ownerEmail,
+        repName: am.ownerName ?? am.ownerEmail,
+        accountCount: am.accounts.length,
+        lineCount: am.totalLines,
+        currentArr: am.totalCurrentArr,
+      }),
+    onSuccess: (_data, variables) => {
+      const { ownerKey } = variables
+      const key = Date.now()
+      setSendSuccessKeys((prev) => new Map(prev).set(ownerKey, key))
+      setCheckedAms((prev) => {
+        const next = new Set(prev)
+        next.delete(ownerKey)
+        return next
+      })
+      setTimeout(() => {
+        setSendSuccessKeys((prev) => {
+          const next = new Map(prev)
+          if (next.get(ownerKey) === key) next.delete(ownerKey)
+          return next
+        })
+      }, 3000)
+    },
+  })
+
   function handleRowSaved(recordId: string) {
     setRemovedIds((prev) => new Set([...prev, recordId]))
   }
 
-  // Filter out saved rows from the data
-  const filteredAccounts = (data?.accounts ?? [])
-    .map((account) => ({
-      ...account,
-      records: account.records.filter((r) => !removedIds.has(r.id)),
-    }))
-    .filter((account) => account.records.length > 0)
+  function ownerKey(am: AmGroup): string {
+    return am.ownerEmail?.toLowerCase() ?? `__no_owner__${am.ownerName ?? 'unknown'}`
+  }
 
-  const totalLines = filteredAccounts.reduce((sum, a) => sum + a.records.length, 0)
-  const totalAccounts = filteredAccounts.length
+  // Filter removed records and empty accounts/AMs
+  const filteredAms = (data?.ams ?? [])
+    .map((am) => ({
+      ...am,
+      accounts: am.accounts
+        .map((acct) => ({
+          ...acct,
+          records: acct.records.filter((r) => !removedIds.has(r.id)),
+          totalCurrentArr: acct.records
+            .filter((r) => !removedIds.has(r.id))
+            .reduce((s, r) => s + r.currentArr, 0),
+        }))
+        .filter((acct) => acct.records.length > 0),
+    }))
+    .map((am) => ({
+      ...am,
+      totalLines: am.accounts.reduce((s, a) => s + a.records.length, 0),
+      totalCurrentArr: am.accounts.reduce((s, a) => s + a.totalCurrentArr, 0),
+    }))
+    .filter((am) => am.accounts.length > 0)
+
+  // Apply sort within each AM's accounts
+  const sortedAms = filteredAms.map((am) => ({
+    ...am,
+    accounts: [...am.accounts].sort((a, b) => {
+      if (sortMode === 'arr') return b.totalCurrentArr - a.totalCurrentArr
+      // locations: sort by sum of currentLocationsCovered
+      const sumA = a.records.reduce((s, r) => s + (r.currentLocationsCovered ?? 0), 0)
+      const sumB = b.records.reduce((s, r) => s + (r.currentLocationsCovered ?? 0), 0)
+      return sumB - sumA
+    }),
+  }))
+
+  const totalReps = sortedAms.length
+  const totalAccounts = sortedAms.reduce((s, am) => s + am.accounts.length, 0)
+  const totalLines = sortedAms.reduce((s, am) => s + am.totalLines, 0)
+
+  const selectedAms = sortedAms.filter((am) => checkedAms.has(ownerKey(am)))
+  const canSend = selectedAms.length > 0 && !sendPromptMutation.isPending
+
+  function handleSendAll() {
+    for (const am of selectedAms) {
+      sendPromptMutation.mutate({ am, ownerKey: ownerKey(am) })
+    }
+  }
 
   return (
     <div className="p-8 max-w-5xl">
-
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -328,19 +396,31 @@ export function WhitespaceHygiene() {
         </button>
       </div>
 
-      {/* Sub-tabs */}
-      <div className="flex gap-1 mb-6 border-b border-gray-200">
-        <button
-          className={clsx(
-            'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
-            activeTab === 'expansion-potential'
-              ? 'border-brand-500 text-brand-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          )}
-        >
-          Expansion Potential
-        </button>
-      </div>
+      {/* Filter/sort bar */}
+      {data && !isFetching && totalLines > 0 && (
+        <div className="flex items-center justify-between mb-5 gap-4 flex-wrap">
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <Filter size={13} className="text-gray-400" />
+            <span>
+              <span className="font-semibold text-gray-800">{totalReps}</span> rep{totalReps !== 1 ? 's' : ''}&nbsp;·&nbsp;
+              <span className="font-semibold text-gray-800">{totalAccounts}</span> account{totalAccounts !== 1 ? 's' : ''}&nbsp;·&nbsp;
+              <span className="font-semibold text-gray-800">{totalLines}</span> line{totalLines !== 1 ? 's' : ''} needing data
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <label htmlFor="ws-sort" className="text-xs text-gray-500 font-medium">Sort by:</label>
+            <select
+              id="ws-sort"
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              className="text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-300"
+            >
+              <option value="arr">Current ARR ↓</option>
+              <option value="locations">Current Locations ↓</option>
+            </select>
+          </div>
+        </div>
+      )}
 
       {/* Loading */}
       {isFetching && (
@@ -360,31 +440,74 @@ export function WhitespaceHygiene() {
         </div>
       )}
 
-      {/* Summary badge */}
-      {data && !isFetching && (
-        <>
-          {totalLines === 0 ? (
-            <div className="mb-6 px-4 py-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700 text-center">
-              All expansion potential lines have Total Locations Fit filled in.
-            </div>
-          ) : (
-            <div className="mb-6 inline-flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800 font-medium">
-              <span className="font-bold text-amber-900">{totalLines}</span>
-              {totalLines === 1 ? 'line' : 'lines'} across{' '}
-              <span className="font-bold text-amber-900">{totalAccounts}</span>
-              {totalAccounts === 1 ? ' account' : ' accounts'} missing Total Locations Fit
-            </div>
-          )}
+      {/* Empty state */}
+      {data && !isFetching && totalLines === 0 && (
+        <div className="mb-6 px-4 py-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700 text-center">
+          All expansion potential lines have Total Locations Fit filled in.
+        </div>
+      )}
 
-          {/* Account cards */}
-          {filteredAccounts.length > 0 && (
-            <div className="space-y-3">
-              {filteredAccounts.map((group) => (
-                <AccountCard key={group.accountId} group={group} onRowSaved={handleRowSaved} onSendPrompt={handleSendPrompt} />
-              ))}
+      {/* AM cards */}
+      {sortedAms.length > 0 && (
+        <div className="space-y-3">
+          {sortedAms.map((am) => {
+            const key = ownerKey(am)
+            return (
+              <AmCard
+                key={key}
+                am={am}
+                isChecked={checkedAms.has(key)}
+                onCheckChange={(checked) => {
+                  setCheckedAms((prev) => {
+                    const next = new Set(prev)
+                    if (checked) next.add(key)
+                    else next.delete(key)
+                    return next
+                  })
+                }}
+                onRowSaved={handleRowSaved}
+                sendSuccessKey={sendSuccessKeys.get(key) ?? null}
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {/* Sticky action bar */}
+      {data && !isFetching && totalLines > 0 && (
+        <div className="sticky bottom-6 mt-6 flex justify-center">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg px-5 py-3 flex items-center gap-4">
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Target size={14} className="text-brand-500" />
+              {selectedAms.length === 0
+                ? 'Select AMs to send prompts'
+                : `${selectedAms.length} AM${selectedAms.length !== 1 ? 's' : ''} selected`}
             </div>
-          )}
-        </>
+            <button
+              onClick={handleSendAll}
+              disabled={!canSend}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors',
+                canSend
+                  ? 'bg-brand-500 text-white hover:bg-brand-600'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              )}
+            >
+              {sendPromptMutation.isPending ? (
+                <RefreshCw size={13} className="animate-spin" />
+              ) : (
+                <Send size={13} />
+              )}
+              Send prompt to {selectedAms.length > 0 ? selectedAms.length : ''} selected
+            </button>
+            {selectedAms.length > 0 && (
+              <div className="flex items-center gap-1 text-xs text-gray-400">
+                <TrendingUp size={12} />
+                {fmtCurrency(selectedAms.reduce((s, am) => s + am.totalCurrentArr, 0))} current ARR
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   )
