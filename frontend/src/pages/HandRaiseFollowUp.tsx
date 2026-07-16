@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import {
   RefreshCw,
@@ -8,6 +8,8 @@ import {
   ExternalLink,
   Megaphone,
   X,
+  Send,
+  Check,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -46,11 +48,12 @@ interface HandRaiseResponse {
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—'
-  return new Date(iso).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function formatDateShort(iso: string | null): string {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 function daysAgo(iso: string | null): number | null {
@@ -77,9 +80,155 @@ function stageBadgeClass(stage: string | null): string {
   }
 }
 
+// ── Slack message preview ─────────────────────────────────────────────────────
+
+function SlackPreview({ group }: { group: OwnerGroup }) {
+  const firstName = group.ownerName.split(' ')[0]
+  const count = group.contacts.length
+  const contactWord = count === 1 ? 'contact' : 'contacts'
+  const preview = group.contacts.slice(0, 10)
+  const extra = group.contacts.length - 10
+
+  return (
+    <div className="bg-[#1a1d21] rounded-xl p-4 font-mono text-sm space-y-3">
+      {/* Header */}
+      <div className="bg-[#2c2d30] rounded-lg px-3 py-2">
+        <span className="text-white font-semibold text-xs">📣 Hand raise follow-up needed</span>
+      </div>
+
+      {/* Intro */}
+      <div className="text-[#d1d2d3] text-xs leading-relaxed px-1">
+        Hey <span className="font-semibold text-white">{firstName}</span>! You have{' '}
+        <span className="font-semibold text-white">{count} {contactWord}</span> who raised their hand in the last 30 days with no sales follow-up recorded yet. Can you reach out and log your outreach in Salesforce?
+      </div>
+
+      {/* Contact list */}
+      <div className="space-y-2 px-1">
+        {preview.map((c) => (
+          <div key={c.id} className="text-xs text-[#d1d2d3]">
+            <span className="text-[#1d9bd1] font-medium">{c.name}</span>
+            {c.accountName && <span className="text-[#9b9b9b]"> ({c.accountName})</span>}
+            {c.handRaiseDate && (
+              <span className="text-[#9b9b9b]"> — {formatDateShort(c.handRaiseDate)}</span>
+            )}
+            {c.comment && (
+              <div className="text-[#9b9b9b] italic mt-0.5 ml-2">
+                "{c.comment.slice(0, 120)}{c.comment.length > 120 ? '…' : ''}"
+              </div>
+            )}
+          </div>
+        ))}
+        {extra > 0 && (
+          <div className="text-[#9b9b9b] italic text-xs">…and {extra} more</div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="text-[#7a7a7a] text-[10px] px-1 border-t border-[#2c2d30] pt-2">
+        Sent by RevBot · Log your outreach on each contact in Salesforce so this clears automatically.
+      </div>
+    </div>
+  )
+}
+
+// ── Send preview modal ────────────────────────────────────────────────────────
+
+function SendPreviewModal({
+  group,
+  onClose,
+  onSent,
+}: {
+  group: OwnerGroup
+  onClose: () => void
+  onSent: () => void
+}) {
+  const sendMutation = useMutation({
+    mutationFn: () =>
+      api.post('/hand-raise/send-prompt', {
+        ownerEmail: group.ownerEmail,
+        ownerName: group.ownerName,
+        contacts: group.contacts.map((c) => ({
+          name: c.name,
+          accountName: c.accountName,
+          handRaiseDate: c.handRaiseDate,
+          comment: c.comment,
+          sfdcUrl: c.sfdcUrl,
+        })),
+      }).then((r) => r.data),
+    onSuccess: () => {
+      setTimeout(onSent, 800)
+    },
+  })
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col">
+        {/* Modal header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Send Slack DM</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              To: <span className="font-medium text-gray-700">{group.ownerName}</span>
+              {group.ownerEmail && <span className="text-gray-400"> ({group.ownerEmail})</span>}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Preview */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Message preview</p>
+          <SlackPreview group={group} />
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-4 border-t border-gray-200 flex items-center justify-between gap-3">
+          <button onClick={onClose} className="text-sm text-gray-500 hover:text-gray-700">
+            Cancel
+          </button>
+
+          {sendMutation.isError && (
+            <p className="text-xs text-red-600 flex-1 text-center">
+              {String((sendMutation.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Send failed')}
+            </p>
+          )}
+
+          <button
+            onClick={() => sendMutation.mutate()}
+            disabled={sendMutation.isPending || sendMutation.isSuccess}
+            className={clsx(
+              'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-60',
+              sendMutation.isSuccess
+                ? 'bg-green-100 text-green-700'
+                : 'bg-brand-500 text-white hover:bg-brand-600'
+            )}
+          >
+            {sendMutation.isPending ? (
+              <RefreshCw size={14} className="animate-spin" />
+            ) : sendMutation.isSuccess ? (
+              <Check size={14} />
+            ) : (
+              <Send size={14} />
+            )}
+            {sendMutation.isSuccess ? 'Sent!' : sendMutation.isPending ? 'Sending…' : 'Send DM'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── OwnerCard ─────────────────────────────────────────────────────────────────
 
-function OwnerCard({ group }: { group: OwnerGroup }) {
+function OwnerCard({
+  group,
+  onSendClick,
+}: {
+  group: OwnerGroup
+  onSendClick: () => void
+}) {
   const [open, setOpen] = useState(false)
 
   const displayName = group.ownerName || group.ownerEmail || 'Unknown Owner'
@@ -87,25 +236,39 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 text-left"
-      >
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center gap-2 px-5 py-4">
+        {/* Expand toggle */}
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex-1 flex items-center gap-3 min-w-0 text-left hover:text-brand-600"
+        >
           <span className="text-sm font-semibold text-gray-900 truncate">{displayName}</span>
           {group.ownerRole && (
-            <span className="shrink-0 text-xs text-gray-400 truncate max-w-[200px]">
+            <span className="shrink-0 text-xs text-gray-400 truncate max-w-[200px] hidden sm:block">
               {group.ownerRole}
             </span>
           )}
           <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">
             {count} {count === 1 ? 'contact' : 'contacts'}
           </span>
-        </div>
-        <div className="shrink-0 ml-3 text-gray-400">
+        </button>
+
+        {/* Send button */}
+        {group.ownerEmail && (
+          <button
+            onClick={onSendClick}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand-600 border border-brand-200 rounded-lg hover:bg-brand-50 transition-colors"
+          >
+            <Send size={11} />
+            Send
+          </button>
+        )}
+
+        {/* Chevron */}
+        <button onClick={() => setOpen((o) => !o)} className="shrink-0 text-gray-400 ml-1">
           {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </div>
-      </button>
+        </button>
+      </div>
 
       {open && (
         <div className="border-t border-gray-100 overflow-x-auto">
@@ -131,7 +294,6 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
 
                 return (
                   <tr key={contact.id} className="hover:bg-gray-50/50">
-                    {/* Contact name */}
                     <td className="px-4 py-3 whitespace-nowrap">
                       <a
                         href={contact.sfdcUrl}
@@ -145,8 +307,6 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
                         <p className="text-xs text-gray-400 mt-0.5">{contact.email}</p>
                       )}
                     </td>
-
-                    {/* Account */}
                     <td className="px-4 py-3 whitespace-nowrap">
                       {contact.accountName ? (
                         <span className="text-gray-700 text-xs font-medium">{contact.accountName}</span>
@@ -157,8 +317,6 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
                         <p className="text-[10px] text-gray-400 mt-0.5">{contact.accountRecordType}</p>
                       )}
                     </td>
-
-                    {/* Contact Stage */}
                     <td className="px-4 py-3 whitespace-nowrap">
                       {contact.contactStage ? (
                         <span className={clsx('inline-block text-xs font-medium px-2 py-0.5 rounded-full', stageBadgeClass(contact.contactStage))}>
@@ -168,13 +326,7 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
                         <span className="text-gray-400 text-xs">—</span>
                       )}
                     </td>
-
-                    {/* Hand Raise Date */}
-                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">
-                      {formatDate(contact.handRaiseDate)}
-                    </td>
-
-                    {/* Days ago */}
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap text-xs">{formatDate(contact.handRaiseDate)}</td>
                     <td className="px-4 py-3 whitespace-nowrap text-xs">
                       {days !== null ? (
                         <span className={daysAgoClass(days)}>{days}d</span>
@@ -182,8 +334,6 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
                         <span className="text-gray-400">—</span>
                       )}
                     </td>
-
-                    {/* Comment */}
                     <td className="px-4 py-3 text-gray-500 text-xs max-w-xs">
                       {truncatedComment ? (
                         <span title={contact.comment ?? undefined}>{truncatedComment}</span>
@@ -191,8 +341,6 @@ function OwnerCard({ group }: { group: OwnerGroup }) {
                         <span className="text-gray-400">—</span>
                       )}
                     </td>
-
-                    {/* Open in SF */}
                     <td className="px-4 py-3 whitespace-nowrap">
                       <a
                         href={contact.sfdcUrl}
@@ -222,6 +370,8 @@ export function HandRaiseFollowUp() {
 
   const [maxDays, setMaxDays] = useState<number | ''>('')
   const [roleFilter, setRoleFilter] = useState<string>('')
+  const [previewGroup, setPreviewGroup] = useState<OwnerGroup | null>(null)
+  const [sentEmails, setSentEmails] = useState<Set<string>>(new Set())
 
   const { data, isFetching, isError, error } = useQuery<HandRaiseResponse>({
     queryKey: ['hand-raise-leads'],
@@ -229,7 +379,6 @@ export function HandRaiseFollowUp() {
     refetchOnWindowFocus: false,
   })
 
-  // Client-side filtering on top of server-side filters
   const filteredGroups = (data?.groups ?? [])
     .map((group) => ({
       ...group,
@@ -260,6 +409,18 @@ export function HandRaiseFollowUp() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Preview modal */}
+      {previewGroup && (
+        <SendPreviewModal
+          group={previewGroup}
+          onClose={() => setPreviewGroup(null)}
+          onSent={() => {
+            setSentEmails((prev) => new Set([...prev, previewGroup.ownerEmail ?? previewGroup.ownerName]))
+            setPreviewGroup(null)
+          }}
+        />
+      )}
+
       {/* Header */}
       <div className="bg-white border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
@@ -368,9 +529,23 @@ export function HandRaiseFollowUp() {
           </div>
         )}
 
-        {!isFetching && filteredGroups.map((group) => (
-          <OwnerCard key={group.ownerEmail ?? group.ownerName} group={group} />
-        ))}
+        {!isFetching && filteredGroups.map((group) => {
+          const key = group.ownerEmail ?? group.ownerName
+          const sent = sentEmails.has(key)
+          return (
+            <div key={key} className={clsx(sent && 'opacity-60')}>
+              {sent && (
+                <div className="flex items-center gap-1.5 text-xs text-green-600 font-medium mb-1 px-1">
+                  <Check size={12} /> DM sent to {group.ownerName}
+                </div>
+              )}
+              <OwnerCard
+                group={group}
+                onSendClick={() => setPreviewGroup(group)}
+              />
+            </div>
+          )
+        })}
       </div>
     </div>
   )

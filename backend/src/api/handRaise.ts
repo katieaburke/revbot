@@ -2,6 +2,8 @@ import { Router } from 'express'
 import axios from 'axios'
 import { requireAdmin } from '../middleware/adminAuth'
 import { getServiceConnection } from '../services/salesforce'
+import { sendDm } from '../slack/bot'
+import { db } from '../db'
 
 const router = Router()
 
@@ -182,6 +184,86 @@ router.get('/leads', requireAdmin, async (_req, res) => {
   } catch (err) {
     console.error('[HandRaise] /leads error:', err)
     res.status(500).json({ error: 'Failed to load hand raise contacts from Salesforce' })
+  }
+})
+
+// POST /api/hand-raise/send-prompt
+// Body: { ownerEmail, ownerName, contacts: ContactEntry[] }
+router.post('/send-prompt', requireAdmin, async (req, res) => {
+  const { ownerEmail, ownerName, contacts } = req.body as {
+    ownerEmail?: string
+    ownerName?: string
+    contacts?: { name: string; accountName: string | null; handRaiseDate: string | null; comment: string | null; sfdcUrl: string }[]
+  }
+
+  if (!ownerEmail || !ownerName || !contacts?.length) {
+    return res.status(400).json({ error: 'Missing required fields' })
+  }
+
+  // Look up Slack user ID from DB by email
+  const user = await db.user.findFirst({
+    where: { slackEmail: { equals: ownerEmail, mode: 'insensitive' } },
+  })
+
+  if (!user?.slackUserId) {
+    return res.status(404).json({ error: `No Slack user found for ${ownerEmail}` })
+  }
+
+  try {
+    const firstName = ownerName.split(' ')[0]
+    const count = contacts.length
+    const contactWord = count === 1 ? 'contact' : 'contacts'
+
+    const fmtDate = (iso: string | null) => {
+      if (!iso) return ''
+      return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    }
+
+    // Build contact list (max 10 to avoid Slack block limits)
+    const listItems = contacts.slice(0, 10).map((c) => {
+      const datePart = c.handRaiseDate ? ` — ${fmtDate(c.handRaiseDate)}` : ''
+      const company = c.accountName ? ` (${c.accountName})` : ''
+      const commentPart = c.comment ? `\n  _"${c.comment.slice(0, 120)}${c.comment.length > 120 ? '…' : ''}"_` : ''
+      return `• <${c.sfdcUrl}|${c.name}>${company}${datePart}${commentPart}`
+    })
+
+    if (contacts.length > 10) {
+      listItems.push(`_…and ${contacts.length - 10} more_`)
+    }
+
+    const blocks = [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: '📣 Hand raise follow-up needed', emoji: true },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `Hey ${firstName}! You have *${count} ${contactWord}* who raised their hand in the last 30 days with no sales follow-up recorded yet. Can you reach out and log your outreach in Salesforce?`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: listItems.join('\n'),
+        },
+      },
+      {
+        type: 'context',
+        elements: [
+          { type: 'mrkdwn', text: `_Sent by RevBot · Log your outreach on each contact in Salesforce so this clears automatically._` },
+        ],
+      },
+    ]
+
+    await sendDm(user.slackUserId, blocks as never, 'Hand raise follow-up needed')
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[HandRaise] /send-prompt error:', err)
+    res.status(500).json({ error: 'Failed to send Slack message' })
   }
 })
 
