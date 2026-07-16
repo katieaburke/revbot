@@ -11,6 +11,7 @@ import {
   Filter,
   Target,
   TrendingUp,
+  X,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -35,7 +36,9 @@ interface ProductCoverageRecord {
 interface AccountGroup {
   accountId: string
   accountName: string
+  contractEndDate: string | null
   totalCurrentArr: number
+  totalCurrentLocations: number
   records: ProductCoverageRecord[]
 }
 
@@ -188,6 +191,11 @@ function AccountSubCard({
           <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
             {account.records.length} line{account.records.length !== 1 ? 's' : ''}
           </span>
+          {account.contractEndDate && (
+            <span className="shrink-0 text-xs text-gray-400">
+              ends {new Date(account.contractEndDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <span className="text-xs font-semibold text-gray-700">{fmtCurrency(account.totalCurrentArr)}</span>
@@ -276,6 +284,143 @@ function AmCard({
   )
 }
 
+// ── Message preview modal ─────────────────────────────────────────────────────
+
+function SlackMessagePreview({ am }: { am: AmGroup }) {
+  const firstName = am.ownerName?.split(' ')[0] ?? am.ownerEmail ?? 'there'
+  const lineWord = am.totalLines === 1 ? 'line' : 'lines'
+  const accountWord = am.accounts.length === 1 ? 'account' : 'accounts'
+  const hasArr = am.totalCurrentArr > 0
+
+  return (
+    <div className="bg-[#1a1d21] rounded-xl p-4 text-sm font-sans">
+      {/* Bot name */}
+      <div className="flex items-center gap-2 mb-2">
+        <div className="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">R</div>
+        <span className="text-[#d1d2d3] font-semibold text-sm">RevBot</span>
+        <span className="text-[#5c5f65] text-xs">App</span>
+      </div>
+
+      {/* Header block */}
+      <div className="bg-[#222529] border-l-4 border-brand-500 rounded-r-lg px-3 py-2 mb-2">
+        <p className="text-[#d1d2d3] font-bold text-sm">📊 Quick data request — expansion potential</p>
+      </div>
+
+      {/* Body */}
+      <div className="text-[#d1d2d3] leading-relaxed space-y-2 px-1">
+        <p>
+          Hey <span className="font-semibold">{firstName}</span>! We're building out whitespace data across your book and need your help filling in a few gaps.
+        </p>
+        <p>
+          You have <span className="font-semibold text-white">{am.totalLines} product coverage {lineWord}</span> across <span className="font-semibold text-white">{am.accounts.length} {accountWord}</span> where we're missing the total location fit count.
+        </p>
+        {hasArr && (
+          <p>
+            Your accounts represent <span className="font-semibold text-white">{fmtCurrency(am.totalCurrentArr)}</span> in current ARR — there may be significant expansion potential we're not capturing.
+          </p>
+        )}
+        <p className="text-[#b0b3b8]">
+          <span className="font-semibold text-white">Can you take 5 mins to fill these in?</span> It helps us calculate expansion potential and ARR opportunity across your accounts.
+        </p>
+      </div>
+
+      {/* Button */}
+      <div className="mt-3 px-1">
+        <span className="inline-flex items-center px-3 py-1.5 bg-brand-500 text-white text-xs font-semibold rounded cursor-default">
+          Fill in my accounts →
+        </span>
+      </div>
+
+      {/* Context */}
+      <p className="mt-2 px-1 text-[#5c5f65] text-xs">📋 Open in your RevBot portal</p>
+    </div>
+  )
+}
+
+function SendPreviewModal({
+  selectedAms,
+  onConfirm,
+  onCancel,
+  isSending,
+}: {
+  selectedAms: AmGroup[]
+  onConfirm: () => void
+  onCancel: () => void
+  isSending: boolean
+}) {
+  const [previewIdx, setPreviewIdx] = useState(0)
+  const current = selectedAms[previewIdx]
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div>
+            <h3 className="font-semibold text-gray-900">Review message drafts</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {selectedAms.length} message{selectedAms.length !== 1 ? 's' : ''} ready to send
+            </p>
+          </div>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Rep tabs if multiple */}
+        {selectedAms.length > 1 && (
+          <div className="flex gap-1 px-4 pt-3 flex-wrap">
+            {selectedAms.map((am, i) => (
+              <button
+                key={am.ownerEmail ?? i}
+                onClick={() => setPreviewIdx(i)}
+                className={clsx(
+                  'px-3 py-1 rounded-full text-xs font-medium transition-colors',
+                  i === previewIdx
+                    ? 'bg-brand-500 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                )}
+              >
+                {am.ownerName?.split(' ')[0] ?? am.ownerEmail}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Preview */}
+        <div className="px-4 py-4 overflow-y-auto flex-1">
+          <p className="text-xs text-gray-400 mb-2 font-medium">
+            To: <span className="text-gray-700">{current.ownerName ?? current.ownerEmail}</span>
+            {!current.ownerSlackUserId && (
+              <span className="ml-2 text-amber-500">⚠ No Slack ID — message won't send</span>
+            )}
+          </p>
+          <SlackMessagePreview am={current} />
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100">
+          <button
+            onClick={onCancel}
+            disabled={isSending}
+            className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isSending}
+            className="flex items-center gap-2 px-5 py-2 bg-brand-500 text-white text-sm font-medium rounded-xl hover:bg-brand-600 disabled:opacity-50"
+          >
+            {isSending ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
+            Send {selectedAms.length} message{selectedAms.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── WhitespaceHygiene page ────────────────────────────────────────────────────
 
 export function WhitespaceHygiene() {
@@ -283,8 +428,13 @@ export function WhitespaceHygiene() {
   const [sortMode, setSortMode] = useState<SortMode>('arr')
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
   const [checkedAms, setCheckedAms] = useState<Set<string>>(new Set())
+  // Filters
+  const [minArr, setMinArr] = useState<string>('')
+  const [minLocations, setMinLocations] = useState<string>('')
+  const [contractEndBefore, setContractEndBefore] = useState<string>('')
   // map ownerKey -> timestamp of send success (for 3s checkmark)
   const [sendSuccessKeys, setSendSuccessKeys] = useState<Map<string, number>>(new Map())
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   const { data, isFetching, isError, error } = useQuery<ExpansionPotentialResponse>({
     queryKey: ['whitespace-expansion-potential'],
@@ -329,7 +479,12 @@ export function WhitespaceHygiene() {
     return am.ownerEmail?.toLowerCase() ?? `__no_owner__${am.ownerName ?? 'unknown'}`
   }
 
-  // Filter removed records and empty accounts/AMs
+  // Parse active filter values
+  const minArrVal = minArr !== '' ? Number(minArr) : null
+  const minLocationsVal = minLocations !== '' ? Number(minLocations) : null
+  const contractEndBeforeVal = contractEndBefore !== '' ? contractEndBefore : null // ISO date string YYYY-MM-DD
+
+  // Filter removed records and empty accounts/AMs, then apply user filters
   const filteredAms = (data?.ams ?? [])
     .map((am) => ({
       ...am,
@@ -340,8 +495,20 @@ export function WhitespaceHygiene() {
           totalCurrentArr: acct.records
             .filter((r) => !removedIds.has(r.id))
             .reduce((s, r) => s + r.currentArr, 0),
+          totalCurrentLocations: acct.records
+            .filter((r) => !removedIds.has(r.id))
+            .reduce((s, r) => s + (r.currentLocationsCovered ?? 0), 0),
         }))
-        .filter((acct) => acct.records.length > 0),
+        .filter((acct) => {
+          if (acct.records.length === 0) return false
+          if (minArrVal !== null && acct.totalCurrentArr < minArrVal) return false
+          if (minLocationsVal !== null && acct.totalCurrentLocations < minLocationsVal) return false
+          if (contractEndBeforeVal !== null) {
+            if (!acct.contractEndDate) return false
+            if (acct.contractEndDate > contractEndBeforeVal) return false
+          }
+          return true
+        }),
     }))
     .map((am) => ({
       ...am,
@@ -370,9 +537,14 @@ export function WhitespaceHygiene() {
   const canSend = selectedAms.length > 0 && !sendPromptMutation.isPending
 
   function handleSendAll() {
+    setPreviewOpen(true)
+  }
+
+  function handleConfirmSend() {
     for (const am of selectedAms) {
       sendPromptMutation.mutate({ am, ownerKey: ownerKey(am) })
     }
+    setPreviewOpen(false)
   }
 
   return (
@@ -397,30 +569,86 @@ export function WhitespaceHygiene() {
       </div>
 
       {/* Filter/sort bar */}
-      {data && !isFetching && totalLines > 0 && (
-        <div className="flex items-center justify-between mb-5 gap-4 flex-wrap">
-          <div className="flex items-center gap-2 text-sm text-gray-500">
-            <Filter size={13} className="text-gray-400" />
-            <span>
-              <span className="font-semibold text-gray-800">{totalReps}</span> rep{totalReps !== 1 ? 's' : ''}&nbsp;·&nbsp;
-              <span className="font-semibold text-gray-800">{totalAccounts}</span> account{totalAccounts !== 1 ? 's' : ''}&nbsp;·&nbsp;
-              <span className="font-semibold text-gray-800">{totalLines}</span> line{totalLines !== 1 ? 's' : ''} needing data
-            </span>
+      <div className="mb-5 space-y-3">
+        {/* Filter row */}
+        <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex flex-wrap items-end gap-4">
+            <div className="flex items-center gap-1.5 text-xs text-gray-500 font-medium shrink-0">
+              <Filter size={12} className="text-gray-400" />
+              Filter accounts:
+            </div>
+
+            {/* Min ARR */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Min ARR (€)</label>
+              <input
+                type="number"
+                min={0}
+                placeholder="e.g. 10000"
+                value={minArr}
+                onChange={(e) => setMinArr(e.target.value)}
+                className="w-32 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-300"
+              />
+            </div>
+
+            {/* Min Locations */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Min Locations</label>
+              <input
+                type="number"
+                min={0}
+                placeholder="e.g. 50"
+                value={minLocations}
+                onChange={(e) => setMinLocations(e.target.value)}
+                className="w-32 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-300"
+              />
+            </div>
+
+            {/* Contract end before */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Contract ends before</label>
+              <input
+                type="date"
+                value={contractEndBefore}
+                onChange={(e) => setContractEndBefore(e.target.value)}
+                className="w-36 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-300"
+              />
+            </div>
+
+            {/* Clear filters */}
+            {(minArr || minLocations || contractEndBefore) && (
+              <button
+                onClick={() => { setMinArr(''); setMinLocations(''); setContractEndBefore('') }}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 pb-0.5"
+              >
+                <X size={11} /> Clear
+              </button>
+            )}
+
+            {/* Sort */}
+            <div className="flex flex-col gap-1 ml-auto">
+              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Sort accounts by</label>
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as SortMode)}
+                className="text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-300"
+              >
+                <option value="arr">Current ARR ↓</option>
+                <option value="locations">Current Locations ↓</option>
+              </select>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <label htmlFor="ws-sort" className="text-xs text-gray-500 font-medium">Sort by:</label>
-            <select
-              id="ws-sort"
-              value={sortMode}
-              onChange={(e) => setSortMode(e.target.value as SortMode)}
-              className="text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-300"
-            >
-              <option value="arr">Current ARR ↓</option>
-              <option value="locations">Current Locations ↓</option>
-            </select>
-          </div>
+
+          {/* Stats row */}
+          {totalLines > 0 && (
+            <div className="flex items-center gap-2 text-sm text-gray-500 px-1">
+              <span>
+                <span className="font-semibold text-gray-800">{totalReps}</span> rep{totalReps !== 1 ? 's' : ''}&nbsp;·&nbsp;
+                <span className="font-semibold text-gray-800">{totalAccounts}</span> account{totalAccounts !== 1 ? 's' : ''}&nbsp;·&nbsp;
+                <span className="font-semibold text-gray-800">{totalLines}</span> line{totalLines !== 1 ? 's' : ''} needing data
+              </span>
+            </div>
+          )}
         </div>
-      )}
 
       {/* Loading */}
       {isFetching && (
@@ -508,6 +736,16 @@ export function WhitespaceHygiene() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Send preview modal */}
+      {previewOpen && selectedAms.length > 0 && (
+        <SendPreviewModal
+          selectedAms={selectedAms}
+          onConfirm={handleConfirmSend}
+          onCancel={() => setPreviewOpen(false)}
+          isSending={sendPromptMutation.isPending}
+        />
       )}
     </div>
   )

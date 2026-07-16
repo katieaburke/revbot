@@ -241,6 +241,7 @@ router.get('/whitespace', async (req, res) => {
     const conn = await getServiceConnection()
     const soql = `
       SELECT Id, Name, Product_Coverage_Name__c, Account__c, Account__r.Name,
+             Account__r.Next_Contract_End_Date__c,
              Current_Status__c, Fit_Use_Case__c, Current_Locations_Covered__c,
              Total_Locations_Fit__c, ARR_Potential__c, Priority__c, Price_per_location__c
       FROM Product_Coverage__c
@@ -248,6 +249,8 @@ router.get('/whitespace', async (req, res) => {
         AND (Total_Locations_Fit__c = null OR Total_Locations_Fit__c = 0)
         AND Account__r.RecordType.Name = 'Enterprise Account Record'
         AND Price_per_location__c > 0
+        AND (NOT Account__r.Owner.UserRole.Name LIKE '%partner%')
+        AND (NOT Account__r.Owner.UserRole.Name LIKE '%new business%')
         AND (NOT Product_Coverage_Name__c LIKE '%pull api%')
         AND (NOT Product_Coverage_Name__c LIKE '%services%')
         AND (NOT Product_Coverage_Name__c LIKE '%minimum commit%')
@@ -267,7 +270,7 @@ router.get('/whitespace', async (req, res) => {
         Name: string
         Product_Coverage_Name__c: string | null
         Account__c: string
-        Account__r: { Name: string } | null
+        Account__r: { Name: string; Next_Contract_End_Date__c: string | null } | null
         Current_Status__c: string | null
         Fit_Use_Case__c: string | null
         Current_Locations_Covered__c: number | null

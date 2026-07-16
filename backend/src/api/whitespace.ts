@@ -23,6 +23,8 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         Account__r.Name,
         Account__r.Owner.Email,
         Account__r.Owner.Name,
+        Account__r.Owner.UserRole.Name,
+        Account__r.Next_Contract_End_Date__c,
         Current_Status__c,
         Fit_Use_Case__c,
         Current_Locations_Covered__c,
@@ -36,6 +38,8 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         AND (Total_Locations_Fit__c = null OR Total_Locations_Fit__c = 0)
         AND Account__r.RecordType.Name = 'Enterprise Account Record'
         AND Price_per_location__c > 0
+        AND (NOT Account__r.Owner.UserRole.Name LIKE '%partner%')
+        AND (NOT Account__r.Owner.UserRole.Name LIKE '%new business%')
         AND (NOT Product_Coverage_Name__c LIKE '%pull api%')
         AND (NOT Product_Coverage_Name__c LIKE '%services%')
         AND (NOT Product_Coverage_Name__c LIKE '%minimum commit%')
@@ -53,7 +57,11 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         Name: string
         Product_Coverage_Name__c: string | null
         Account__c: string
-        Account__r: { Name: string; Owner: { Email: string | null; Name: string | null } } | null
+        Account__r: {
+          Name: string
+          Owner: { Email: string | null; Name: string | null; UserRole: { Name: string | null } | null }
+          Next_Contract_End_Date__c: string | null
+        } | null
         Current_Status__c: string | null
         Fit_Use_Case__c: string | null
         Current_Locations_Covered__c: number | null
@@ -108,7 +116,9 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
     type AccountShape = {
       accountId: string
       accountName: string
+      contractEndDate: string | null
       totalCurrentArr: number
+      totalCurrentLocations: number
       records: RecordShape[]
     }
 
@@ -171,14 +181,17 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
       am.totalLines += 1
       am.totalCurrentArr += currentArr
 
+      const contractEndDate = r.Account__r?.Next_Contract_End_Date__c ?? null
+
       if (!am.accountMap.has(accountId)) {
-        const acct: AccountShape = { accountId, accountName, totalCurrentArr: 0, records: [] }
+        const acct: AccountShape = { accountId, accountName, contractEndDate, totalCurrentArr: 0, totalCurrentLocations: 0, records: [] }
         am.accountMap.set(accountId, acct)
         am.accounts.push(acct)
       }
 
       const acct = am.accountMap.get(accountId)!
       acct.totalCurrentArr += currentArr
+      acct.totalCurrentLocations += r.Current_Locations_Covered__c ?? 0
       acct.records.push(record)
     }
 
