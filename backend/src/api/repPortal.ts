@@ -14,7 +14,7 @@ const SFDC_BASE = 'https://uberall.lightning.force.com'
 // Fetch live opp metadata from SFDC for a list of opp IDs
 async function fetchOppMeta(oppIds: string[]): Promise<Map<string, {
   amount: number | null; closeDate: string | null; stage: string | null
-  nextStep: string | null; nextStepDate: string | null
+  nextStep: string | null; nextStepDate: string | null; isClosed: boolean
 }>> {
   const map = new Map()
   if (!oppIds.length) return map
@@ -33,6 +33,7 @@ async function fetchOppMeta(oppIds: string[]): Promise<Map<string, {
         stage: stageApiToLabel(r.StageName),
         nextStep: r.NextStep ?? null,
         nextStepDate: r.Next_Step_Date__c ?? null,
+        isClosed: r.StageName?.toLowerCase().startsWith('closed') ?? false,
       })
     }
   } catch (err) {
@@ -72,7 +73,20 @@ router.get('/me', async (req, res) => {
     const oppIds = [...new Set(deduped.map((n) => n.opportunityId))]
     const oppMeta = await fetchOppMeta(oppIds)
 
-    const notifications = deduped.map((n) => {
+    // Auto-resolve notifications for opps that are now Closed Lost or Closed Won
+    const closedOppIds = oppIds.filter((id) => oppMeta.get(id)?.isClosed === true)
+    if (closedOppIds.length > 0) {
+      await db.notification.updateMany({
+        where: { opportunityId: { in: closedOppIds }, ownerId: user.id, status: { in: ['SENT', 'SNOOZED'] } },
+        data: { status: 'RESOLVED', resolvedAt: new Date() },
+      })
+      console.log(`[RepPortal] Auto-resolved ${closedOppIds.length} notifications for closed opps for user ${user.id}`)
+    }
+
+    // Filter out closed opps from what we show
+    const openDeduped = deduped.filter((n) => !closedOppIds.includes(n.opportunityId))
+
+    const notifications = openDeduped.map((n) => {
       const meta = oppMeta.get(n.opportunityId)
       const details = (n.alertDetails as Record<string, unknown>) ?? {}
       return {
