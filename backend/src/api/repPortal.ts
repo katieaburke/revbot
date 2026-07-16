@@ -242,11 +242,20 @@ router.get('/whitespace', async (req, res) => {
     const soql = `
       SELECT Id, Name, Product_Coverage_Name__c, Account__c, Account__r.Name,
              Current_Status__c, Fit_Use_Case__c, Current_Locations_Covered__c,
-             Total_Locations_Fit__c, ARR_Potential__c, Priority__c
+             Total_Locations_Fit__c, ARR_Potential__c, Priority__c, Price_per_location__c
       FROM Product_Coverage__c
-      WHERE Total_Locations_Fit__c = null
-        AND Fit_Use_Case__c IN ('Strong Fit', 'Possible Fit')
-        AND Current_Status__c != 'Not Relevant'
+      WHERE Current_Status__c = 'Has'
+        AND (Total_Locations_Fit__c = null OR Total_Locations_Fit__c = 0)
+        AND Account__r.RecordType.Name = 'Enterprise Account Record'
+        AND Price_per_location__c > 0
+        AND (NOT Product_Coverage_Name__c LIKE '%pull api%')
+        AND (NOT Product_Coverage_Name__c LIKE '%services%')
+        AND (NOT Product_Coverage_Name__c LIKE '%minimum commit%')
+        AND (NOT Product_Coverage_Name__c LIKE '%package%')
+        AND (NOT Product_Coverage_Name__c LIKE '%standalone%')
+        AND (NOT Product_Coverage_Name__c LIKE '%fee%')
+        AND (NOT Product_Coverage_Name__c LIKE '%bundle%')
+        AND (NOT Product_Coverage_Name__c LIKE '%additional%')
         AND Account__r.Owner.Email = '${repEmail}'
       ORDER BY Account__r.Name ASC
     `.trim()
