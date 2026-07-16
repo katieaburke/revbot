@@ -109,9 +109,7 @@ function SlackPreview({ group }: { group: OwnerGroup }) {
           <div key={c.id} className="text-xs text-[#d1d2d3]">
             <span className="text-[#1d9bd1] font-medium">{c.name}</span>
             {c.accountName && <span className="text-[#9b9b9b]"> ({c.accountName})</span>}
-            {c.handRaiseDate && (
-              <span className="text-[#9b9b9b]"> — {formatDateShort(c.handRaiseDate)}</span>
-            )}
+            <span className="text-[#9b9b9b]"> raised their hand{c.handRaiseDate && ` on ${formatDateShort(c.handRaiseDate)}`}</span>
             {c.comment && (
               <div className="text-[#9b9b9b] italic mt-0.5 ml-2">
                 "{c.comment.slice(0, 120)}{c.comment.length > 120 ? '…' : ''}"

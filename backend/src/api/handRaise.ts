@@ -231,10 +231,10 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
 
     // Build contact list (max 10 to avoid Slack block limits)
     const listItems = contacts.slice(0, 10).map((c) => {
-      const datePart = c.handRaiseDate ? ` — ${fmtDate(c.handRaiseDate)}` : ''
+      const datePart = c.handRaiseDate ? ` on ${fmtDate(c.handRaiseDate)}` : ''
       const company = c.accountName ? ` (${c.accountName})` : ''
       const commentPart = c.comment ? `\n  _"${c.comment.slice(0, 120)}${c.comment.length > 120 ? '…' : ''}"_` : ''
-      return `• <${c.sfdcUrl}|${c.name}>${company}${datePart}${commentPart}`
+      return `• <${c.sfdcUrl}|${c.name}>${company} raised their hand${datePart}${commentPart}`
     })
 
     if (contacts.length > 10) {
