@@ -25,6 +25,8 @@ interface SfdcContactRecord {
   Hand_Raise_Comment__c: string | null
   Is_Marketing_Qualified__c: boolean
   Last_Rep_Communication_Date__c: string | null
+  Gong__Current_Flow_Name__c: string | null
+  Outreach_Current_Sequence_Name__c: string | null
   Type_of_Hand_Raise__c: string | null
   LeadSource: string | null
   CreatedDate: string
@@ -48,6 +50,7 @@ interface ContactEntry {
   typeOfHandRaise: string | null
   comment: string | null
   lastRepCommDate: string | null
+  currentFlowName: string | null
   createdDate: string
   sfdcUrl: string
 }
@@ -81,6 +84,7 @@ router.get('/leads', requireAdmin, async (_req, res) => {
              Contact_Stage__c, Account_Stage__c,
              Hand_Raise__c, Hand_Raise_Date_Time__c, Hand_Raise_Comment__c,
              Is_Marketing_Qualified__c, Last_Rep_Communication_Date__c,
+             Gong__Current_Flow_Name__c, Outreach_Current_Sequence_Name__c,
              Type_of_Hand_Raise__c, LeadSource, CreatedDate,
              Owner.Name, Owner.Email, Owner.UserRole.Name
       FROM Contact
@@ -169,6 +173,7 @@ router.get('/leads', requireAdmin, async (_req, res) => {
         typeOfHandRaise: r.Type_of_Hand_Raise__c,
         comment: r.Hand_Raise_Comment__c,
         lastRepCommDate: r.Last_Rep_Communication_Date__c,
+        currentFlowName: r.Gong__Current_Flow_Name__c ?? r.Outreach_Current_Sequence_Name__c ?? null,
         createdDate: r.CreatedDate,
         sfdcUrl: `${SFDC_BASE}/lightning/r/Contact/${r.Id}/view`,
       })
