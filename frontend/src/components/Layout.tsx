@@ -16,22 +16,18 @@ import {
   Users,
   BarChart2,
   ArrowLeftRight,
-  TrendingUp,
   Target,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
 import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
-const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory']
-const WHITESPACE_ROUTES = ['/whitespace']
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory', '/whitespace']
 
 export function Layout() {
   const location = useLocation()
   const isInPlaybook = PLAYBOOK_ROUTES.some((r) => location.pathname.startsWith(r))
-  const isInWhitespace = WHITESPACE_ROUTES.some((r) => location.pathname.startsWith(r))
   const [playbookOpen, setPlaybookOpen] = useState(isInPlaybook)
-  const [whitespaceOpen, setWhitespaceOpen] = useState(isInWhitespace)
   const { data: dryRunSummary } = useDryRunSummary()
 
   function logout() {
@@ -122,34 +118,12 @@ export function Layout() {
               <NavItem to="/playbook/territory/newlogos" label="New Logos → Success" icon={ArrowLeftRight} />
               <NavItem to="/playbook/territory/churned" label="Churned → Sales" icon={ArrowLeftRight} />
 
-            </div>
-          )}
-
-          <div className="pt-2 pb-1">
-            <div className="h-px bg-gray-100 mx-1" />
-          </div>
-
-          {/* Whitespace Hygiene section */}
-          <button
-            onClick={() => setWhitespaceOpen((o) => !o)}
-            className={clsx(
-              'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors w-full',
-              isInWhitespace
-                ? 'bg-brand-50 text-brand-600'
-                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-            )}
-          >
-            <TrendingUp size={16} />
-            <span className="flex-1 text-left">Whitespace Hygiene</span>
-            <ChevronDown
-              size={14}
-              className={clsx('transition-transform', whitespaceOpen && 'rotate-180')}
-            />
-          </button>
-
-          {whitespaceOpen && (
-            <div className="ml-3 pl-3 border-l border-gray-200 space-y-0.5 mt-0.5">
+              {/* Whitespace Hygiene sub-section */}
+              <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                Whitespace Hygiene
+              </p>
               <NavItem to="/whitespace/expansion-potential" label="Expansion Potential" icon={Target} />
+
             </div>
           )}
 
