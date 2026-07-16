@@ -422,16 +422,19 @@ function SlackMessagePreview({ am, filters }: { am: AmGroup; filters: ActiveFilt
             Your accounts represent <span className="font-semibold text-white">{fmtCurrency(am.totalCurrentArr)}</span> in current ARR — there may be significant expansion potential we're not capturing.
           </p>
         )}
-        {filterLines.map((line, i) => (
-          <p key={i} className="text-[#b0b3b8] text-xs border-l-2 border-brand-500/40 pl-2">
-            {/* Render *bold* markers as bold spans */}
-            {line.split(/(\*[^*]+\*)/).map((part, j) =>
-              part.startsWith('*') && part.endsWith('*')
-                ? <span key={j} className="font-semibold text-[#d1d2d3]">{part.slice(1, -1)}</span>
-                : part
-            )}
-          </p>
-        ))}
+        {filterLines.length > 0 && (
+          <div className="my-1 py-2 px-2 border-l-2 border-[#7b8ec8] space-y-1.5">
+            {filterLines.map((line, i) => (
+              <p key={i} className="text-[#c8cdd4] text-xs leading-relaxed">
+                {line.split(/(\*[^*]+\*)/).map((part, j) =>
+                  part.startsWith('*') && part.endsWith('*')
+                    ? <span key={j} className="font-semibold text-white">{part.slice(1, -1)}</span>
+                    : part
+                )}
+              </p>
+            ))}
+          </div>
+        )}
         <p className="text-[#b0b3b8]">
           <span className="font-semibold text-white">Can you take 5 mins to fill these in?</span> It helps us calculate expansion potential and ARR opportunity across your accounts.
         </p>
@@ -510,6 +513,29 @@ function SendPreviewModal({
               <span className="ml-2 text-amber-500">⚠ No Slack ID — message won't send</span>
             )}
           </p>
+
+          {/* Active filter chips */}
+          {(filters.contractEndBefore || filters.minArr || filters.minLocations) && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {filters.contractEndBefore && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                  📅 Contract ends before {new Date(filters.contractEndBefore).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                </span>
+              )}
+              {filters.minArr && Number(filters.minArr) > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-50 text-green-700 border border-green-200">
+                  💰 Min ARR {fmtCurrency(Number(filters.minArr))}
+                </span>
+              )}
+              {filters.minLocations && Number(filters.minLocations) > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-purple-50 text-purple-700 border border-purple-200">
+                  📍 Min {filters.minLocations} locations
+                </span>
+              )}
+              <span className="text-[11px] text-gray-400 self-center">← included in message</span>
+            </div>
+          )}
+
           <SlackMessagePreview am={current} filters={filters} />
         </div>
 
