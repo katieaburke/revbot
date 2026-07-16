@@ -286,11 +286,40 @@ function AmCard({
 
 // ── Message preview modal ─────────────────────────────────────────────────────
 
-function SlackMessagePreview({ am }: { am: AmGroup }) {
+interface ActiveFilters {
+  minArr: string
+  minLocations: string
+  contractEndBefore: string
+}
+
+function buildFilterLines(filters: ActiveFilters): string[] {
+  const lines: string[] = []
+  if (filters.contractEndBefore) {
+    const d = new Date(filters.contractEndBefore)
+    const formatted = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+    lines.push(`📅 We're prioritising accounts with contracts expiring before *${formatted}* — these are most time-sensitive for capturing expansion potential ahead of renewal.`)
+  }
+  if (filters.minArr) {
+    const val = Number(filters.minArr)
+    if (!isNaN(val) && val > 0) {
+      lines.push(`💰 Focused on accounts with at least *${fmtCurrency(val)}* in current ARR.`)
+    }
+  }
+  if (filters.minLocations) {
+    const val = Number(filters.minLocations)
+    if (!isNaN(val) && val > 0) {
+      lines.push(`📍 Focused on accounts with at least *${val} current locations*.`)
+    }
+  }
+  return lines
+}
+
+function SlackMessagePreview({ am, filters }: { am: AmGroup; filters: ActiveFilters }) {
   const firstName = am.ownerName?.split(' ')[0] ?? am.ownerEmail ?? 'there'
   const lineWord = am.totalLines === 1 ? 'line' : 'lines'
   const accountWord = am.accounts.length === 1 ? 'account' : 'accounts'
   const hasArr = am.totalCurrentArr > 0
+  const filterLines = buildFilterLines(filters)
 
   return (
     <div className="bg-[#1a1d21] rounded-xl p-4 text-sm font-sans">
@@ -319,6 +348,16 @@ function SlackMessagePreview({ am }: { am: AmGroup }) {
             Your accounts represent <span className="font-semibold text-white">{fmtCurrency(am.totalCurrentArr)}</span> in current ARR — there may be significant expansion potential we're not capturing.
           </p>
         )}
+        {filterLines.map((line, i) => (
+          <p key={i} className="text-[#b0b3b8] text-xs border-l-2 border-brand-500/40 pl-2">
+            {/* Render *bold* markers as bold spans */}
+            {line.split(/(\*[^*]+\*)/).map((part, j) =>
+              part.startsWith('*') && part.endsWith('*')
+                ? <span key={j} className="font-semibold text-[#d1d2d3]">{part.slice(1, -1)}</span>
+                : part
+            )}
+          </p>
+        ))}
         <p className="text-[#b0b3b8]">
           <span className="font-semibold text-white">Can you take 5 mins to fill these in?</span> It helps us calculate expansion potential and ARR opportunity across your accounts.
         </p>
@@ -339,11 +378,13 @@ function SlackMessagePreview({ am }: { am: AmGroup }) {
 
 function SendPreviewModal({
   selectedAms,
+  filters,
   onConfirm,
   onCancel,
   isSending,
 }: {
   selectedAms: AmGroup[]
+  filters: ActiveFilters
   onConfirm: () => void
   onCancel: () => void
   isSending: boolean
@@ -395,7 +436,7 @@ function SendPreviewModal({
               <span className="ml-2 text-amber-500">⚠ No Slack ID — message won't send</span>
             )}
           </p>
-          <SlackMessagePreview am={current} />
+          <SlackMessagePreview am={current} filters={filters} />
         </div>
 
         {/* Actions */}
@@ -443,7 +484,7 @@ export function WhitespaceHygiene() {
   })
 
   const sendPromptMutation = useMutation({
-    mutationFn: ({ am }: { am: AmGroup; ownerKey: string }) =>
+    mutationFn: ({ am, filters }: { am: AmGroup; ownerKey: string; filters: ActiveFilters }) =>
       api.post('/whitespace/send-prompt', {
         repSlackUserId: am.ownerSlackUserId,
         repEmail: am.ownerEmail,
@@ -451,6 +492,7 @@ export function WhitespaceHygiene() {
         accountCount: am.accounts.length,
         lineCount: am.totalLines,
         currentArr: am.totalCurrentArr,
+        filters,
       }),
     onSuccess: (_data, variables) => {
       const { ownerKey } = variables
@@ -540,9 +582,11 @@ export function WhitespaceHygiene() {
     setPreviewOpen(true)
   }
 
+  const activeFilters: ActiveFilters = { minArr, minLocations, contractEndBefore }
+
   function handleConfirmSend() {
     for (const am of selectedAms) {
-      sendPromptMutation.mutate({ am, ownerKey: ownerKey(am) })
+      sendPromptMutation.mutate({ am, ownerKey: ownerKey(am), filters: activeFilters })
     }
     setPreviewOpen(false)
   }
@@ -742,6 +786,7 @@ export function WhitespaceHygiene() {
       {previewOpen && selectedAms.length > 0 && (
         <SendPreviewModal
           selectedAms={selectedAms}
+          filters={activeFilters}
           onConfirm={handleConfirmSend}
           onCancel={() => setPreviewOpen(false)}
           isSending={sendPromptMutation.isPending}

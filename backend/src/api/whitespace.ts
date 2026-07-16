@@ -254,13 +254,14 @@ router.patch('/product-coverage/:id', requireAdmin, async (req, res) => {
 
 // POST /api/whitespace/send-prompt
 router.post('/send-prompt', requireAdmin, async (req, res) => {
-  const { repSlackUserId, repEmail, repName, accountCount, lineCount, currentArr } = req.body as {
+  const { repSlackUserId, repEmail, repName, accountCount, lineCount, currentArr, filters } = req.body as {
     repSlackUserId?: string
     repEmail?: string
     repName?: string
     accountCount?: number
     lineCount?: number
     currentArr?: number
+    filters?: { minArr?: string; minLocations?: string; contractEndBefore?: string }
   }
 
   if (!repSlackUserId || !repEmail || !repName || accountCount === undefined || lineCount === undefined) {
@@ -283,6 +284,26 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
         ? `Your accounts represent *${fmtEur(currentArr)}* in current ARR — there may be significant expansion potential we're not capturing.`
         : null
 
+    // Build filter context lines
+    const filterLines: string[] = []
+    if (filters?.contractEndBefore) {
+      const d = new Date(filters.contractEndBefore)
+      const formatted = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+      filterLines.push(`📅 We're prioritising accounts with contracts expiring before *${formatted}* — these are most time-sensitive for capturing expansion potential ahead of renewal.`)
+    }
+    if (filters?.minArr) {
+      const val = Number(filters.minArr)
+      if (!isNaN(val) && val > 0) {
+        filterLines.push(`💰 Focused on accounts with at least *${fmtEur(val)}* in current ARR.`)
+      }
+    }
+    if (filters?.minLocations) {
+      const val = Number(filters.minLocations)
+      if (!isNaN(val) && val > 0) {
+        filterLines.push(`📍 Focused on accounts with at least *${val} current locations*.`)
+      }
+    }
+
     const blocks = [
       {
         type: 'header',
@@ -302,6 +323,17 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
               text: {
                 type: 'mrkdwn',
                 text: arrText,
+              },
+            },
+          ]
+        : []),
+      ...(filterLines.length > 0
+        ? [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: filterLines.join('\n'),
               },
             },
           ]
