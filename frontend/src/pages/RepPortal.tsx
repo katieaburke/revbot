@@ -31,7 +31,7 @@ interface PendingFlag {
 }
 
 interface RepData {
-  rep: { name: string; email: string | null }
+  rep: { name: string; email: string | null; repRole: string | null }
   notifications: RepNotification[]
   pending: PendingFlag[]
 }
@@ -280,6 +280,7 @@ export function RepPortal() {
                 isCloseDatePending={closeDateMutation.isPending}
                 onUpdateNextStep={(nextStep, nextStepDate) => nextStepMutation.mutate({ opportunityId: notif.opportunityId, nextStep, nextStepDate })}
                 isNextStepPending={nextStepMutation.isPending}
+                repRole={data?.rep.repRole}
               />
             ))}
 
@@ -301,6 +302,7 @@ export function RepPortal() {
                     isCloseDatePending={closeDateMutation.isPending}
                     onUpdateNextStep={(nextStep, nextStepDate) => nextStepMutation.mutate({ opportunityId: notif.opportunityId, nextStep, nextStepDate })}
                     isNextStepPending={nextStepMutation.isPending}
+                    repRole={data?.rep.repRole}
                   />
                 ))}
               </div>
@@ -463,6 +465,7 @@ function NotifCard({
   isCloseDatePending,
   onUpdateNextStep,
   isNextStepPending,
+  repRole,
 }: {
   notif: RepNotification
   snoozed?: boolean
@@ -475,6 +478,7 @@ function NotifCard({
   isCloseDatePending: boolean
   onUpdateNextStep: (nextStep?: string, nextStepDate?: string) => void
   isNextStepPending: boolean
+  repRole?: string | null
 }) {
   const [customDate, setCustomDate] = useState('')
   const [openForm, setOpenForm] = useState<'close-date' | 'next-step' | null>(null)
@@ -536,9 +540,16 @@ function NotifCard({
           const stage = typeof d.stage === 'string' ? d.stage : null
           const nextStepDate = typeof d.nextStepDate === 'string' ? d.nextStepDate : null
           const nextStep = typeof d.nextStep === 'string' && d.nextStep.trim() ? d.nextStep.trim() : null
+          const oppType = typeof d.oppType === 'string' ? d.oppType : null
+          const isExistingBusiness = repRole?.toLowerCase().includes('existing business') ?? false
           return (
             <div className="mb-2.5 space-y-1.5">
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 items-center">
+                {isExistingBusiness && oppType && (
+                  <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">
+                    {oppType}
+                  </span>
+                )}
                 {amount != null && (
                   <span className="text-xs text-gray-500">
                     <span className="font-medium text-gray-700">ACV</span>{' '}

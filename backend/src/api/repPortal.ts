@@ -14,7 +14,7 @@ const SFDC_BASE = 'https://uberall.lightning.force.com'
 // Fetch live opp metadata from SFDC for a list of opp IDs.
 // Returns { map, sfdcOk } — sfdcOk=false means the call failed and we should not act on missing IDs.
 async function fetchOppMeta(oppIds: string[]): Promise<{
-  map: Map<string, { amount: number | null; closeDate: string | null; stage: string | null; nextStep: string | null; nextStepDate: string | null; isClosed: boolean }>
+  map: Map<string, { amount: number | null; closeDate: string | null; stage: string | null; nextStep: string | null; nextStepDate: string | null; isClosed: boolean; oppType: string | null }>
   sfdcOk: boolean
 }> {
   const map = new Map()
@@ -23,9 +23,9 @@ async function fetchOppMeta(oppIds: string[]): Promise<{
     const conn = await getServiceConnection()
     const ids = oppIds.map((id) => `'${id}'`).join(',')
     // Use SFDC's native IsClosed boolean — reliable for Closed Won AND Closed Lost regardless of custom stage names
-    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c, IsClosed FROM Opportunity WHERE Id IN (${ids})`
+    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c, IsClosed, Type FROM Opportunity WHERE Id IN (${ids})`
     const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{ records: { Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null; IsClosed: boolean }[] }>(
+    const resp = await axios.get<{ records: { Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null; IsClosed: boolean; Type: string | null }[] }>(
       url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
     )
     for (const r of resp.data.records) {
@@ -36,6 +36,7 @@ async function fetchOppMeta(oppIds: string[]): Promise<{
         nextStep: r.NextStep ?? null,
         nextStepDate: r.Next_Step_Date__c ?? null,
         isClosed: r.IsClosed ?? false,
+        oppType: r.Type ?? null,
       })
     }
     return { map, sfdcOk: true }
@@ -83,6 +84,17 @@ router.get('/me', async (req, res) => {
           rawPending = (dryRun.wouldSend ?? []).filter((a) => a.ownerEmail?.toLowerCase() === repEmail)
         }
       }
+    } catch { /* non-fatal */ }
+
+    // Fetch rep's Salesforce UserRole.Name (non-fatal)
+    let repRole: string | null = null
+    try {
+      const conn = await getServiceConnection()
+      const roleUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(`SELECT UserRole.Name FROM User WHERE Email = '${user.slackEmail}' LIMIT 1`)}`
+      const roleResp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
+        roleUrl, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
+      )
+      repRole = roleResp.data.records[0]?.UserRole?.Name ?? null
     } catch { /* non-fatal */ }
 
     // Fetch live opp data from SFDC for ALL opp IDs (notifications + pending)
@@ -142,7 +154,7 @@ router.get('/me', async (req, res) => {
       .slice(0, 10)
 
     res.json({
-      rep: { name: user.slackName ?? user.slackEmail ?? 'Rep', email: user.slackEmail },
+      rep: { name: user.slackName ?? user.slackEmail ?? 'Rep', email: user.slackEmail, repRole },
       notifications,
       pending,
     })

@@ -17,12 +17,13 @@ import {
   BarChart2,
   ArrowLeftRight,
   Target,
+  Megaphone,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useState } from 'react'
 import { useDryRunSummary } from '../hooks/useDryRunSummary'
 
-const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory', '/whitespace']
+const PLAYBOOK_ROUTES = ['/stall-rules', '/meddpicc', '/past-due', '/next-step', '/close-date-risk', '/accounts', '/playbook/stage-mismatch', '/playbook/accounts', '/playbook/territory', '/playbook/marketing', '/whitespace']
 
 export function Layout() {
   const location = useLocation()
@@ -123,6 +124,12 @@ export function Layout() {
                 Whitespace Hygiene
               </p>
               <NavItem to="/whitespace/expansion-potential" label="Expansion Potential" icon={Target} />
+
+              {/* Marketing sub-section */}
+              <p className="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                Marketing
+              </p>
+              <NavItem to="/playbook/marketing/hand-raise" label="Hand Raise Follow Up" icon={Megaphone} />
 
             </div>
           )}

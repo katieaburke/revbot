@@ -15,6 +15,7 @@ import territoryRouter from './api/territory'
 import repPortalRouter from './api/repPortal'
 import managerPortalRouter from './api/managerPortal'
 import whitespaceRouter from './api/whitespace'
+import handRaiseRouter from './api/handRaise'
 
 async function main() {
   // Init Slack (optional — skipped if tokens not set)
@@ -66,6 +67,7 @@ async function main() {
   app.use('/api/rep', repPortalRouter)
   app.use('/api/manager', managerPortalRouter)
   app.use('/api/whitespace', whitespaceRouter)
+  app.use('/api/hand-raise', handRaiseRouter)
 
   app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
 

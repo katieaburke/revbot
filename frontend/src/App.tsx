@@ -20,6 +20,7 @@ import { ChurnedReassignment } from './pages/ChurnedReassignment'
 import { RepPortal } from './pages/RepPortal'
 import { ManagerPortal } from './pages/ManagerPortal'
 import { WhitespaceHygiene } from './pages/WhitespaceHygiene'
+import { HandRaiseFollowUp } from './pages/HandRaiseFollowUp'
 
 const qc = new QueryClient()
 
@@ -79,6 +80,7 @@ export default function App() {
             <Route path="/team" element={<Team />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/whitespace/expansion-potential" element={<WhitespaceHygiene />} />
+            <Route path="/playbook/marketing/hand-raise" element={<HandRaiseFollowUp />} />
           </Route>
         </Routes>
       </BrowserRouter>
