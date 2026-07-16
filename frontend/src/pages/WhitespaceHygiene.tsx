@@ -179,6 +179,34 @@ function AccountSubCard({
   onRowSaved: (recordId: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [bulkValue, setBulkValue] = useState<string>('')
+  const [bulkSuccess, setBulkSuccess] = useState(false)
+  const [bulkError, setBulkError] = useState(false)
+  const [bulkPending, setBulkPending] = useState(false)
+
+  async function handleBulkApply() {
+    if (!bulkValue || bulkPending) return
+    const num = Number(bulkValue)
+    if (isNaN(num) || num < 0) return
+    setBulkPending(true)
+    setBulkError(false)
+    try {
+      await Promise.all(
+        account.records.map((r) =>
+          api.patch(`/whitespace/product-coverage/${r.id}`, { totalLocationsFit: num })
+        )
+      )
+      setBulkSuccess(true)
+      setBulkValue('')
+      setTimeout(() => {
+        account.records.forEach((r) => onRowSaved(r.id))
+      }, 600)
+    } catch {
+      setBulkError(true)
+    } finally {
+      setBulkPending(false)
+    }
+  }
 
   return (
     <div className="border border-gray-100 rounded-lg overflow-hidden">
@@ -207,10 +235,56 @@ function AccountSubCard({
       </button>
 
       {open && (
-        <div className="border-t border-gray-100 divide-y divide-gray-100">
-          {account.records.map((record) => (
-            <CoverageRow key={record.id} record={record} onSaved={() => onRowSaved(record.id)} />
-          ))}
+        <div className="border-t border-gray-100">
+          {/* Bulk apply row */}
+          {account.records.length > 1 && (
+            <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100 flex items-center gap-3 flex-wrap">
+              <span className="text-xs text-amber-700 font-medium shrink-0">
+                Apply same total locations to all {account.records.length} lines:
+              </span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="Total locations fit"
+                  value={bulkValue}
+                  onChange={(e) => { setBulkValue(e.target.value); setBulkSuccess(false); setBulkError(false) }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleBulkApply()}
+                  className="w-36 text-xs border border-amber-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white"
+                  disabled={bulkPending || bulkSuccess}
+                />
+                <button
+                  onClick={handleBulkApply}
+                  disabled={!bulkValue || bulkPending || bulkSuccess}
+                  className={clsx(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0',
+                    bulkSuccess
+                      ? 'bg-green-100 text-green-700'
+                      : 'bg-amber-500 text-white hover:bg-amber-600'
+                  )}
+                >
+                  {bulkPending ? (
+                    <RefreshCw size={11} className="animate-spin" />
+                  ) : bulkSuccess ? (
+                    <Check size={11} />
+                  ) : (
+                    <Save size={11} />
+                  )}
+                  {bulkSuccess ? 'Saved all!' : `Apply to all ${account.records.length}`}
+                </button>
+              </div>
+              {bulkError && (
+                <p className="w-full text-xs text-red-600">Save failed — check Salesforce connection</p>
+              )}
+            </div>
+          )}
+
+          {/* Individual rows */}
+          <div className="divide-y divide-gray-100">
+            {account.records.map((record) => (
+              <CoverageRow key={record.id} record={record} onSaved={() => onRowSaved(record.id)} />
+            ))}
+          </div>
         </div>
       )}
     </div>
