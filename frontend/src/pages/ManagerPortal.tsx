@@ -55,7 +55,7 @@ interface RepSummary {
 }
 
 interface ManagerData {
-  manager: { name: string; email: string | null }
+  manager: { name: string; email: string | null; roleName: string | null }
   reps: RepSummary[]
 }
 
@@ -539,16 +539,155 @@ function RepCard({ rep, token }: { rep: RepSummary; token: string }) {
   )
 }
 
+// ── Whitespace tab types ──────────────────────────────────────────────────────
+
+interface WsLine {
+  id: string
+  productCoverageName: string | null
+  currentLocationsCovered: number | null
+  currentArr: number
+  priority: string | null
+}
+
+interface WsAccount {
+  accountId: string
+  accountName: string
+  contractEndDate: string | null
+  totalCurrentArr: number
+  lines: WsLine[]
+}
+
+interface WsRep {
+  ownerEmail: string
+  ownerName: string
+  totalLines: number
+  totalCurrentArr: number
+  accounts: WsAccount[]
+}
+
+interface WsData {
+  hasAccess: boolean
+  reps: WsRep[]
+}
+
+// ── Whitespace tab components ─────────────────────────────────────────────────
+
+function fmtEur(val: number) {
+  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(val)
+}
+
+function WsRepCard({ rep }: { rep: WsRep }) {
+  const [expanded, setExpanded] = useState(false)
+  const [openAccountIds, setOpenAccountIds] = useState<Set<string>>(new Set())
+
+  function toggleAccount(id: string) {
+    setOpenAccountIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between px-5 py-4 text-left"
+      >
+        <div className="flex-1 min-w-0">
+          <span className="font-semibold text-gray-900 text-sm">{rep.ownerName}</span>
+          <span className="ml-2 text-xs text-gray-500">
+            {rep.accounts.length} account{rep.accounts.length !== 1 ? 's' : ''} · {rep.totalLines} line{rep.totalLines !== 1 ? 's' : ''}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <span className="text-sm font-semibold text-gray-700">{fmtEur(rep.totalCurrentArr)}</span>
+          <ChevronDown size={14} className={clsx('text-gray-400 transition-transform', expanded && 'rotate-180')} />
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-100 px-5 py-4 space-y-2">
+          {rep.accounts.map((acct) => {
+            const open = openAccountIds.has(acct.accountId)
+            return (
+              <div key={acct.accountId} className="border border-gray-100 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => toggleAccount(acct.accountId)}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-left"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium text-gray-800 truncate">{acct.accountName}</span>
+                    <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                      {acct.lines.length} line{acct.lines.length !== 1 ? 's' : ''}
+                    </span>
+                    {acct.contractEndDate && (
+                      <span className="shrink-0 text-xs text-gray-400">
+                        ends {new Date(acct.contractEndDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    <span className="text-xs font-semibold text-gray-700">{fmtEur(acct.totalCurrentArr)}</span>
+                    <ChevronDown size={13} className={clsx('text-gray-400 transition-transform', open && 'rotate-180')} />
+                  </div>
+                </button>
+
+                {open && (
+                  <div className="border-t border-gray-100 divide-y divide-gray-100">
+                    {acct.lines.map((line) => (
+                      <div key={line.id} className="px-5 py-3 flex items-center gap-3 flex-wrap text-sm bg-gray-50/50">
+                        <div className="flex-1 min-w-0">
+                          <span className="font-medium text-gray-800 truncate block">{line.productCoverageName ?? '—'}</span>
+                        </div>
+                        {line.priority && (
+                          <span className={clsx(
+                            'shrink-0 text-xs font-medium px-2 py-0.5 rounded-full',
+                            line.priority === 'High' ? 'bg-red-100 text-red-700' : line.priority === 'Medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'
+                          )}>
+                            {line.priority}
+                          </span>
+                        )}
+                        <div className="shrink-0 text-xs text-gray-500 w-24 text-right">
+                          <span className="text-gray-400">Covered: </span>
+                          <span className="font-medium text-gray-700">{line.currentLocationsCovered ?? '—'}</span>
+                        </div>
+                        <div className="shrink-0 text-xs w-28 text-right">
+                          <span className="text-gray-400">Curr ARR: </span>
+                          <span className="font-semibold text-gray-800">{fmtEur(line.currentArr)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function ManagerPortal() {
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
   const qc = useQueryClient()
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'whitespace'>('pipeline')
 
   const { data, isLoading, error } = useQuery<ManagerData>({
     queryKey: ['manager-portal', token],
     queryFn: () => managerApi.get(`/manager/me?token=${token}`).then((r) => r.data),
     enabled: !!token,
+    retry: false,
+  })
+
+  const { data: wsData, isFetching: wsFetching } = useQuery<WsData>({
+    queryKey: ['manager-whitespace', token],
+    queryFn: () => managerApi.get(`/manager/whitespace?token=${token}`).then((r) => r.data),
+    enabled: !!token && activeTab === 'whitespace',
     retry: false,
   })
 
@@ -583,40 +722,110 @@ export function ManagerPortal() {
 
   const firstName = data!.manager.name.split(' ')[0]
   const totalOpen = data!.reps.reduce((sum, r) => sum + r.openCount, 0)
+  const showWhitespaceTab = data!.manager.roleName?.toLowerCase().includes('existing business') ?? false
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold text-gray-900">Hi {firstName} 👋</h1>
-            <p className="text-sm text-gray-500 mt-0.5">Your team's pipeline flags</p>
+        <div className="max-w-3xl mx-auto">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-lg font-semibold text-gray-900">Hi {firstName} 👋</h1>
+              <p className="text-sm text-gray-500 mt-0.5">Your team's pipeline flags</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Users size={15} className="text-gray-400" />
+              <span className="text-sm text-gray-500">{data!.reps.length} reps</span>
+              {totalOpen > 0 && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">
+                  {totalOpen} open flags
+                </span>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Users size={15} className="text-gray-400" />
-            <span className="text-sm text-gray-500">{data!.reps.length} reps</span>
-            {totalOpen > 0 && (
-              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">
-                {totalOpen} open flags
-              </span>
-            )}
-          </div>
+
+          {/* Tab bar */}
+          {showWhitespaceTab && (
+            <div className="flex gap-1 mt-4">
+              <button
+                onClick={() => setActiveTab('pipeline')}
+                className={clsx(
+                  'px-4 py-1.5 rounded-full text-sm font-medium transition-colors',
+                  activeTab === 'pipeline'
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                )}
+              >
+                Pipeline
+              </button>
+              <button
+                onClick={() => setActiveTab('whitespace')}
+                className={clsx(
+                  'px-4 py-1.5 rounded-full text-sm font-medium transition-colors',
+                  activeTab === 'whitespace'
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                )}
+              >
+                Whitespace
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="max-w-3xl mx-auto px-6 py-6 space-y-3">
-        {data!.reps.length === 0 && (
-          <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
-            <Users size={32} className="mx-auto text-gray-300 mb-3" />
-            <p className="text-sm font-medium text-gray-700">No direct reports found</p>
-            <p className="text-xs text-gray-400 mt-1">Make sure your Salesforce org has your team's reporting hierarchy set up.</p>
-          </div>
+        {activeTab === 'pipeline' && (
+          <>
+            {data!.reps.length === 0 && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <Users size={32} className="mx-auto text-gray-300 mb-3" />
+                <p className="text-sm font-medium text-gray-700">No direct reports found</p>
+                <p className="text-xs text-gray-400 mt-1">Make sure your Salesforce org has your team's reporting hierarchy set up.</p>
+              </div>
+            )}
+
+            {data!.reps.map((rep) => (
+              <RepCard key={rep.slackUserId} rep={rep} token={token} />
+            ))}
+          </>
         )}
 
-        {data!.reps.map((rep) => (
-          <RepCard key={rep.slackUserId} rep={rep} token={token} />
-        ))}
+        {activeTab === 'whitespace' && (
+          <>
+            {wsFetching && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <p className="text-sm text-gray-400">Loading whitespace data…</p>
+              </div>
+            )}
+
+            {!wsFetching && wsData?.hasAccess === false && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <p className="text-sm font-medium text-gray-700">Whitespace data is available for Existing Business managers</p>
+                <p className="text-xs text-gray-400 mt-1">Your role doesn't currently have access to this view.</p>
+              </div>
+            )}
+
+            {!wsFetching && wsData?.hasAccess === true && wsData.reps.length === 0 && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <p className="text-sm font-medium text-gray-700">No whitespace data found</p>
+                <p className="text-xs text-gray-400 mt-1">All expansion potential lines for your team have Total Locations Fit filled in.</p>
+              </div>
+            )}
+
+            {!wsFetching && wsData?.hasAccess === true && wsData.reps.length > 0 && (
+              <>
+                <p className="text-xs text-gray-400 px-1">
+                  {wsData.reps.length} rep{wsData.reps.length !== 1 ? 's' : ''} with missing location fit data
+                </p>
+                {wsData.reps.map((rep) => (
+                  <WsRepCard key={rep.ownerEmail} rep={rep} />
+                ))}
+              </>
+            )}
+          </>
+        )}
 
         <p className="text-center text-xs text-gray-300 pt-4">Powered by Beacon · RevOps</p>
       </div>

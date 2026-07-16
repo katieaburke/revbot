@@ -12,6 +12,7 @@ import {
   Target,
   TrendingUp,
   X,
+  Users,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -46,6 +47,9 @@ interface AmGroup {
   ownerEmail: string | null
   ownerName: string | null
   ownerSlackUserId: string | null
+  managerEmail: string | null
+  managerName: string | null
+  managerSlackUserId: string | null
   totalLines: number
   totalCurrentArr: number
   accounts: AccountGroup[]
@@ -562,6 +566,147 @@ function SendPreviewModal({
   )
 }
 
+// ── Manager types ─────────────────────────────────────────────────────────────
+
+interface ManagerEntry {
+  managerEmail: string | null
+  managerName: string | null
+  managerSlackUserId: string | null
+  repCount: number
+  accountCount: number
+  lineCount: number
+}
+
+// ── Manager Slack preview ─────────────────────────────────────────────────────
+
+function ManagerSlackMessagePreview({ manager }: { manager: ManagerEntry }) {
+  const firstName = manager.managerName?.split(' ')[0] ?? manager.managerEmail ?? 'there'
+  const repWord = manager.repCount === 1 ? 'rep' : 'reps'
+  const accountWord = manager.accountCount === 1 ? 'account' : 'accounts'
+  const lineWord = manager.lineCount === 1 ? 'product coverage line' : 'product coverage lines'
+
+  return (
+    <div className="bg-[#1a1d21] rounded-xl p-4 text-sm font-sans">
+      {/* Bot name */}
+      <div className="flex items-center gap-2 mb-2">
+        <div className="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">R</div>
+        <span className="text-[#d1d2d3] font-semibold text-sm">RevBot</span>
+        <span className="text-[#5c5f65] text-xs">App</span>
+      </div>
+
+      {/* Header block */}
+      <div className="bg-[#222529] border-l-4 border-brand-500 rounded-r-lg px-3 py-2 mb-2">
+        <p className="text-[#d1d2d3] font-bold text-sm">📊 Team data request — expansion potential</p>
+      </div>
+
+      {/* Body */}
+      <div className="text-[#d1d2d3] leading-relaxed space-y-2 px-1">
+        <p>
+          Hey <span className="font-semibold">{firstName}</span>! Your team has{' '}
+          <span className="font-semibold text-white">{manager.lineCount} {lineWord}</span> across{' '}
+          <span className="font-semibold text-white">{manager.accountCount} {accountWord}</span> where we're missing total location fit data.
+          This feeds into expansion potential and ARR opportunity calculations.
+          Can you nudge your {manager.repCount} {repWord} to fill these in? They'll each get a separate request from RevBot.
+        </p>
+      </div>
+
+      {/* Button */}
+      <div className="mt-3 px-1">
+        <span className="inline-flex items-center px-3 py-1.5 bg-brand-500 text-white text-xs font-semibold rounded cursor-default">
+          View your team's whitespace →
+        </span>
+      </div>
+
+      {/* Context */}
+      <p className="mt-2 px-1 text-[#5c5f65] text-xs">📋 Open in your RevBot portal</p>
+    </div>
+  )
+}
+
+function ManagerSendPreviewModal({
+  managers,
+  onConfirm,
+  onCancel,
+  isSending,
+}: {
+  managers: ManagerEntry[]
+  onConfirm: () => void
+  onCancel: () => void
+  isSending: boolean
+}) {
+  const [previewIdx, setPreviewIdx] = useState(0)
+  const current = managers[previewIdx]
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div>
+            <h3 className="font-semibold text-gray-900">Review manager message drafts</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {managers.length} message{managers.length !== 1 ? 's' : ''} ready to send
+            </p>
+          </div>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Manager tabs if multiple */}
+        {managers.length > 1 && (
+          <div className="flex gap-1 px-4 pt-3 flex-wrap">
+            {managers.map((mgr, i) => (
+              <button
+                key={mgr.managerEmail ?? i}
+                onClick={() => setPreviewIdx(i)}
+                className={clsx(
+                  'px-3 py-1 rounded-full text-xs font-medium transition-colors',
+                  i === previewIdx
+                    ? 'bg-brand-500 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                )}
+              >
+                {mgr.managerName?.split(' ')[0] ?? mgr.managerEmail}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Preview */}
+        <div className="px-4 py-4 overflow-y-auto flex-1">
+          <p className="text-xs text-gray-400 mb-2 font-medium">
+            To: <span className="text-gray-700">{current.managerName ?? current.managerEmail}</span>
+            {!current.managerSlackUserId && (
+              <span className="ml-2 text-amber-500">⚠ No Slack ID — message won't send</span>
+            )}
+          </p>
+          <ManagerSlackMessagePreview manager={current} />
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100">
+          <button
+            onClick={onCancel}
+            disabled={isSending}
+            className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isSending}
+            className="flex items-center gap-2 px-5 py-2 bg-brand-500 text-white text-sm font-medium rounded-xl hover:bg-brand-600 disabled:opacity-50"
+          >
+            {isSending ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
+            Send {managers.length} message{managers.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── WhitespaceHygiene page ────────────────────────────────────────────────────
 
 export function WhitespaceHygiene() {
@@ -576,6 +721,7 @@ export function WhitespaceHygiene() {
   // map ownerKey -> timestamp of send success (for 3s checkmark)
   const [sendSuccessKeys, setSendSuccessKeys] = useState<Map<string, number>>(new Map())
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [managerPreviewOpen, setManagerPreviewOpen] = useState(false)
 
   const { data, isFetching, isError, error } = useQuery<ExpansionPotentialResponse>({
     queryKey: ['whitespace-expansion-potential'],
@@ -611,6 +757,18 @@ export function WhitespaceHygiene() {
         })
       }, 3000)
     },
+  })
+
+  const sendManagerPromptMutation = useMutation({
+    mutationFn: (manager: ManagerEntry) =>
+      api.post('/whitespace/send-manager-prompt', {
+        managerSlackUserId: manager.managerSlackUserId,
+        managerEmail: manager.managerEmail,
+        managerName: manager.managerName,
+        repCount: manager.repCount,
+        accountCount: manager.accountCount,
+        lineCount: manager.lineCount,
+      }),
   })
 
   function handleRowSaved(recordId: string) {
@@ -689,6 +847,36 @@ export function WhitespaceHygiene() {
       sendPromptMutation.mutate({ am, ownerKey: ownerKey(am), filters: activeFilters })
     }
     setPreviewOpen(false)
+  }
+
+  // Compute unique managers from currently displayed sortedAms
+  const uniqueManagers: ManagerEntry[] = (() => {
+    const mgMap = new Map<string, ManagerEntry>()
+    for (const am of sortedAms) {
+      const mgKey = am.managerEmail?.toLowerCase() ?? am.managerName ?? '__no_manager__'
+      if (!mgMap.has(mgKey)) {
+        mgMap.set(mgKey, {
+          managerEmail: am.managerEmail,
+          managerName: am.managerName,
+          managerSlackUserId: am.managerSlackUserId,
+          repCount: 0,
+          accountCount: 0,
+          lineCount: 0,
+        })
+      }
+      const entry = mgMap.get(mgKey)!
+      entry.repCount += 1
+      entry.accountCount += am.accounts.length
+      entry.lineCount += am.totalLines
+    }
+    return Array.from(mgMap.values())
+  })()
+
+  function handleConfirmManagerSend() {
+    for (const mgr of uniqueManagers) {
+      sendManagerPromptMutation.mutate(mgr)
+    }
+    setManagerPreviewOpen(false)
   }
 
   return (
@@ -882,6 +1070,35 @@ export function WhitespaceHygiene() {
         </div>
       )}
 
+      {/* Manager sticky action bar */}
+      {data && !isFetching && totalLines > 0 && uniqueManagers.length > 0 && (
+        <div className="sticky bottom-6 mt-3 flex justify-center">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg px-5 py-3 flex items-center gap-4">
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Users size={14} className="text-indigo-500" />
+              {uniqueManagers.length} manager{uniqueManagers.length !== 1 ? 's' : ''} across {totalReps} reps
+            </div>
+            <button
+              onClick={() => setManagerPreviewOpen(true)}
+              disabled={sendManagerPromptMutation.isPending}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors',
+                sendManagerPromptMutation.isPending
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-indigo-600 text-white hover:bg-indigo-700'
+              )}
+            >
+              {sendManagerPromptMutation.isPending ? (
+                <RefreshCw size={13} className="animate-spin" />
+              ) : (
+                <Send size={13} />
+              )}
+              Send to managers
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Send preview modal */}
       {previewOpen && selectedAms.length > 0 && (
         <SendPreviewModal
@@ -890,6 +1107,16 @@ export function WhitespaceHygiene() {
           onConfirm={handleConfirmSend}
           onCancel={() => setPreviewOpen(false)}
           isSending={sendPromptMutation.isPending}
+        />
+      )}
+
+      {/* Manager send preview modal */}
+      {managerPreviewOpen && uniqueManagers.length > 0 && (
+        <ManagerSendPreviewModal
+          managers={uniqueManagers}
+          onConfirm={handleConfirmManagerSend}
+          onCancel={() => setManagerPreviewOpen(false)}
+          isSending={sendManagerPromptMutation.isPending}
         />
       )}
     </div>

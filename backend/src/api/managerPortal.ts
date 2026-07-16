@@ -189,10 +189,26 @@ router.get('/me', async (req, res) => {
     // Sort by openCount desc
     reps.sort((a, b) => b.openCount - a.openCount)
 
+    // Fetch manager's role from SFDC
+    let roleName: string | null = null
+    try {
+      const conn = await getServiceConnection()
+      const roleQuery = `SELECT UserRole.Name FROM User WHERE Email = '${managerEmail}' LIMIT 1`
+      const roleUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(roleQuery)}`
+      const roleResp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
+        roleUrl,
+        { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
+      )
+      roleName = roleResp.data.records[0]?.UserRole?.Name ?? null
+    } catch {
+      // non-fatal — roleName stays null
+    }
+
     res.json({
       manager: {
         name: managerUser.slackName ?? managerUser.slackEmail ?? 'Manager',
         email: managerUser.slackEmail,
+        roleName,
       },
       reps,
     })
@@ -286,6 +302,168 @@ router.post('/send-portal-link', async (req, res) => {
     res.json({ ok: true })
   } catch (err) {
     res.status(401).json({ error: 'Invalid or expired link' })
+  }
+})
+
+// GET /api/manager/whitespace?token=xxx
+router.get('/whitespace', async (req, res) => {
+  const { token } = req.query as { token?: string }
+  if (!token) return res.status(400).json({ error: 'Missing token' })
+
+  let slackUserId: string
+  try {
+    ;({ slackUserId } = verifyManagerToken(token))
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired link' })
+  }
+
+  try {
+    const managerUser = await db.user.findUnique({ where: { slackUserId } })
+    if (!managerUser) return res.status(404).json({ error: 'Manager not found' })
+
+    const managerEmail = managerUser.slackEmail
+    if (!managerEmail) return res.status(400).json({ error: 'Manager has no email on record' })
+
+    // Check role — only Existing Business managers get access
+    let roleName: string | null = null
+    try {
+      const conn = await getServiceConnection()
+      const roleQuery = `SELECT UserRole.Name FROM User WHERE Email = '${managerEmail}' LIMIT 1`
+      const roleUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(roleQuery)}`
+      const roleResp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
+        roleUrl,
+        { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
+      )
+      roleName = roleResp.data.records[0]?.UserRole?.Name ?? null
+    } catch {
+      // non-fatal
+    }
+
+    if (!roleName?.toLowerCase().includes('existing business')) {
+      return res.json({ hasAccess: false, reps: [] })
+    }
+
+    const conn = await getServiceConnection()
+
+    const soql = `
+      SELECT
+        Id,
+        Name,
+        Product_Coverage_Name__c,
+        Account__c,
+        Account__r.Name,
+        Account__r.Owner.Email,
+        Account__r.Owner.Name,
+        Account__r.Next_Contract_End_Date__c,
+        Current_Locations_Covered__c,
+        Total_Locations_Fit__c,
+        ARR_Potential__c,
+        Priority__c,
+        Price_per_location__c
+      FROM Product_Coverage__c
+      WHERE Current_Status__c = 'Has'
+        AND (Total_Locations_Fit__c = null OR Total_Locations_Fit__c = 0)
+        AND Account__r.RecordType.Name = 'Enterprise Account Record'
+        AND Price_per_location__c > 0
+        AND (NOT Account__r.Owner.UserRole.Name LIKE '%partner%')
+        AND (NOT Account__r.Owner.UserRole.Name LIKE '%new business%')
+        AND (NOT Product_Coverage_Name__c LIKE '%pull api%')
+        AND (NOT Product_Coverage_Name__c LIKE '%services%')
+        AND (NOT Product_Coverage_Name__c LIKE '%minimum commit%')
+        AND (NOT Product_Coverage_Name__c LIKE '%package%')
+        AND (NOT Product_Coverage_Name__c LIKE '%standalone%')
+        AND (NOT Product_Coverage_Name__c LIKE '%fee%')
+        AND (NOT Product_Coverage_Name__c LIKE '%bundle%')
+        AND (NOT Product_Coverage_Name__c LIKE '%additional%')
+        AND Account__r.Owner.Manager.Email = '${managerEmail}'
+    `.trim()
+
+    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+    const resp = await axios.get<{
+      records: {
+        Id: string
+        Name: string
+        Product_Coverage_Name__c: string | null
+        Account__c: string
+        Account__r: {
+          Name: string
+          Owner: { Email: string | null; Name: string | null }
+          Next_Contract_End_Date__c: string | null
+        } | null
+        Current_Locations_Covered__c: number | null
+        Total_Locations_Fit__c: number | null
+        ARR_Potential__c: number | null
+        Priority__c: string | null
+        Price_per_location__c: number | null
+      }[]
+    }>(url, {
+      headers: { Authorization: `Bearer ${conn.accessToken!}` },
+      timeout: 20_000,
+    })
+
+    // Group by rep → account → lines
+    type WsLine = { id: string; productCoverageName: string | null; currentLocationsCovered: number | null; currentArr: number; priority: string | null }
+    type WsAccount = { accountId: string; accountName: string; contractEndDate: string | null; totalCurrentArr: number; lines: WsLine[] }
+    type WsRep = { ownerEmail: string; ownerName: string; totalLines: number; totalCurrentArr: number; accounts: WsAccount[] }
+
+    const repMap = new Map<string, WsRep & { accountMap: Map<string, WsAccount> }>()
+
+    for (const r of resp.data.records) {
+      const accountId = r.Account__c
+      const accountName = r.Account__r?.Name ?? accountId
+      const ownerEmail = r.Account__r?.Owner?.Email ?? ''
+      const ownerName = r.Account__r?.Owner?.Name ?? ownerEmail
+      const contractEndDate = r.Account__r?.Next_Contract_End_Date__c ?? null
+      const pricePerLocation = r.Price_per_location__c ?? 0
+      const currentLocationsCovered = r.Current_Locations_Covered__c ?? 0
+      const currentArr = currentLocationsCovered * pricePerLocation * 12
+
+      const repKey = ownerEmail.toLowerCase()
+
+      if (!repMap.has(repKey)) {
+        repMap.set(repKey, {
+          ownerEmail,
+          ownerName,
+          totalLines: 0,
+          totalCurrentArr: 0,
+          accounts: [],
+          accountMap: new Map(),
+        })
+      }
+
+      const rep = repMap.get(repKey)!
+      rep.totalLines += 1
+      rep.totalCurrentArr += currentArr
+
+      if (!rep.accountMap.has(accountId)) {
+        const acct: WsAccount = { accountId, accountName, contractEndDate, totalCurrentArr: 0, lines: [] }
+        rep.accountMap.set(accountId, acct)
+        rep.accounts.push(acct)
+      }
+
+      const acct = rep.accountMap.get(accountId)!
+      acct.totalCurrentArr += currentArr
+      acct.lines.push({
+        id: r.Id,
+        productCoverageName: r.Product_Coverage_Name__c ?? r.Name,
+        currentLocationsCovered: r.Current_Locations_Covered__c,
+        currentArr,
+        priority: r.Priority__c,
+      })
+    }
+
+    const reps: WsRep[] = Array.from(repMap.values())
+      .map((rep) => {
+        rep.accounts.sort((a, b) => b.totalCurrentArr - a.totalCurrentArr)
+        const { accountMap: _am, ...rest } = rep
+        return rest
+      })
+      .sort((a, b) => a.ownerName.localeCompare(b.ownerName))
+
+    res.json({ hasAccess: true, reps })
+  } catch (err) {
+    console.error('[ManagerPortal] /whitespace error:', err)
+    res.status(500).json({ error: 'Failed to load whitespace data' })
   }
 })
 

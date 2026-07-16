@@ -3,6 +3,7 @@ import axios from 'axios'
 import { requireAdmin } from '../middleware/adminAuth'
 import { getServiceConnection } from '../services/salesforce'
 import { generateRepToken } from '../lib/repToken'
+import { generateManagerToken } from '../lib/managerToken'
 import { config } from '../config'
 import { sendDm } from '../slack/bot'
 import { db } from '../db'
@@ -24,6 +25,9 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         Account__r.Owner.Email,
         Account__r.Owner.Name,
         Account__r.Owner.UserRole.Name,
+        Account__r.Owner.Manager.Email,
+        Account__r.Owner.Manager.Name,
+        Account__r.Owner.Manager.UserRole.Name,
         Account__r.Next_Contract_End_Date__c,
         Current_Status__c,
         Fit_Use_Case__c,
@@ -59,7 +63,12 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         Account__c: string
         Account__r: {
           Name: string
-          Owner: { Email: string | null; Name: string | null; UserRole: { Name: string | null } | null }
+          Owner: {
+            Email: string | null
+            Name: string | null
+            UserRole: { Name: string | null } | null
+            Manager: { Email: string | null; Name: string | null; UserRole: { Name: string | null } | null } | null
+          }
           Next_Contract_End_Date__c: string | null
         } | null
         Current_Status__c: string | null
@@ -96,6 +105,24 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
       })
     )
 
+    // Collect unique manager emails for Slack lookup
+    const uniqueManagerEmails = [
+      ...new Set(
+        resp.data.records
+          .map((r) => r.Account__r?.Owner?.Manager?.Email ?? null)
+          .filter((e): e is string => e !== null)
+      ),
+    ]
+    const managerSlackMap = new Map<string, string | null>()
+    await Promise.all(
+      uniqueManagerEmails.map(async (email) => {
+        const user = await db.user.findFirst({
+          where: { slackEmail: { equals: email, mode: 'insensitive' } },
+        })
+        managerSlackMap.set(email.toLowerCase(), user?.slackUserId ?? null)
+      })
+    )
+
     // Group by AM owner email, then by account within each AM
     type RecordShape = {
       id: string
@@ -126,6 +153,9 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
       ownerEmail: string | null
       ownerName: string | null
       ownerSlackUserId: string | null
+      managerEmail: string | null
+      managerName: string | null
+      managerSlackUserId: string | null
       totalLines: number
       totalCurrentArr: number
       accounts: AccountShape[]
@@ -141,6 +171,11 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
       const ownerName = r.Account__r?.Owner?.Name ?? null
       const ownerSlackUserId = ownerEmail
         ? (ownerSlackMap.get(ownerEmail.toLowerCase()) ?? null)
+        : null
+      const managerEmail = r.Account__r?.Owner?.Manager?.Email ?? null
+      const managerName = r.Account__r?.Owner?.Manager?.Name ?? null
+      const managerSlackUserId = managerEmail
+        ? (managerSlackMap.get(managerEmail.toLowerCase()) ?? null)
         : null
 
       const ownerKey = ownerEmail?.toLowerCase() ?? `__no_owner__${ownerName ?? accountId}`
@@ -170,6 +205,9 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
           ownerEmail,
           ownerName,
           ownerSlackUserId,
+          managerEmail,
+          managerName,
+          managerSlackUserId,
           totalLines: 0,
           totalCurrentArr: 0,
           accounts: [],
@@ -370,6 +408,72 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
     res.json({ ok: true })
   } catch (err) {
     console.error('[Whitespace] /send-prompt error:', err)
+    res.status(500).json({ error: 'Failed to send Slack message' })
+  }
+})
+
+// POST /api/whitespace/send-manager-prompt
+router.post('/send-manager-prompt', requireAdmin, async (req, res) => {
+  const { managerSlackUserId, managerEmail, managerName, repCount, accountCount, lineCount } = req.body as {
+    managerSlackUserId?: string
+    managerEmail?: string
+    managerName?: string
+    repCount?: number
+    accountCount?: number
+    lineCount?: number
+  }
+
+  if (!managerSlackUserId || !managerEmail || !managerName || repCount === undefined || accountCount === undefined || lineCount === undefined) {
+    return res.status(400).json({ error: 'Missing required fields' })
+  }
+
+  try {
+    const token = generateManagerToken(managerSlackUserId)
+    const baseUrl = config.FRONTEND_URL ?? config.APP_URL
+    const portalUrl = `${baseUrl}/my-team?token=${token}`
+
+    const firstName = managerName.split(' ')[0]
+    const repWord = repCount === 1 ? 'rep' : 'reps'
+    const accountWord = accountCount === 1 ? 'account' : 'accounts'
+    const lineWord = lineCount === 1 ? 'product coverage line' : 'product coverage lines'
+
+    const blocks = [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: '📊 Team data request — expansion potential', emoji: true },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `Hey ${firstName}! Your team has *${lineCount} ${lineWord}* across *${accountCount} ${accountWord}* where we're missing total location fit data. This feeds into expansion potential and ARR opportunity calculations. Can you nudge your ${repCount} ${repWord} to fill these in? They'll each get a separate request from RevBot.`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: "View your team's whitespace →", emoji: true },
+            url: portalUrl,
+            action_id: 'open_manager_whitespace',
+            style: 'primary',
+          },
+        ],
+      },
+      {
+        type: 'context',
+        elements: [
+          { type: 'mrkdwn', text: `📋 <${portalUrl}|Open in your RevBot portal>` },
+        ],
+      },
+    ]
+
+    await sendDm(managerSlackUserId, blocks as never, 'Team data request — expansion potential')
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[Whitespace] /send-manager-prompt error:', err)
     res.status(500).json({ error: 'Failed to send Slack message' })
   }
 })
