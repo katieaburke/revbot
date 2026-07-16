@@ -225,6 +225,117 @@ router.post('/recheck', async (req, res) => {
   }
 })
 
+// GET /api/rep/whitespace?token=...
+router.get('/whitespace', async (req, res) => {
+  const { token } = req.query as { token?: string }
+  if (!token) return res.status(400).json({ error: 'Missing token' })
+
+  try {
+    const { slackUserId } = verifyRepToken(token)
+    const user = await db.user.findUnique({ where: { slackUserId } })
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    if (!user.slackEmail) return res.status(400).json({ error: 'No email on record' })
+
+    const repEmail = user.slackEmail
+
+    const conn = await getServiceConnection()
+    const soql = `
+      SELECT Id, Name, Product_Coverage_Name__c, Account__c, Account__r.Name,
+             Current_Status__c, Fit_Use_Case__c, Current_Locations_Covered__c,
+             Total_Locations_Fit__c, ARR_Potential__c, Priority__c
+      FROM Product_Coverage__c
+      WHERE Total_Locations_Fit__c = null
+        AND Fit_Use_Case__c IN ('Strong Fit', 'Possible Fit')
+        AND Current_Status__c != 'Not Relevant'
+        AND Account__r.Owner.Email = '${repEmail}'
+      ORDER BY Account__r.Name ASC
+    `.trim()
+
+    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+    const resp = await axios.get<{
+      records: {
+        Id: string
+        Name: string
+        Product_Coverage_Name__c: string | null
+        Account__c: string
+        Account__r: { Name: string } | null
+        Current_Status__c: string | null
+        Fit_Use_Case__c: string | null
+        Current_Locations_Covered__c: number | null
+        Total_Locations_Fit__c: number | null
+        ARR_Potential__c: number | null
+        Priority__c: string | null
+      }[]
+    }>(url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 })
+
+    const accountMap = new Map<string, { accountId: string; accountName: string; lines: unknown[] }>()
+
+    for (const r of resp.data.records) {
+      const accountId = r.Account__c
+      const accountName = r.Account__r?.Name ?? accountId
+
+      if (!accountMap.has(accountId)) {
+        accountMap.set(accountId, { accountId, accountName, lines: [] })
+      }
+
+      accountMap.get(accountId)!.lines.push({
+        id: r.Id,
+        name: r.Name,
+        productCoverageName: r.Product_Coverage_Name__c,
+        accountId,
+        accountName,
+        currentStatus: r.Current_Status__c,
+        fitUseCase: r.Fit_Use_Case__c,
+        currentLocationsCovered: r.Current_Locations_Covered__c,
+        totalLocationsFit: r.Total_Locations_Fit__c,
+        arrPotential: r.ARR_Potential__c,
+        priority: r.Priority__c,
+      })
+    }
+
+    const records = Array.from(accountMap.values())
+    res.json({ records })
+  } catch (err) {
+    console.error('[RepPortal] /whitespace GET error:', err)
+    res.status(401).json({ error: 'Invalid or expired link — ask RevBot for a fresh one' })
+  }
+})
+
+// PATCH /api/rep/whitespace/:id
+router.patch('/whitespace/:id', async (req, res) => {
+  const { id } = req.params
+  const { token, totalLocationsFit } = req.body as { token?: string; totalLocationsFit?: number }
+
+  if (!token) return res.status(400).json({ error: 'Missing token' })
+  if (totalLocationsFit === undefined || totalLocationsFit === null) {
+    return res.status(400).json({ error: 'totalLocationsFit is required' })
+  }
+
+  try {
+    const { slackUserId } = verifyRepToken(token)
+    const user = await db.user.findUnique({ where: { slackUserId } })
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    const conn = await getServiceConnection()
+    await axios.patch(
+      `${conn.instanceUrl}/services/data/v59.0/sobjects/Product_Coverage__c/${id}`,
+      { Total_Locations_Fit__c: totalLocationsFit },
+      {
+        headers: {
+          Authorization: `Bearer ${conn.accessToken!}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15_000,
+      }
+    )
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[RepPortal] /whitespace PATCH error:', err)
+    res.status(401).json({ error: 'Invalid or expired link' })
+  }
+})
+
 // ── Admin: generate a magic link for any rep (by email or slackUserId) ───────
 // POST /api/rep/admin/generate-link  — requires admin JWT
 

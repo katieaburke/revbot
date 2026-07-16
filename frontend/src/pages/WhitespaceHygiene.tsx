@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { RefreshCw, ChevronDown, ChevronUp, Save } from 'lucide-react'
+import { RefreshCw, ChevronDown, ChevronUp, Save, Send, Check } from 'lucide-react'
 import clsx from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -24,6 +24,9 @@ interface ProductCoverageRecord {
 interface AccountGroup {
   accountId: string
   accountName: string
+  ownerEmail: string | null
+  ownerName: string | null
+  ownerSlackUserId: string | null
   records: ProductCoverageRecord[]
 }
 
@@ -79,23 +82,39 @@ function fmtCurrency(val: number | null): string {
 
 // ── AccountCard ───────────────────────────────────────────────────────────────
 
-function AccountCard({ group, onRowSaved }: { group: AccountGroup; onRowSaved: (recordId: string) => void }) {
+function AccountCard({
+  group,
+  onRowSaved,
+  onSendPrompt,
+}: {
+  group: AccountGroup
+  onRowSaved: (recordId: string) => void
+  onSendPrompt: (group: AccountGroup) => void
+}) {
   const [open, setOpen] = useState(false)
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 text-left"
-      >
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center justify-between px-5 py-4 hover:bg-gray-50">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-3 min-w-0 flex-1 text-left"
+        >
           <span className="text-sm font-semibold text-gray-900 truncate">{group.accountName}</span>
           <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
             {group.records.length} line{group.records.length !== 1 ? 's' : ''}
           </span>
+        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {group.ownerSlackUserId && (
+            <SendPromptButton group={group} onSendPrompt={onSendPrompt} />
+          )}
+          {open
+            ? <ChevronUp size={14} className="text-gray-400" />
+            : <ChevronDown size={14} className="text-gray-400" />
+          }
         </div>
-        {open ? <ChevronUp size={14} className="text-gray-400 shrink-0" /> : <ChevronDown size={14} className="text-gray-400 shrink-0" />}
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-gray-100 divide-y divide-gray-100">
@@ -105,6 +124,42 @@ function AccountCard({ group, onRowSaved }: { group: AccountGroup; onRowSaved: (
         </div>
       )}
     </div>
+  )
+}
+
+// ── SendPromptButton ──────────────────────────────────────────────────────────
+
+function SendPromptButton({
+  group,
+  onSendPrompt,
+}: {
+  group: AccountGroup
+  onSendPrompt: (group: AccountGroup) => void
+}) {
+  const [sent, setSent] = useState(false)
+
+  function handleClick(e: React.MouseEvent) {
+    e.stopPropagation()
+    onSendPrompt(group)
+    setSent(true)
+    setTimeout(() => setSent(false), 3000)
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={sent}
+      title={`Send whitespace prompt to ${group.ownerName ?? group.ownerEmail ?? 'owner'}`}
+      className={clsx(
+        'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
+        sent
+          ? 'bg-green-100 text-green-700'
+          : 'text-gray-500 border border-gray-200 hover:bg-gray-50 hover:text-gray-700',
+      )}
+    >
+      {sent ? <Check size={11} /> : <Send size={11} />}
+      {sent ? 'Sent!' : 'Send prompt'}
+    </button>
   )
 }
 
@@ -215,6 +270,21 @@ export function WhitespaceHygiene() {
   // Local state for dismissed rows (removed from list on save success)
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
 
+  const sendPromptMutation = useMutation({
+    mutationFn: (group: AccountGroup) =>
+      api.post('/whitespace/send-prompt', {
+        repSlackUserId: group.ownerSlackUserId,
+        repEmail: group.ownerEmail,
+        repName: group.ownerName ?? group.ownerEmail,
+        accountCount: 1,
+        lineCount: group.records.length,
+      }),
+  })
+
+  function handleSendPrompt(group: AccountGroup) {
+    sendPromptMutation.mutate(group)
+  }
+
   const { data, isFetching, isError, error } = useQuery<ExpansionPotentialResponse>({
     queryKey: ['whitespace-expansion-potential'],
     queryFn: () => api.get('/whitespace/expansion-potential').then((r) => r.data),
@@ -310,7 +380,7 @@ export function WhitespaceHygiene() {
           {filteredAccounts.length > 0 && (
             <div className="space-y-3">
               {filteredAccounts.map((group) => (
-                <AccountCard key={group.accountId} group={group} onRowSaved={handleRowSaved} />
+                <AccountCard key={group.accountId} group={group} onRowSaved={handleRowSaved} onSendPrompt={handleSendPrompt} />
               ))}
             </div>
           )}

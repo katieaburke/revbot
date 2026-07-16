@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
-import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw } from 'lucide-react'
+import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save } from 'lucide-react'
 import clsx from 'clsx'
 
 // Plain axios instance — no admin auth interceptors, no 401→/login redirect
@@ -36,6 +36,30 @@ interface RepData {
   pending: PendingFlag[]
 }
 
+interface WhitespaceLine {
+  id: string
+  name: string
+  productCoverageName: string | null
+  accountId: string
+  accountName: string
+  currentStatus: string | null
+  fitUseCase: string | null
+  currentLocationsCovered: number | null
+  totalLocationsFit: number | null
+  arrPotential: number | null
+  priority: string | null
+}
+
+interface WhitespaceAccountGroup {
+  accountId: string
+  accountName: string
+  lines: WhitespaceLine[]
+}
+
+interface WhitespaceResponse {
+  records: WhitespaceAccountGroup[]
+}
+
 // ── Alert type display ────────────────────────────────────────────────────────
 
 const ALERT_META: Record<string, { label: string; color: string; what: string }> = {
@@ -53,6 +77,21 @@ const ALERT_META: Record<string, { label: string; color: string; what: string }>
 function fmtDate(iso: string | null) {
   if (!iso) return null
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function wsStatusBadgeClass(status: string | null): string {
+  switch (status) {
+    case 'Has':
+      return 'bg-green-100 text-green-700'
+    case 'Pitching / Does Not Have':
+      return 'bg-blue-100 text-blue-700'
+    case 'Does Not Have / Not Pitching Yet':
+      return 'bg-gray-100 text-gray-600'
+    case 'Used to have':
+      return 'bg-orange-100 text-orange-700'
+    default:
+      return 'bg-gray-100 text-gray-500'
+  }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -103,6 +142,25 @@ export function RepPortal() {
       setTimeout(() => setRecheckMsg(null), 5000)
     },
   })
+
+  const whitespaceQuery = useQuery<WhitespaceResponse>({
+    queryKey: ['rep-whitespace', token],
+    queryFn: () => repApi.get(`/rep/whitespace?token=${token}`).then((r) => r.data),
+    enabled: !!token,
+    retry: false,
+  })
+
+  const [wsRemovedIds, setWsRemovedIds] = useState<Set<string>>(new Set())
+  const [wsOpen, setWsOpen] = useState(false)
+
+  const wsRecords = (whitespaceQuery.data?.records ?? [])
+    .map((group) => ({
+      ...group,
+      lines: group.lines.filter((l) => !wsRemovedIds.has(l.id)),
+    }))
+    .filter((group) => group.lines.length > 0)
+
+  const wsTotalLines = wsRecords.reduce((sum, g) => sum + g.lines.length, 0)
 
   const open = data?.notifications.filter((n) => n.status === 'SENT') ?? []
   const snoozed = data?.notifications.filter((n) => n.status === 'SNOOZED') ?? []
@@ -261,6 +319,40 @@ export function RepPortal() {
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* Whitespace / Expansion potential section */}
+        {wsTotalLines > 0 && (
+          <div className="mt-6">
+            <button
+              onClick={() => setWsOpen((o) => !o)}
+              className="w-full flex items-center justify-between px-5 py-4 bg-white rounded-xl border border-gray-200 hover:bg-gray-50 text-left"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="text-sm font-semibold text-gray-900">📊 Expansion potential — help fill in your accounts</span>
+                <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                  {wsTotalLines} line{wsTotalLines !== 1 ? 's' : ''} need data
+                </span>
+              </div>
+              {wsOpen
+                ? <ChevronUp size={14} className="text-gray-400 shrink-0" />
+                : <ChevronDown size={14} className="text-gray-400 shrink-0" />
+              }
+            </button>
+
+            {wsOpen && (
+              <div className="mt-2 space-y-3">
+                {wsRecords.map((group) => (
+                  <WhitespaceAccountCard
+                    key={group.accountId}
+                    group={group}
+                    token={token}
+                    onLineSaved={(id) => setWsRemovedIds((prev) => new Set([...prev, id]))}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -648,6 +740,135 @@ function NotifCard({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Whitespace components ─────────────────────────────────────────────────────
+
+function WhitespaceAccountCard({
+  group,
+  token,
+  onLineSaved,
+}: {
+  group: WhitespaceAccountGroup
+  token: string
+  onLineSaved: (id: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 text-left"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-sm font-semibold text-gray-900 truncate">{group.accountName}</span>
+          <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+            {group.lines.length} line{group.lines.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+        {open ? <ChevronUp size={14} className="text-gray-400 shrink-0" /> : <ChevronDown size={14} className="text-gray-400 shrink-0" />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100 divide-y divide-gray-100">
+          {group.lines.map((line) => (
+            <WhitespaceLineRow
+              key={line.id}
+              line={line}
+              token={token}
+              onSaved={() => onLineSaved(line.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WhitespaceLineRow({
+  line,
+  token,
+  onSaved,
+}: {
+  line: WhitespaceLine
+  token: string
+  onSaved: () => void
+}) {
+  const [locationsValue, setLocationsValue] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState(false)
+
+  const save = useMutation({
+    mutationFn: () =>
+      repApi.patch(`/rep/whitespace/${line.id}`, {
+        token,
+        totalLocationsFit: Number(locationsValue),
+      }),
+    onSuccess: () => {
+      setSaveSuccess(true)
+      setTimeout(() => onSaved(), 600)
+    },
+  })
+
+  const displayName = line.productCoverageName ?? line.name
+
+  return (
+    <div className="px-5 py-3 flex items-center gap-4 flex-wrap text-sm">
+      {/* Product name */}
+      <div className="flex-1 min-w-0">
+        <span className="font-medium text-gray-800 truncate block">{displayName}</span>
+      </div>
+
+      {/* Current Status badge */}
+      <span className={clsx('shrink-0 text-xs font-medium px-2 py-0.5 rounded-full', wsStatusBadgeClass(line.currentStatus))}>
+        {line.currentStatus ?? '—'}
+      </span>
+
+      {/* Current Locations Covered */}
+      {line.currentLocationsCovered != null && (
+        <div className="shrink-0 text-xs text-gray-500">
+          <span className="text-gray-400">Covered: </span>
+          <span className="font-medium text-gray-700">{line.currentLocationsCovered}</span>
+        </div>
+      )}
+
+      {/* Total Locations Fit input + Save */}
+      <div className="shrink-0 flex items-center gap-2">
+        <input
+          type="number"
+          min={0}
+          placeholder="Total locations"
+          value={locationsValue}
+          onChange={(e) => setLocationsValue(e.target.value)}
+          className="w-32 text-xs border border-gray-200 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400"
+          disabled={save.isPending || saveSuccess}
+        />
+        <button
+          onClick={() => save.mutate()}
+          disabled={!locationsValue || save.isPending || saveSuccess}
+          className={clsx(
+            'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40',
+            saveSuccess
+              ? 'bg-green-100 text-green-700'
+              : 'bg-brand-500 text-white hover:bg-brand-600 disabled:cursor-not-allowed',
+          )}
+        >
+          {save.isPending ? (
+            <RefreshCw size={11} className="animate-spin" />
+          ) : saveSuccess ? (
+            <Check size={11} />
+          ) : (
+            <Save size={11} />
+          )}
+          {saveSuccess ? 'Saved!' : 'Save'}
+        </button>
+      </div>
+
+      {save.isError && (
+        <p className="w-full text-xs text-red-600 mt-1">Save failed — try again.</p>
+      )}
     </div>
   )
 }
