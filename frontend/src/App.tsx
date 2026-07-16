@@ -19,6 +19,7 @@ import { TerritoryReassignment } from './pages/TerritoryReassignment'
 import { ChurnedReassignment } from './pages/ChurnedReassignment'
 import { RepPortal } from './pages/RepPortal'
 import { ManagerPortal } from './pages/ManagerPortal'
+import { WhitespaceHygiene } from './pages/WhitespaceHygiene'
 
 const qc = new QueryClient()
 
@@ -77,6 +78,7 @@ export default function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/team" element={<Team />} />
             <Route path="/analytics" element={<Analytics />} />
+            <Route path="/whitespace/expansion-potential" element={<WhitespaceHygiene />} />
           </Route>
         </Routes>
       </BrowserRouter>
