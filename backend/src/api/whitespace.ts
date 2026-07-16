@@ -44,7 +44,6 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         AND (NOT Product_Coverage_Name__c LIKE '%fee%')
         AND (NOT Product_Coverage_Name__c LIKE '%bundle%')
         AND (NOT Product_Coverage_Name__c LIKE '%additional%')
-      ORDER BY Account__r.Owner.Name ASC, Account__r.Name ASC
     `.trim()
 
     const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
@@ -68,6 +67,8 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
       headers: { Authorization: `Bearer ${conn.accessToken!}` },
       timeout: 20_000,
     })
+
+    console.log(`[Whitespace] SFDC returned ${resp.data.records.length} records`)
 
     // Collect unique owner emails for Slack lookup
     const uniqueOwnerEmails = [
@@ -199,6 +200,7 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         return nameA.localeCompare(nameB)
       })
 
+    console.log(`[Whitespace] Returning ${ams.length} AMs`)
     res.json({ ams })
   } catch (err) {
     console.error('[Whitespace] /expansion-potential error:', err)
