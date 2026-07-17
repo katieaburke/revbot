@@ -37,6 +37,7 @@ interface OwnerGroup {
   ownerName: string
   ownerEmail: string | null
   ownerRole: string | null
+  lastDmSentAt: string | null
   contacts: ContactEntry[]
 }
 
@@ -55,6 +56,18 @@ function formatDate(iso: string | null): string {
 function formatDateShort(iso: string | null): string {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function isToday(iso: string | null): boolean {
+  if (!iso) return false
+  const d = new Date(iso)
+  const now = new Date()
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+}
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
 function daysAgo(iso: string | null): number | null {
@@ -139,7 +152,7 @@ function SendPreviewModal({
 }: {
   group: OwnerGroup
   onClose: () => void
-  onSent: () => void
+  onSent: (sentAt: string) => void
 }) {
   const sendMutation = useMutation({
     mutationFn: () =>
@@ -153,9 +166,9 @@ function SendPreviewModal({
           comment: c.comment,
           sfdcUrl: c.sfdcUrl,
         })),
-      }).then((r) => r.data),
-    onSuccess: () => {
-      setTimeout(onSent, 800)
+      }).then((r) => r.data as { ok: boolean; sentAt: string }),
+    onSuccess: (data) => {
+      setTimeout(() => onSent(data.sentAt), 800)
     },
   })
 
@@ -223,18 +236,21 @@ function SendPreviewModal({
 
 function OwnerCard({
   group,
+  lastDmSentAt,
   onSendClick,
 }: {
   group: OwnerGroup
+  lastDmSentAt: string | null
   onSendClick: () => void
 }) {
   const [open, setOpen] = useState(false)
 
   const displayName = group.ownerName || group.ownerEmail || 'Unknown Owner'
   const count = group.contacts.length
+  const sentToday = isToday(lastDmSentAt)
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+    <div className={clsx('bg-white rounded-xl border border-gray-200 overflow-hidden', sentToday && 'opacity-50')}>
       <div className="flex items-center gap-2 px-5 py-4">
         {/* Expand toggle */}
         <button
@@ -250,6 +266,11 @@ function OwnerCard({
           <span className="shrink-0 text-xs font-medium px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">
             {count} {count === 1 ? 'contact' : 'contacts'}
           </span>
+          {lastDmSentAt && (
+            <span className={clsx('shrink-0 text-xs', sentToday ? 'text-green-600 font-medium' : 'text-gray-400')}>
+              {sentToday ? '✓ DM sent today' : `Last DM: ${formatDateTime(lastDmSentAt)}`}
+            </span>
+          )}
         </button>
 
         {/* Send button */}
@@ -259,7 +280,7 @@ function OwnerCard({
             className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand-600 border border-brand-200 rounded-lg hover:bg-brand-50 transition-colors"
           >
             <Send size={11} />
-            Send
+            {sentToday ? 'Resend' : 'Send'}
           </button>
         )}
 
@@ -384,7 +405,8 @@ export function HandRaiseFollowUp() {
   const [maxDays, setMaxDays] = useState<number | ''>('')
   const [roleFilter, setRoleFilter] = useState<string>('')
   const [previewGroup, setPreviewGroup] = useState<OwnerGroup | null>(null)
-  const [sentEmails, setSentEmails] = useState<Set<string>>(new Set())
+  // Track last DM sent timestamps locally (updated optimistically on send)
+  const [dmSentAt, setDmSentAt] = useState<Record<string, string>>({})
 
   const { data, isFetching, isError, error } = useQuery<HandRaiseResponse>({
     queryKey: ['hand-raise-leads'],
@@ -427,8 +449,9 @@ export function HandRaiseFollowUp() {
         <SendPreviewModal
           group={previewGroup}
           onClose={() => setPreviewGroup(null)}
-          onSent={() => {
-            setSentEmails((prev) => new Set([...prev, previewGroup.ownerEmail ?? previewGroup.ownerName]))
+          onSent={(sentAt) => {
+            const key = previewGroup.ownerEmail ?? previewGroup.ownerName
+            setDmSentAt((prev) => ({ ...prev, [key]: sentAt }))
             setPreviewGroup(null)
           }}
         />
@@ -544,19 +567,15 @@ export function HandRaiseFollowUp() {
 
         {!isFetching && filteredGroups.map((group) => {
           const key = group.ownerEmail ?? group.ownerName
-          const sent = sentEmails.has(key)
+          // Use locally-tracked sent time (from this session) or server-returned time
+          const lastDmSentAt = dmSentAt[key] ?? group.lastDmSentAt
           return (
-            <div key={key} className={clsx(sent && 'opacity-60')}>
-              {sent && (
-                <div className="flex items-center gap-1.5 text-xs text-green-600 font-medium mb-1 px-1">
-                  <Check size={12} /> DM sent to {group.ownerName}
-                </div>
-              )}
-              <OwnerCard
-                group={group}
-                onSendClick={() => setPreviewGroup(group)}
-              />
-            </div>
+            <OwnerCard
+              key={key}
+              group={group}
+              lastDmSentAt={lastDmSentAt}
+              onSendClick={() => setPreviewGroup(group)}
+            />
           )
         })}
       </div>

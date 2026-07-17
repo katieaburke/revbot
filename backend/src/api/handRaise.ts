@@ -59,6 +59,7 @@ interface OwnerGroup {
   ownerName: string
   ownerEmail: string | null
   ownerRole: string | null
+  lastDmSentAt: string | null
   contacts: ContactEntry[]
 }
 
@@ -161,6 +162,7 @@ router.get('/leads', requireAdmin, async (_req, res) => {
           ownerName: r.Owner?.Name ?? ownerKey,
           ownerEmail: r.Owner?.Email ?? null,
           ownerRole: r.Owner?.UserRole?.Name ?? null,
+          lastDmSentAt: null, // filled in below
           contacts: [],
         })
       }
@@ -183,6 +185,15 @@ router.get('/leads', requireAdmin, async (_req, res) => {
         sfdcUrl: `${SFDC_BASE}/lightning/r/Contact/${r.Id}/view`,
       })
     }
+
+    // Look up last DM sent timestamps for each owner from AppSetting
+    await Promise.all(
+      Array.from(groupMap.entries()).map(async ([ownerKey, group]) => {
+        const settingKey = `handRaiseDm:${ownerKey.toLowerCase()}`
+        const setting = await db.appSetting.findUnique({ where: { key: settingKey } })
+        if (setting?.value) group.lastDmSentAt = setting.value
+      })
+    )
 
     // Sort groups by contact count descending
     const groups: OwnerGroup[] = Array.from(groupMap.values()).sort(
@@ -270,7 +281,16 @@ router.post('/send-prompt', requireAdmin, async (req, res) => {
 
     await sendDm(user.slackUserId, blocks as never, 'Hand raise follow-up needed')
 
-    res.json({ ok: true })
+    // Persist the send timestamp so the UI can show "Last DM sent" and gray out same-day sends
+    const settingKey = `handRaiseDm:${ownerEmail.toLowerCase()}`
+    const sentAt = new Date().toISOString()
+    await db.appSetting.upsert({
+      where: { key: settingKey },
+      create: { key: settingKey, value: sentAt },
+      update: { value: sentAt },
+    })
+
+    res.json({ ok: true, sentAt })
   } catch (err) {
     console.error('[HandRaise] /send-prompt error:', err)
     res.status(500).json({ error: 'Failed to send Slack message' })
