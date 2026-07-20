@@ -93,13 +93,17 @@ export function Settings() {
   })
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading...</div>
-  if (isError) return (
-    <div className="p-8 space-y-3">
-      <p className="text-sm text-red-600 font-medium">Failed to load settings</p>
-      <p className="text-xs text-gray-500">{String((error as { message?: string })?.message ?? error)}</p>
-      <button onClick={() => refetch()} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg">Retry</button>
-    </div>
-  )
+  if (isError) {
+    const axiosErr = error as { response?: { data?: { error?: string } }; message?: string }
+    const errMsg = axiosErr?.response?.data?.error ?? axiosErr?.message ?? String(error)
+    return (
+      <div className="p-8 space-y-3">
+        <p className="text-sm text-red-600 font-medium">Failed to load settings</p>
+        <p className="text-xs text-gray-500 font-mono whitespace-pre-wrap">{errMsg}</p>
+        <button onClick={() => refetch()} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg">Retry</button>
+      </div>
+    )
+  }
 
   return (
     <div className="p-8 max-w-xl">
