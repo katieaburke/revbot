@@ -260,12 +260,16 @@ router.delete('/sfdc-disconnect', async (_req, res) => {
 // ── App Settings (schedule, cooldown, etc.) ───────────────────────────────────
 
 router.get('/settings', async (_req, res) => {
-  const settings = await db.appSetting.findMany()
-  const result: Record<string, unknown> = {
-    sfdcInstanceUrl: 'https://uberall.lightning.force.com/',
+  try {
+    const settings = await db.appSetting.findMany()
+    const result: Record<string, unknown> = {
+      sfdcInstanceUrl: 'https://uberall.lightning.force.com/',
+    }
+    for (const s of settings) result[s.key] = JSON.parse(s.value)
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
   }
-  for (const s of settings) result[s.key] = JSON.parse(s.value)
-  res.json(result)
 })
 
 router.put('/settings', async (req, res) => {

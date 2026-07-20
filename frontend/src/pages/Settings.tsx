@@ -15,9 +15,10 @@ interface AppSettings {
 
 export function Settings() {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery<AppSettings>({
+  const { data, isLoading, isError, error, refetch } = useQuery<AppSettings>({
     queryKey: ['settings'],
     queryFn: () => api.get('/config/settings').then((r) => r.data),
+    retry: 1,
   })
 
   const [copied, setCopied] = useState(false)
@@ -92,6 +93,13 @@ export function Settings() {
   })
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading...</div>
+  if (isError) return (
+    <div className="p-8 space-y-3">
+      <p className="text-sm text-red-600 font-medium">Failed to load settings</p>
+      <p className="text-xs text-gray-500">{String((error as { message?: string })?.message ?? error)}</p>
+      <button onClick={() => refetch()} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg">Retry</button>
+    </div>
+  )
 
   return (
     <div className="p-8 max-w-xl">
