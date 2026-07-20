@@ -1,6 +1,6 @@
 import { Queue, Worker } from 'bullmq'
 import { redis } from '../redis'
-import { runAlertJob } from './alertOrchestrator'
+import { runAlertJob, runDryRun } from './alertOrchestrator'
 import { runReassignmentJob } from '../services/reassignment'
 import { config } from '../config'
 
@@ -22,6 +22,9 @@ export function startWorker() {
     async (job) => {
       if (job.name === 'run-alerts') {
         return runAlertJob({ bustGongCache: job.data?.bustGongCache === true })
+      }
+      if (job.name === 'run-dry-run') {
+        return runDryRun({ bustGongCache: job.data?.bustGongCache === true })
       }
       if (job.name === 'run-reassignment') {
         return runReassignmentJob(config.APP_URL)
@@ -68,6 +71,17 @@ export async function scheduleAlertJob(cronExpression?: string | null) {
 export async function triggerAlertJobNow() {
   const job = await alertQueue.add('run-alerts', { triggeredAt: new Date().toISOString(), bustGongCache: true })
   console.log(`[Scheduler] Manual alert job triggered: ${job.id}`)
+  return job.id
+}
+
+// Queue a dry-run via BullMQ so it runs in the worker, not in the HTTP request context
+export async function triggerDryRunJob(bustGongCache = false) {
+  const job = await alertQueue.add(
+    'run-dry-run',
+    { triggeredAt: new Date().toISOString(), bustGongCache },
+    { removeOnComplete: 5, removeOnFail: 5, attempts: 1 },
+  )
+  console.log(`[Scheduler] Dry-run job queued: ${job.id}`)
   return job.id
 }
 

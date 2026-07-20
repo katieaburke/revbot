@@ -1,8 +1,7 @@
 import { Router } from 'express'
 import { db } from '../db'
 import { requireAdmin } from '../middleware/adminAuth'
-import { triggerAlertJobNow } from '../jobs/scheduler'
-import { runDryRun } from '../jobs/alertOrchestrator'
+import { triggerAlertJobNow, triggerDryRunJob } from '../jobs/scheduler'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { buildCombinedMessage, buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildManagerAlertMessage } from '../slack/messages'
 import { AlertType } from '../types'
@@ -170,16 +169,16 @@ router.post('/run-now', async (_req, res) => {
   }
 })
 
-// Dry run — evaluates all alerts against live data, returns what would be sent, nothing is sent.
-// Runs in the background and persists results to DB — returns 202 immediately so the HTTP
-// connection never times out. Frontend polls /last-dry-run for fresh results.
+// Dry run — queues a BullMQ job so it runs in the worker process, completely isolated from
+// the HTTP server. Returns 202 immediately; frontend polls /last-dry-run for fresh results.
 router.post('/dry-run', async (req, res) => {
-  const bustCache = (req.query.bustCache === 'true') || (req.body as { bustCache?: boolean })?.bustCache === true
-  // Kick off in background — do NOT await
-  runDryRun({ bustGongCache: bustCache }).catch((err) => {
-    console.error('[DryRun] Background run failed:', err)
-  })
-  res.status(202).json({ status: 'started' })
+  try {
+    const bustCache = (req.query.bustCache === 'true') || (req.body as { bustCache?: boolean })?.bustCache === true
+    const jobId = await triggerDryRunJob(bustCache)
+    res.status(202).json({ status: 'started', jobId })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
 })
 
 // Send a drafted alert for a single opp to the rep
