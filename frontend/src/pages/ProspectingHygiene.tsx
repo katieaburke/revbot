@@ -209,12 +209,42 @@ export function ProspectingHygiene() {
     },
   })
 
-  const { data, isFetching, isError, error, refetch, isFetched } = useQuery<HygieneResult>({
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [refreshSince, setRefreshSince] = useState<string | null>(null)
+
+  const { data, isFetching, isError, error, isFetched } = useQuery<HygieneResult>({
     queryKey: ['prospecting-hygiene'],
     queryFn: () => api.get('/accounts/prospecting-hygiene').then((r) => r.data),
-    enabled: false,
+    // Auto-load on mount — now returns cached data instantly so no timeout risk
+    enabled: true,
     refetchOnWindowFocus: false,
+    staleTime: 5 * 60 * 1000,
   })
+
+  // Poll every 4s while refreshing, stop when scannedAt changes
+  useQuery<HygieneResult>({
+    queryKey: ['prospecting-hygiene-poll', refreshSince],
+    queryFn: async () => {
+      const result = await api.get('/accounts/prospecting-hygiene').then((r) => r.data as HygieneResult)
+      if (result && result.scannedAt !== refreshSince) {
+        qc.setQueryData(['prospecting-hygiene'], result)
+        setIsRefreshing(false)
+        setRefreshSince(null)
+      }
+      return result
+    },
+    enabled: isRefreshing,
+    refetchInterval: isRefreshing ? 4000 : false,
+    refetchIntervalInBackground: true,
+  })
+
+  async function triggerRefresh() {
+    setRefreshSince(data?.scannedAt ?? null)
+    setIsRefreshing(true)
+    await api.post('/accounts/prospecting-hygiene/refresh').catch(() => {
+      setIsRefreshing(false)
+    })
+  }
 
   const sfdcBase = appSettings?.sfdcInstanceUrl?.replace(/\/$/, '') ?? 'https://uberall.lightning.force.com'
 
@@ -297,12 +327,12 @@ export function ProspectingHygiene() {
             Rules
           </button>
           <button
-            onClick={() => refetch()}
-            disabled={isFetching}
+            onClick={() => triggerRefresh()}
+            disabled={isFetching || isRefreshing}
             className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50"
           >
-            {isFetching ? <RefreshCw size={15} className="animate-spin" /> : <Building2 size={15} />}
-            Scan accounts
+            {(isFetching || isRefreshing) ? <RefreshCw size={15} className="animate-spin" /> : <Building2 size={15} />}
+            {isRefreshing ? 'Scanning…' : 'Scan accounts'}
           </button>
         </div>
       </div>

@@ -11,78 +11,116 @@ import type { KnownBlock } from '@slack/web-api'
 const router = Router()
 router.use(requireAdmin)
 
+const HYGIENE_CACHE_KEY = 'lastProspectingHygieneResult'
+const HYGIENE_CACHE_TTL_MS = 10 * 60 * 1000 // 10 minutes
+
+async function runProspectingHygieneScan(): Promise<object> {
+  const settings = await db.appSetting.findMany({
+    where: { key: { in: ['accountRecordTypeFilter', 'prospectingStaleThresholdDays', 'prospectingRecentActivityDays'] } },
+  })
+  const settingMap = Object.fromEntries(settings.map((s) => [s.key, JSON.parse(s.value)]))
+  const recordTypeFilter = (settingMap.accountRecordTypeFilter as string) ?? 'Enterprise_Account_Record'
+  const staleThresholdDays = Number(settingMap.prospectingStaleThresholdDays ?? 14)
+  const recentActivityDays = Number(settingMap.prospectingRecentActivityDays ?? 14)
+
+  const gongAccountWarm = await isGongAccountCacheWarm()
+  if (!gongAccountWarm) {
+    warmGongAccountCallCache().catch((err) => console.warn('[Gong] Account warm failed:', String(err)))
+  }
+
+  const accounts = await fetchProspectAccounts(recordTypeFilter)
+  const accountIds = accounts.map((a) => a.Id)
+
+  const [gongActivity, contactFlows] = await Promise.all([
+    gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()),
+    fetchContactFlows(accountIds),
+  ])
+
+  const flowIndex = new Map<string, GongFlowEnrollment[]>()
+  for (const cf of contactFlows) {
+    if (!flowIndex.has(cf.email)) flowIndex.set(cf.email, [])
+    flowIndex.get(cf.email)!.push({
+      flowId: cf.flowName,
+      flowName: cf.flowName,
+      status: cf.flowStatus,
+      nextStepDueDate: cf.nextStepDueDate,
+      completedAt: null,
+    })
+  }
+
+  const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowIndex)
+
+  const nudgeSettings = await db.appSetting.findMany({ where: { key: { startsWith: 'bdrNudge:last:' } } })
+  const nudgeLog: Record<string, { sentAt: string; bdrEmail: string; flagType: string }> = {}
+  for (const s of nudgeSettings) {
+    const accountId = s.key.replace('bdrNudge:last:', '')
+    try { nudgeLog[accountId] = JSON.parse(s.value) } catch { /* skip */ }
+  }
+
+  return {
+    scannedAt: new Date().toISOString(),
+    totalAccounts: accounts.length,
+    flags,
+    nudgeLog,
+    flowError: null,
+    config: { recordTypeFilter, staleThresholdDays, recentActivityDays },
+  }
+}
+
 // GET /api/accounts/prospecting-hygiene
-// Returns all prospect accounts with their flags
+// Serves cached scan result immediately; triggers background refresh if stale.
 router.get('/prospecting-hygiene', async (_req, res) => {
   try {
-    const settings = await db.appSetting.findMany({
-      where: { key: { in: ['accountRecordTypeFilter', 'prospectingStaleThresholdDays', 'prospectingRecentActivityDays'] } },
-    })
-    const settingMap = Object.fromEntries(settings.map((s) => [s.key, JSON.parse(s.value)]))
-    const recordTypeFilter = (settingMap.accountRecordTypeFilter as string) ?? 'Enterprise_Account_Record'
-    const staleThresholdDays = Number(settingMap.prospectingStaleThresholdDays ?? 14)
-    const recentActivityDays = Number(settingMap.prospectingRecentActivityDays ?? 14)
-
-    const t0 = Date.now()
-
-    // Check Gong account cache upfront — if cold, skip and warm in background
-    const gongAccountWarm = await isGongAccountCacheWarm()
-    if (!gongAccountWarm) {
-      warmGongAccountCallCache().catch((err) => console.warn('[Gong] Account warm failed:', String(err)))
-      console.warn('[Gong] Account cache cold — skipping Gong activity this run. Warming in background.')
+    // Serve cached result instantly if available
+    const cached = await db.appSetting.findUnique({ where: { key: HYGIENE_CACHE_KEY } })
+    if (cached?.value) {
+      const parsed = JSON.parse(cached.value) as { scannedAt?: string } & object
+      const ageMs = parsed.scannedAt ? Date.now() - new Date(parsed.scannedAt).getTime() : Infinity
+      // Return cached data immediately — always fast
+      res.json(parsed)
+      // Kick off background refresh if cache is stale (>10 min)
+      if (ageMs > HYGIENE_CACHE_TTL_MS) {
+        runProspectingHygieneScan()
+          .then((result) =>
+            db.appSetting.upsert({
+              where: { key: HYGIENE_CACHE_KEY },
+              create: { key: HYGIENE_CACHE_KEY, value: JSON.stringify(result) },
+              update: { value: JSON.stringify(result) },
+            })
+          )
+          .catch((err) => console.error('[Hygiene] Background refresh failed:', err))
+      }
+      return
     }
 
-    const accounts = await fetchProspectAccounts(recordTypeFilter)
-    console.log(`[Hygiene] SFDC accounts: ${Date.now() - t0}ms (${accounts.length} accounts)`)
-
-    const accountIds = accounts.map((a) => a.Id)
-
-    // Build Gong flow index via direct Contact query (subquery approach has sharing-rule issues)
-    // Map: contact email (lowercase) → GongFlowEnrollment[]
-    const tGong = Date.now()
-    const [gongActivity, contactFlows] = await Promise.all([
-      gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()),
-      fetchContactFlows(accountIds),
-    ])
-
-    const flowIndex = new Map<string, GongFlowEnrollment[]>()
-    for (const cf of contactFlows) {
-      if (!flowIndex.has(cf.email)) flowIndex.set(cf.email, [])
-      flowIndex.get(cf.email)!.push({
-        flowId: cf.flowName,
-        flowName: cf.flowName,
-        status: cf.flowStatus,
-        nextStepDueDate: cf.nextStepDueDate,
-        completedAt: null,
-      })
-    }
-
-    console.log(`[Hygiene] Gong: ${Date.now() - tGong}ms (accountWarm=${gongAccountWarm}, flowContacts=${flowIndex.size} contacts with active flows)`)
-
-    const flags = evaluateProspectingHygiene(accounts, gongActivity, { staleThresholdDays, recentActivityDays }, flowIndex)
-
-    // Load nudge log for all accounts so the UI can show last-sent + cooldown state
-    const nudgeSettings = await db.appSetting.findMany({
-      where: { key: { startsWith: 'bdrNudge:last:' } },
+    // No cache yet — run synchronously for first-ever load and save result
+    const result = await runProspectingHygieneScan()
+    await db.appSetting.upsert({
+      where: { key: HYGIENE_CACHE_KEY },
+      create: { key: HYGIENE_CACHE_KEY, value: JSON.stringify(result) },
+      update: { value: JSON.stringify(result) },
     })
-    const nudgeLog: Record<string, { sentAt: string; bdrEmail: string; flagType: string }> = {}
-    for (const s of nudgeSettings) {
-      const accountId = s.key.replace('bdrNudge:last:', '')
-      try { nudgeLog[accountId] = JSON.parse(s.value) } catch { /* skip malformed */ }
-    }
-
-    res.json({
-      scannedAt: new Date().toISOString(),
-      totalAccounts: accounts.length,
-      flags,
-      nudgeLog,
-      flowError: null,  // flow data now comes from SFDC contact fields, not Gong API
-      config: { recordTypeFilter, staleThresholdDays, recentActivityDays },
-    })
+    res.json(result)
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
 })
+
+// POST /api/accounts/prospecting-hygiene/refresh
+// Triggers a background refresh of the cache; returns immediately.
+router.post('/prospecting-hygiene/refresh', async (_req, res) => {
+  res.status(202).json({ status: 'refreshing' })
+  runProspectingHygieneScan()
+    .then((result) =>
+      db.appSetting.upsert({
+        where: { key: HYGIENE_CACHE_KEY },
+        create: { key: HYGIENE_CACHE_KEY, value: JSON.stringify(result) },
+        update: { value: JSON.stringify(result) },
+      })
+    )
+    .catch((err) => console.error('[Hygiene] Background refresh failed:', err))
+})
+
 
 // POST /api/accounts/notify-bdr
 // Sends a Slack DM to the BDR assigned to a flagged prospect account.
