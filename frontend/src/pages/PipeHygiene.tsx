@@ -5,7 +5,7 @@ import { api } from '../lib/api'
 import {
   Play, RefreshCw, AlertCircle, Clock, CheckCircle, FlaskConical,
   ChevronDown, ChevronUp, ExternalLink, Trash2, MessageSquare, X, Send,
-  Briefcase, UserCheck, BellOff, Users,
+  Briefcase, UserCheck, BellOff, Users, Check,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -1445,6 +1445,24 @@ function formatPreview(opp: OppGroup): string {
   return lines.join('\n')
 }
 
+interface OppMeta {
+  netAcv: number | null
+  oppType: string | null
+  nextContractEndDate: string | null
+  nextRenewalDate: string | null
+  hasAutoRenewal: boolean | null
+}
+
+function fmtDate(iso: string | null) {
+  if (!iso) return null
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(iso + 'T12:00:00') : new Date(iso)
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function fmtLong(d: Date) {
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+}
+
 function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
   opp: OppGroup
   sfdcBase: string
@@ -1456,6 +1474,23 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
   const preview = formatPreview(opp)
   const link = sfdcBase ? `${sfdcBase}/lightning/r/Opportunity/${opp.opportunityId}/view` : null
   const buttons = getRepButtons(opp.alerts)
+  const isRenewal = opp.opportunityType === 'Renewal'
+
+  // Fetch renewal contract details on-demand for Renewal opps
+  const { data: oppMeta } = useQuery<OppMeta | null>({
+    queryKey: ['opp-meta', opp.opportunityId],
+    queryFn: () => api.get(`/notifications/opp-meta?id=${opp.opportunityId}`).then((r) => r.data),
+    enabled: isRenewal,
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const updateNextStep = useMutation({
+    mutationFn: ({ nextStep, nextStepDate }: { nextStep: string; nextStepDate: string }) =>
+      api.post('/notifications/update-opp-next-step', { opportunityId: opp.opportunityId, nextStep, nextStepDate }),
+  })
+
+  const isRenewalZeroAcv = isRenewal && oppMeta != null && oppMeta.netAcv === 0
+  const { nextContractEndDate, nextRenewalDate, hasAutoRenewal } = oppMeta ?? {}
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -1487,6 +1522,57 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
             ))}
           </div>
         </div>
+
+        {/* Renewal $0 ACV: contract details + generate next step */}
+        {isRenewalZeroAcv && (
+          <div className="mb-4 rounded-xl border border-gray-200 p-4 space-y-2.5">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Contract details</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {nextContractEndDate && (
+                <span className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">Contract End</span>{' '}{fmtDate(nextContractEndDate)}
+                </span>
+              )}
+              {nextRenewalDate && (
+                <span className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">Cancellation Deadline</span>{' '}{fmtDate(nextRenewalDate)}
+                </span>
+              )}
+              {hasAutoRenewal != null && (
+                <span className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">Auto-Renewal</span>{' '}
+                  <span className={hasAutoRenewal ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
+                    {hasAutoRenewal ? 'Yes' : 'No'}
+                  </span>
+                </span>
+              )}
+            </div>
+            {hasAutoRenewal && nextContractEndDate && (
+              updateNextStep.isSuccess ? (
+                <div className="flex items-center gap-1.5 text-xs text-green-700 font-medium">
+                  <CheckCircle size={12} /> Next step updated in Salesforce
+                </div>
+              ) : (
+                <button
+                  disabled={updateNextStep.isPending}
+                  onClick={() => {
+                    const contractEnd = new Date(nextContractEndDate)
+                    const startDate = new Date(contractEnd)
+                    startDate.setDate(startDate.getDate() + 1)
+                    const text = `Contract will auto-renew on ${fmtLong(contractEnd)} and start on ${fmtLong(startDate)}`
+                    updateNextStep.mutate({ nextStep: text, nextStepDate: nextContractEndDate })
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-40"
+                >
+                  {updateNextStep.isPending
+                    ? <><RefreshCw size={11} className="animate-spin" /> Updating...</>
+                    : <><Check size={11} /> No Price Increase — Generate Next Step</>}
+                </button>
+              )
+            )}
+          </div>
+        )}
+
         {sent ? (
           <div className="flex items-center gap-2 px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
             <CheckCircle size={15} /> Message sent to {opp.ownerEmail}

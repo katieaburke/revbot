@@ -517,4 +517,54 @@ router.post('/send-manager-summary', async (req, res) => {
   return res.json({ results })
 })
 
+// GET /api/notifications/opp-meta?id=<oppId>
+// Returns renewal-relevant SFDC fields for a single opportunity (used by RevOps DraftModal).
+router.get('/opp-meta', async (req, res) => {
+  const { id } = req.query as { id?: string }
+  if (!id) return res.status(400).json({ error: 'Missing id' })
+  try {
+    const conn = await getServiceConnection()
+    const soql = `SELECT Net_MCV__c, Type, Account.Next_Contract_End_Date__c, Account.Next_Renewal_Date__c, Account.Has_Auto_Renewal_on_next_Renewal_Opp__c FROM Opportunity WHERE Id = '${id}' LIMIT 1`
+    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+    const axios = (await import('axios')).default
+    const resp = await axios.get<{ records: {
+      Net_MCV__c: number | null
+      Type: string | null
+      Account: { Next_Contract_End_Date__c: string | null; Next_Renewal_Date__c: string | null; Has_Auto_Renewal_on_next_Renewal_Opp__c: boolean | null } | null
+    }[] }>(url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 })
+    const r = resp.data.records[0]
+    if (!r) return res.json(null)
+    res.json({
+      netAcv: r.Net_MCV__c ?? null,
+      oppType: r.Type ?? null,
+      nextContractEndDate: r.Account?.Next_Contract_End_Date__c ?? null,
+      nextRenewalDate: r.Account?.Next_Renewal_Date__c ?? null,
+      hasAutoRenewal: r.Account?.Has_Auto_Renewal_on_next_Renewal_Opp__c ?? null,
+    })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// POST /api/notifications/update-opp-next-step
+// Writes NextStep + Next_Step_Date__c to a SFDC Opportunity via the service connection.
+router.post('/update-opp-next-step', async (req, res) => {
+  const { opportunityId, nextStep, nextStepDate } = req.body as {
+    opportunityId: string
+    nextStep?: string
+    nextStepDate?: string
+  }
+  if (!opportunityId) return res.status(400).json({ error: 'Missing opportunityId' })
+  try {
+    const conn = await getServiceConnection()
+    const fields: Record<string, unknown> = { Id: opportunityId }
+    if (nextStep?.trim()) fields.NextStep = nextStep.trim()
+    if (nextStepDate) fields.Next_Step_Date__c = nextStepDate
+    await conn.sobject('Opportunity').update(fields as never)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
 export default router
