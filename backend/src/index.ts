@@ -84,6 +84,15 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Fatal error:', err)
+  console.error('Fatal error during startup:', err)
   process.exit(1)
+})
+
+// Prevent background job crashes / unhandled rejections from taking down the HTTP server.
+// Log them so they're visible in platform logs, but keep the process alive.
+process.on('unhandledRejection', (reason) => {
+  console.error('[Process] Unhandled promise rejection (non-fatal):', reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[Process] Uncaught exception (non-fatal):', err)
 })

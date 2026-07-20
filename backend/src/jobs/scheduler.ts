@@ -74,15 +74,30 @@ export async function triggerAlertJobNow() {
   return job.id
 }
 
-// Queue a dry-run via BullMQ so it runs in the worker, not in the HTTP request context
-export async function triggerDryRunJob(bustGongCache = false) {
-  const job = await alertQueue.add(
-    'run-dry-run',
-    { triggeredAt: new Date().toISOString(), bustGongCache },
-    { removeOnComplete: 5, removeOnFail: 5, attempts: 1 },
+// Queue a dry-run via BullMQ so it runs in the worker, not in the HTTP request context.
+// Race against a 5s timeout — if Redis is slow/unavailable, fall back to direct background run.
+export async function triggerDryRunJob(bustGongCache = false): Promise<string | null> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('queue-timeout')), 5_000)
   )
-  console.log(`[Scheduler] Dry-run job queued: ${job.id}`)
-  return job.id
+  try {
+    const job = await Promise.race([
+      alertQueue.add(
+        'run-dry-run',
+        { triggeredAt: new Date().toISOString(), bustGongCache },
+        { removeOnComplete: 5, removeOnFail: 5, attempts: 1 },
+      ),
+      timeout,
+    ])
+    console.log(`[Scheduler] Dry-run job queued: ${job.id}`)
+    return job.id ?? null
+  } catch (err) {
+    // Redis unavailable or timed out — run directly in background so the HTTP response
+    // is already sent before work starts. This is the same isolation as a job.
+    console.warn('[Scheduler] BullMQ unavailable, running dry-run in background:', (err as Error).message)
+    runDryRun({ bustGongCache }).catch((e) => console.error('[DryRun] Background run failed:', e))
+    return null
+  }
 }
 
 // ── Territory reassignment ──────────────────────────────────────────────────
