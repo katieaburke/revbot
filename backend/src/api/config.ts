@@ -265,10 +265,19 @@ router.get('/settings', async (_req, res) => {
     const result: Record<string, unknown> = {
       sfdcInstanceUrl: 'https://uberall.lightning.force.com/',
     }
-    for (const s of settings) result[s.key] = JSON.parse(s.value)
+    for (const s of settings) {
+      try {
+        result[s.key] = JSON.parse(s.value)
+      } catch {
+        console.warn(`[Settings] Skipping malformed value for key "${s.key}":`, s.value?.slice(0, 100))
+        result[s.key] = s.value // return raw string as fallback
+      }
+    }
     res.json(result)
   } catch (err) {
-    res.status(500).json({ error: String(err) })
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    console.error('[Settings] GET /settings failed:', message)
+    res.status(500).json({ error: message })
   }
 })
 
