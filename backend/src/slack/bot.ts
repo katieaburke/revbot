@@ -50,12 +50,26 @@ async function getTestOverrideSlackId(): Promise<string | null> {
     // Return cached ID if we already resolved it
     if (_testOverrideSlackId !== undefined) return _testOverrideSlackId
 
-    // Go directly to Slack API — bypass DB since admin users have fake slackUserIds
-    if (!slackApp) return null
+    // Try DB first — all Slack workspace members are synced here with real user IDs
+    const dbUser = await db.user.findFirst({
+      where: { slackEmail: { equals: email, mode: 'insensitive' } },
+      select: { slackUserId: true },
+    })
+    if (dbUser?.slackUserId) {
+      _testOverrideSlackId = dbUser.slackUserId
+      console.log(`[TestMode] Resolved override recipient ${email} → ${dbUser.slackUserId} (from DB)`)
+      return dbUser.slackUserId
+    }
+
+    // Fall back to Slack API lookup (requires users:read.email scope)
+    if (!slackApp) {
+      console.warn(`[TestMode] ${email} not in DB and Slack not configured — test mode inactive`)
+      return null
+    }
     const result = await slackApp.client.users.lookupByEmail({ email })
     const id = result.user?.id ?? null
     _testOverrideSlackId = id
-    if (id) console.log(`[TestMode] Resolved override recipient ${email} → ${id}`)
+    if (id) console.log(`[TestMode] Resolved override recipient ${email} → ${id} (from Slack API)`)
     else console.warn(`[TestMode] Could not resolve Slack ID for ${email} — test mode inactive`)
     return id
   } catch (err) {

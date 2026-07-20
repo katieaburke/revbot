@@ -70,11 +70,20 @@ export function Settings() {
   })
 
   const [testEmail, setTestEmail] = useState('')
+  const [testModeError, setTestModeError] = useState<string | null>(null)
   const isTestModeOn = !!data?.slackTestRecipient
 
   const enableTestMode = useMutation({
     mutationFn: (email: string) => api.put('/config/settings', { slackTestRecipient: email }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings'] }); setTestEmail('') },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings'] })
+      setTestEmail('')
+      setTestModeError(null)
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? String(err)
+      setTestModeError(msg)
+    },
   })
 
   const disableTestMode = useMutation({
@@ -194,6 +203,9 @@ export function Settings() {
                   {enableTestMode.isPending ? 'Saving...' : 'Enable'}
                 </button>
               </div>
+              {testModeError && (
+                <p className="text-xs text-red-600 mt-1">{testModeError}</p>
+              )}
             </div>
           )}
         </div>
