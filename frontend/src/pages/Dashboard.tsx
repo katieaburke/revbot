@@ -78,17 +78,40 @@ export function Dashboard() {
 
   const dryRunResult = dryRunOverride ?? lastDryRun ?? null
 
+  // Dry-run is now async on the server — it returns 202 immediately and saves results to DB.
+  // After triggering, poll /last-dry-run every 3s until the timestamp changes.
+  const [isPolling, setIsPolling] = useState(false)
+  const [pollSince, setPollSince] = useState<string | null>(null)
+
   const dryRun = useMutation({
-    mutationFn: () => api.post('/notifications/dry-run').then((r) => r.data as DryRunResult),
-    onSuccess: (data) => {
-      setDryRunOverride(data)
+    mutationFn: () => api.post('/notifications/dry-run').then((r) => r.data),
+    onSuccess: () => {
       setDryRunError(null)
-      qc.invalidateQueries({ queryKey: ['last-dry-run'] })
+      setPollSince(lastDryRun?.timestamp ?? null)
+      setIsPolling(true)
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? String(err)
       setDryRunError(msg)
     },
+  })
+
+  // Poll /last-dry-run every 3s while isPolling, stop when timestamp changes
+  useQuery<DryRunResult | null>({
+    queryKey: ['last-dry-run-poll', pollSince],
+    queryFn: async () => {
+      const result = await api.get('/notifications/last-dry-run').then((r) => r.data as DryRunResult | null)
+      if (result && result.timestamp !== pollSince) {
+        setDryRunOverride(result)
+        qc.setQueryData(['last-dry-run'], result)
+        setIsPolling(false)
+        setPollSince(null)
+      }
+      return result
+    },
+    enabled: isPolling,
+    refetchInterval: isPolling ? 3000 : false,
+    refetchIntervalInBackground: true,
   })
 
   // ── Derived counts ──────────────────────────────────────────────────────────
@@ -140,22 +163,22 @@ export function Dashboard() {
             )}
             <button
               onClick={() => { setDryRunError(null); dryRun.mutate() }}
-              disabled={dryRun.isPending}
+              disabled={dryRun.isPending || isPolling}
               className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50"
             >
-              {dryRun.isPending ? <RefreshCw size={15} className="animate-spin" /> : <Play size={15} />}
+              {(dryRun.isPending || isPolling) ? <RefreshCw size={15} className="animate-spin" /> : <Play size={15} />}
               Run Scan
             </button>
           </div>
         </div>
 
         {/* Dry run loading banner */}
-        {dryRun.isPending && (
+        {(dryRun.isPending || isPolling) && (
           <div className="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-5 flex items-center gap-4">
             <RefreshCw size={22} className="animate-spin text-blue-500 flex-shrink-0" />
             <div>
               <p className="font-medium text-blue-800 text-sm">Scanning pipeline...</p>
-              <p className="text-xs text-blue-600 mt-0.5">Pulling live Salesforce + Gong data — this takes 30–60 seconds</p>
+              <p className="text-xs text-blue-600 mt-0.5">Pulling live Salesforce data — results will appear automatically when ready</p>
             </div>
             <div className="flex-1 bg-blue-100 rounded-full h-1.5 overflow-hidden">
               <div className="h-1.5 bg-blue-400 rounded-full animate-pulse w-2/3" />

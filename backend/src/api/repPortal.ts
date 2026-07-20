@@ -14,7 +14,19 @@ const SFDC_BASE = 'https://uberall.lightning.force.com'
 // Fetch live opp metadata from SFDC for a list of opp IDs.
 // Returns { map, sfdcOk } — sfdcOk=false means the call failed and we should not act on missing IDs.
 async function fetchOppMeta(oppIds: string[]): Promise<{
-  map: Map<string, { amount: number | null; closeDate: string | null; stage: string | null; nextStep: string | null; nextStepDate: string | null; isClosed: boolean; oppType: string | null }>
+  map: Map<string, {
+    amount: number | null
+    closeDate: string | null
+    stage: string | null
+    nextStep: string | null
+    nextStepDate: string | null
+    isClosed: boolean
+    oppType: string | null
+    netAcv: number | null
+    nextContractEndDate: string | null
+    nextRenewalDate: string | null
+    hasAutoRenewal: boolean | null
+  }>
   sfdcOk: boolean
 }> {
   const map = new Map()
@@ -23,9 +35,25 @@ async function fetchOppMeta(oppIds: string[]): Promise<{
     const conn = await getServiceConnection()
     const ids = oppIds.map((id) => `'${id}'`).join(',')
     // Use SFDC's native IsClosed boolean — reliable for Closed Won AND Closed Lost regardless of custom stage names
-    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c, IsClosed, Type FROM Opportunity WHERE Id IN (${ids})`
+    // Net_MCV__c = "Net ACV" field; Account fields used for renewal $0 ACV flow
+    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c, IsClosed, Type, Net_MCV__c, Account.Next_Contract_End_Date__c, Account.Next_Renewal_Date__c, Account.Has_Auto_Renewal_on_next_Renewal_Opp__c FROM Opportunity WHERE Id IN (${ids})`
     const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{ records: { Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null; IsClosed: boolean; Type: string | null }[] }>(
+    const resp = await axios.get<{ records: {
+      Id: string
+      Amount: number | null
+      CloseDate: string | null
+      StageName: string
+      NextStep: string | null
+      Next_Step_Date__c: string | null
+      IsClosed: boolean
+      Type: string | null
+      Net_MCV__c: number | null
+      Account: {
+        Next_Contract_End_Date__c: string | null
+        Next_Renewal_Date__c: string | null
+        Has_Auto_Renewal_on_next_Renewal_Opp__c: boolean | null
+      } | null
+    }[] }>(
       url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
     )
     for (const r of resp.data.records) {
@@ -37,6 +65,10 @@ async function fetchOppMeta(oppIds: string[]): Promise<{
         nextStepDate: r.Next_Step_Date__c ?? null,
         isClosed: r.IsClosed ?? false,
         oppType: r.Type ?? null,
+        netAcv: r.Net_MCV__c ?? null,
+        nextContractEndDate: r.Account?.Next_Contract_End_Date__c ?? null,
+        nextRenewalDate: r.Account?.Next_Renewal_Date__c ?? null,
+        hasAutoRenewal: r.Account?.Has_Auto_Renewal_on_next_Renewal_Opp__c ?? null,
       })
     }
     return { map, sfdcOk: true }

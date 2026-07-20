@@ -542,6 +542,12 @@ function NotifCard({
           const nextStep = typeof d.nextStep === 'string' && d.nextStep.trim() ? d.nextStep.trim() : null
           const oppType = typeof d.oppType === 'string' ? d.oppType : null
           const isExistingBusiness = repRole?.toLowerCase().includes('existing business') ?? false
+          const netAcv = d.netAcv != null ? Number(d.netAcv) : null
+          const nextContractEndDate = typeof d.nextContractEndDate === 'string' ? d.nextContractEndDate : null
+          const nextRenewalDate = typeof d.nextRenewalDate === 'string' ? d.nextRenewalDate : null
+          const hasAutoRenewal = typeof d.hasAutoRenewal === 'boolean' ? d.hasAutoRenewal : null
+          // Show contract details section when Type=Renewal and Net ACV=0
+          const isRenewalZeroAcv = oppType === 'Renewal' && netAcv === 0
           return (
             <div className="mb-2.5 space-y-1.5">
               <div className="flex flex-wrap gap-x-4 gap-y-1 items-center">
@@ -580,6 +586,50 @@ function NotifCard({
                   <span className="font-medium text-gray-700">Next step</span>{' '}
                   {nextStep}
                 </p>
+              )}
+              {/* Renewal $0 ACV: show contract details from Account */}
+              {isRenewalZeroAcv && (
+                <div className="mt-2 pt-2.5 border-t border-gray-100 space-y-2">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Contract details</p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    {nextContractEndDate && (
+                      <span className="text-xs text-gray-500">
+                        <span className="font-medium text-gray-700">Contract End</span>{' '}
+                        {fmtDate(nextContractEndDate)}
+                      </span>
+                    )}
+                    {nextRenewalDate && (
+                      <span className="text-xs text-gray-500">
+                        <span className="font-medium text-gray-700">Cancellation Deadline</span>{' '}
+                        {fmtDate(nextRenewalDate)}
+                      </span>
+                    )}
+                    {hasAutoRenewal !== null && (
+                      <span className="text-xs text-gray-500">
+                        <span className="font-medium text-gray-700">Auto-Renewal</span>{' '}
+                        <span className={hasAutoRenewal ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
+                          {hasAutoRenewal ? 'Yes' : 'No'}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                  {hasAutoRenewal && nextContractEndDate && (
+                    <button
+                      disabled={isNextStepPending}
+                      onClick={() => {
+                        const contractEnd = new Date(nextContractEndDate)
+                        const startDate = new Date(contractEnd)
+                        startDate.setDate(startDate.getDate() + 1)
+                        const fmtLong = (d: Date) => d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+                        const text = `Contract will auto-renew on ${fmtLong(contractEnd)} and start on ${fmtLong(startDate)}`
+                        onUpdateNextStep(text, nextContractEndDate)
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-40"
+                    >
+                      <Check size={11} /> No Price Increase — Generate Next Step
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )

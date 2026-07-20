@@ -170,16 +170,16 @@ router.post('/run-now', async (_req, res) => {
   }
 })
 
-// Dry run — evaluates all alerts against live data, returns what would be sent, nothing is sent
+// Dry run — evaluates all alerts against live data, returns what would be sent, nothing is sent.
+// Runs in the background and persists results to DB — returns 202 immediately so the HTTP
+// connection never times out. Frontend polls /last-dry-run for fresh results.
 router.post('/dry-run', async (req, res) => {
-  try {
-    // bustCache=true only when explicitly requested — Gong cache is 6h and expensive to rebuild
-    const bustCache = (req.query.bustCache === 'true') || (req.body as { bustCache?: boolean })?.bustCache === true
-    const result = await runDryRun({ bustGongCache: bustCache })
-    res.json(result)
-  } catch (err) {
-    res.status(500).json({ error: String(err) })
-  }
+  const bustCache = (req.query.bustCache === 'true') || (req.body as { bustCache?: boolean })?.bustCache === true
+  // Kick off in background — do NOT await
+  runDryRun({ bustGongCache: bustCache }).catch((err) => {
+    console.error('[DryRun] Background run failed:', err)
+  })
+  res.status(202).json({ status: 'started' })
 })
 
 // Send a drafted alert for a single opp to the rep
