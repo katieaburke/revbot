@@ -518,23 +518,28 @@ router.post('/send-manager-summary', async (req, res) => {
 })
 
 // GET /api/notifications/opp-meta?id=<oppId>
-// Returns renewal-relevant SFDC fields for a single opportunity (used by RevOps DraftModal).
+// Returns live SFDC status for a single opportunity (used by RevOps DraftModal to detect
+// closed opps and show renewal contract details).
 router.get('/opp-meta', async (req, res) => {
   const { id } = req.query as { id?: string }
   if (!id) return res.status(400).json({ error: 'Missing id' })
   try {
     const conn = await getServiceConnection()
-    const soql = `SELECT Net_MCV__c, Type, Account.Next_Contract_End_Date__c, Account.Next_Renewal_Date__c, Account.Has_Auto_Renewal_on_next_Renewal_Opp__c FROM Opportunity WHERE Id = '${id}' LIMIT 1`
+    const soql = `SELECT IsClosed, StageName, Net_MCV__c, Type, Account.Next_Contract_End_Date__c, Account.Next_Renewal_Date__c, Account.Has_Auto_Renewal_on_next_Renewal_Opp__c FROM Opportunity WHERE Id = '${id}' LIMIT 1`
     const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
     const axios = (await import('axios')).default
     const resp = await axios.get<{ records: {
+      IsClosed: boolean
+      StageName: string | null
       Net_MCV__c: number | null
       Type: string | null
       Account: { Next_Contract_End_Date__c: string | null; Next_Renewal_Date__c: string | null; Has_Auto_Renewal_on_next_Renewal_Opp__c: boolean | null } | null
     }[] }>(url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 })
     const r = resp.data.records[0]
-    if (!r) return res.json(null)
+    if (!r) return res.json({ isClosed: true, currentStage: null }) // opp deleted — treat as closed
     res.json({
+      isClosed: r.IsClosed ?? false,
+      currentStage: r.StageName ?? null,
       netAcv: r.Net_MCV__c ?? null,
       oppType: r.Type ?? null,
       nextContractEndDate: r.Account?.Next_Contract_End_Date__c ?? null,

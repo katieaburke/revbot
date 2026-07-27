@@ -1446,6 +1446,8 @@ function formatPreview(opp: OppGroup): string {
 }
 
 interface OppMeta {
+  isClosed: boolean
+  currentStage: string | null
   netAcv: number | null
   oppType: string | null
   nextContractEndDate: string | null
@@ -1476,12 +1478,11 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
   const buttons = getRepButtons(opp.alerts)
   const isRenewal = opp.opportunityType === 'Renewal'
 
-  // Fetch renewal contract details on-demand for Renewal opps
+  // Always fetch live SFDC status when modal opens — detects closed opps and loads renewal fields
   const { data: oppMeta } = useQuery<OppMeta | null>({
     queryKey: ['opp-meta', opp.opportunityId],
     queryFn: () => api.get(`/notifications/opp-meta?id=${opp.opportunityId}`).then((r) => r.data),
-    enabled: isRenewal,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 2 * 60 * 1000,
   })
 
   const updateNextStep = useMutation({
@@ -1573,6 +1574,14 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
           </div>
         )}
 
+        {/* Closed opp warning */}
+        {oppMeta?.isClosed && (
+          <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+            ⚠️ This opportunity is now <strong>closed in Salesforce</strong>
+            {oppMeta.currentStage ? ` (${oppMeta.currentStage})` : ''}. Don't send — remove it from the list instead.
+          </div>
+        )}
+
         {sent ? (
           <div className="flex items-center gap-2 px-4 py-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
             <CheckCircle size={15} /> Message sent to {opp.ownerEmail}
@@ -1580,7 +1589,7 @@ function DraftModal({ opp, sfdcBase, sending, sent, onSend, onClose }: {
         ) : (
           <div className="flex gap-3 justify-end">
             <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
-            <button onClick={onSend} disabled={sending} className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50">
+            <button onClick={onSend} disabled={sending || !!oppMeta?.isClosed} className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50">
               {sending ? <RefreshCw size={13} className="animate-spin" /> : <Send size={13} />}
               {sending ? 'Sending...' : 'Send to rep'}
             </button>
