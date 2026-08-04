@@ -11,6 +11,7 @@ import {
   fetchTerritoryAccounts,
   applyDisposition,
   getAccountPicklists,
+  resolveTerritoryFilters,
   DISPOSITIONS,
   NO_ICP_SUB_REASONS,
   type Disposition,
@@ -557,9 +558,24 @@ router.get('/territory-cleanup', async (req, res) => {
   if (!resolved.ok) return res.status(resolved.status).json(resolved.body)
   const { user } = resolved
 
+  // Filters come from the UI. Anything unparseable falls back to the default
+  // rather than erroring, so a stale bookmarked URL still returns a usable queue.
+  const q = req.query as Record<string, string | undefined>
+  const num = (v: string | undefined): number | null => {
+    if (v === undefined || v.trim() === '') return null
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? n : null
+  }
+  const filters = {
+    lastCommBefore: q.lastCommBefore?.trim() || null,
+    includeBlankLastComm: q.includeBlankLastComm !== 'false',
+    minLocations: num(q.minLocations),
+    maxLocations: num(q.maxLocations),
+  }
+
   try {
     const [accounts, validated, picklists] = await Promise.all([
-      fetchTerritoryAccounts(user.slackEmail),
+      fetchTerritoryAccounts(user.slackEmail, filters),
       db.territoryValidation.findMany({
         where: { repId: user.id },
         select: { accountId: true },
@@ -575,9 +591,13 @@ router.get('/territory-cleanup', async (req, res) => {
         ...a,
         sfdcUrl: `${SFDC_BASE}/lightning/r/Account/${a.accountId}/view`,
       })),
+      // Both counts are within the current filter, not the whole territory.
       totalInTerritory: accounts.length,
       alreadyValidated: accounts.length - pending.length,
       picklists,
+      // Echo what was actually applied so the UI can show the effective date when
+      // the rep hasn't picked one.
+      appliedFilters: resolveTerritoryFilters(filters),
     })
   } catch (err) {
     const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)

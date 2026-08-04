@@ -69,11 +69,24 @@ interface TerritoryAccount {
   sfdcUrl: string
 }
 
+interface TerritoryFilters {
+  lastCommBefore: string
+  includeBlankLastComm: boolean
+  minLocations: string
+  maxLocations: string
+}
+
 interface TerritoryResponse {
   accounts: TerritoryAccount[]
   totalInTerritory: number
   alreadyValidated: number
   picklists: { industry: string[]; icpIppFitRating: string[] }
+  appliedFilters?: {
+    lastCommBefore: string
+    includeBlankLastComm: boolean
+    minLocations: number | null
+    maxLocations: number | null
+  }
 }
 
 type Disposition =
@@ -206,6 +219,54 @@ function wsStatusBadgeClass(status: string | null): string {
 
 type PortalTab = 'pipeline' | 'whitespace' | 'territory'
 
+// Empty strings mean "unset" — the server then applies its own default, which is
+// "not contacted since Jan 1 of this year, or never contacted".
+const EMPTY_TERRITORY_FILTERS: TerritoryFilters = {
+  lastCommBefore: '',
+  includeBlankLastComm: true,
+  minLocations: '',
+  maxLocations: '',
+}
+
+/**
+ * Format a bare `YYYY-MM-DD`. Not `fmtDate` — that goes through `new Date()`,
+ * which reads a date-only string as UTC midnight and so renders the day before
+ * in any negative-offset timezone.
+ */
+function fmtDateOnly(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number)
+  if (!y || !m || !d) return ymd
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
+/**
+ * Plain-English version of the filter the server actually applied. Reads from
+ * `appliedFilters` rather than local state so it reflects defaults and rejected
+ * values, not whatever happens to be typed in the boxes.
+ */
+function describeTerritoryFilters(f: TerritoryResponse['appliedFilters']): string {
+  if (!f) return 'matching your current filters'
+
+  const contact = f.includeBlankLastComm
+    ? `not contacted since ${fmtDateOnly(f.lastCommBefore)} (or never contacted)`
+    : `last contacted before ${fmtDateOnly(f.lastCommBefore)}`
+
+  let locations = ''
+  if (f.minLocations !== null && f.maxLocations !== null) {
+    locations = ` with ${f.minLocations}–${f.maxLocations} locations`
+  } else if (f.minLocations !== null) {
+    locations = ` with ${f.minLocations}+ locations`
+  } else if (f.maxLocations !== null) {
+    locations = ` with up to ${f.maxLocations} locations`
+  }
+
+  return `${contact}${locations}`
+}
+
 export function RepPortal() {
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
   const qc = useQueryClient()
@@ -261,12 +322,28 @@ export function RepPortal() {
     retry: false,
   })
 
+  // Two copies of the filter state: `territoryDraft` is what's in the inputs,
+  // `territoryFilters` is what's been applied. Each apply is a fresh Salesforce
+  // query, so we don't want one per keystroke.
+  const [territoryDraft, setTerritoryDraft] = useState<TerritoryFilters>(EMPTY_TERRITORY_FILTERS)
+  const [territoryFilters, setTerritoryFilters] = useState<TerritoryFilters>(EMPTY_TERRITORY_FILTERS)
+
   const territoryQuery = useQuery<TerritoryResponse>({
-    queryKey: ['rep-territory', token],
-    queryFn: () => repApi.get(`/rep/territory-cleanup?token=${token}`).then((r) => r.data),
+    queryKey: ['rep-territory', token, territoryFilters],
+    queryFn: () => {
+      const p = new URLSearchParams({ token })
+      if (territoryFilters.lastCommBefore) p.set('lastCommBefore', territoryFilters.lastCommBefore)
+      if (!territoryFilters.includeBlankLastComm) p.set('includeBlankLastComm', 'false')
+      if (territoryFilters.minLocations) p.set('minLocations', territoryFilters.minLocations)
+      if (territoryFilters.maxLocations) p.set('maxLocations', territoryFilters.maxLocations)
+      return repApi.get(`/rep/territory-cleanup?${p.toString()}`).then((r) => r.data)
+    },
     enabled: !!token && activeTab === 'territory',
     retry: false,
   })
+
+  const territoryDirty =
+    JSON.stringify(territoryDraft) !== JSON.stringify(territoryFilters)
 
   const [wsRemovedIds, setWsRemovedIds] = useState<Set<string>>(new Set())
   const [territoryDoneIds, setTerritoryDoneIds] = useState<Set<string>>(new Set())
@@ -536,6 +613,99 @@ export function RepPortal() {
         {/* ── Territory Cleanup tab ── */}
         {activeTab === 'territory' && (
           <>
+            {/* Filters live outside the data block so they stay usable while the
+                query is loading or has errored. */}
+            <div
+              className="bg-white rounded-xl border border-gray-200 p-4 mb-3"
+              // Enter anywhere in the filter bar applies, matching the muscle
+              // memory of every other search box.
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || !territoryDirty || territoryQuery.isFetching) return
+                setTerritoryFilters(territoryDraft)
+              }}
+            >
+              <div className="flex flex-wrap items-end gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Last rep contact before
+                  </label>
+                  <input
+                    type="date"
+                    value={territoryDraft.lastCommBefore}
+                    onChange={(e) =>
+                      setTerritoryDraft((f) => ({ ...f, lastCommBefore: e.target.value }))
+                    }
+                    className="px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Locations</label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="min"
+                      value={territoryDraft.minLocations}
+                      onChange={(e) =>
+                        setTerritoryDraft((f) => ({ ...f, minLocations: e.target.value }))
+                      }
+                      className="w-20 px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400"
+                    />
+                    <span className="text-gray-400 text-xs">to</span>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="max"
+                      value={territoryDraft.maxLocations}
+                      onChange={(e) =>
+                        setTerritoryDraft((f) => ({ ...f, maxLocations: e.target.value }))
+                      }
+                      className="w-20 px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 pb-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={territoryDraft.includeBlankLastComm}
+                    onChange={(e) =>
+                      setTerritoryDraft((f) => ({ ...f, includeBlankLastComm: e.target.checked }))
+                    }
+                    className="rounded border-gray-300"
+                  />
+                  Include never contacted
+                </label>
+
+                <div className="flex items-center gap-2 pb-1">
+                  <button
+                    onClick={() => setTerritoryFilters(territoryDraft)}
+                    disabled={!territoryDirty || territoryQuery.isFetching}
+                    className="px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg disabled:opacity-40 hover:bg-brand-600"
+                  >
+                    {territoryQuery.isFetching ? 'Loading…' : 'Apply'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTerritoryDraft(EMPTY_TERRITORY_FILTERS)
+                      setTerritoryFilters(EMPTY_TERRITORY_FILTERS)
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+
+              {Boolean(territoryDraft.minLocations || territoryDraft.maxLocations) && (
+                <p className="text-xs text-amber-700 mt-2.5">
+                  Accounts with no location count on record are excluded while a locations
+                  range is set.
+                </p>
+              )}
+            </div>
+
             {territoryQuery.isLoading && (
               <div className="flex flex-col items-center gap-3 py-16 text-center">
                 <RefreshCw size={28} className="animate-spin text-blue-400" />
@@ -558,8 +728,9 @@ export function RepPortal() {
               <>
                 <div className="bg-white rounded-xl border border-gray-200 p-4 mb-3">
                   <p className="text-sm text-gray-700">
-                    These are <strong>Prospect</strong> accounts you own with no rep communication logged
-                    this year. Tell us what each one should be, and we'll update Salesforce for you.
+                    These are <strong>Prospect</strong> accounts you own,{' '}
+                    {describeTerritoryFilters(territoryQuery.data.appliedFilters)}. Tell us what each
+                    one should be, and we'll update Salesforce for you.
                   </p>
                   <div className="flex items-center gap-4 mt-2.5 text-xs text-gray-500">
                     <span>

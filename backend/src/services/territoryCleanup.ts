@@ -4,15 +4,18 @@ import { db } from '../db'
 
 // ─── Territory Cleanup ───────────────────────────────────────────────────────
 //
-// Queues up Prospect accounts that no rep has touched this year and asks the
-// owning AE to validate them. Criteria mirror SFDC report 00OW600000ESj29MAD
-// ("Prospect Accounts - Data Request" / Prospect_Accounts_USCAN_No_Activity):
+// Queues up stale Prospect accounts and asks the owning AE to validate them.
+// Criteria mirror SFDC report 00OW600000ESj29MAD ("Prospect Accounts - Data
+// Request" / Prospect_Accounts_USCAN_No_Activity):
 //
 //   Account_Stage__c            = 'Prospect'
 //   RecordType.Name             = 'Enterprise Account Record'
 //   Owner.Name                  not like %grave% / %shark%  (Graveyard, Shark Tank)
-//   Last_Rep_Communication_Date__c  not this year (or blank)
 //   Owner role rollup           contains 'New Business'
+//
+// The staleness window and location-count range are rep-adjustable (see
+// TerritoryFilters). Defaults reproduce the report's original behaviour:
+// Last_Rep_Communication_Date__c before Jan 1 of the current year, or blank.
 //
 // The report scopes by owner role rollup; here we scope by Owner.Email to the
 // requesting rep, which implies the rollup filter as long as the rep is a New
@@ -149,12 +152,88 @@ interface SfdcPage {
   nextRecordsUrl?: string
 }
 
+export interface TerritoryFilters {
+  /** ISO date (YYYY-MM-DD). Accounts last contacted before this date match. */
+  lastCommBefore?: string | null
+  /** Also include accounts never contacted at all. Defaults to true. */
+  includeBlankLastComm?: boolean
+  minLocations?: number | null
+  maxLocations?: number | null
+}
+
+/** Jan 1 of the current year — reproduces the original `< THIS_YEAR` default. */
+function defaultLastCommBefore(): string {
+  return `${new Date().getFullYear()}-01-01`
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Build the filter fragment of the queue query.
+ *
+ * Everything interpolated here is validated first: dates must match ISO_DATE and
+ * bounds must be finite integers. SOQL date literals are unquoted, so a raw
+ * string here would be an injection vector — hence the strict regex rather than
+ * soqlEscape, which only helps inside quoted literals.
+ */
+function buildFilterClauses(filters: TerritoryFilters): string[] {
+  const { lastCommBefore, includeBlankLastComm, minLocations, maxLocations } =
+    resolveTerritoryFilters(filters)
+  const clauses: string[] = []
+
+  clauses.push(
+    includeBlankLastComm
+      ? `(Last_Rep_Communication_Date__c < ${lastCommBefore} OR Last_Rep_Communication_Date__c = null)`
+      : `Last_Rep_Communication_Date__c < ${lastCommBefore}`
+  )
+
+  // Note: SFDC treats null as failing any numeric comparison, so setting a bound
+  // excludes accounts with no location count. That's surfaced in the UI.
+  if (minLocations !== null) clauses.push(`Number_of_locations__c >= ${minLocations}`)
+  if (maxLocations !== null) clauses.push(`Number_of_locations__c <= ${maxLocations}`)
+
+  return clauses
+}
+
+export interface ResolvedTerritoryFilters {
+  lastCommBefore: string
+  includeBlankLastComm: boolean
+  minLocations: number | null
+  maxLocations: number | null
+}
+
+/**
+ * Normalise raw filter input into exactly what the query will use. Shared with
+ * the API layer so the response can report the *effective* filters — otherwise a
+ * defaulted or rejected value would be echoed back as the rep's own input.
+ */
+export function resolveTerritoryFilters(filters: TerritoryFilters): ResolvedTerritoryFilters {
+  const raw = filters.lastCommBefore?.trim()
+  const int = (v: number | null | undefined): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : null
+
+  // A max below the min would silently return nothing; swap rather than surprise.
+  let min = int(filters.minLocations)
+  let max = int(filters.maxLocations)
+  if (min !== null && max !== null && max < min) [min, max] = [max, min]
+
+  return {
+    lastCommBefore: raw && ISO_DATE.test(raw) ? raw : defaultLastCommBefore(),
+    includeBlankLastComm: filters.includeBlankLastComm !== false,
+    minLocations: min,
+    maxLocations: max,
+  }
+}
+
 /**
  * Fetch the rep's un-validated territory accounts. Pages through all results —
  * a single rep's slice is typically a few hundred accounts, but we don't want a
  * silent truncation at SFDC's 2000-record page limit.
  */
-export async function fetchTerritoryAccounts(repEmail: string): Promise<TerritoryAccount[]> {
+export async function fetchTerritoryAccounts(
+  repEmail: string,
+  filters: TerritoryFilters = {},
+): Promise<TerritoryAccount[]> {
   const conn = await getServiceConnection()
 
   const soql = `
@@ -164,8 +243,8 @@ export async function fetchTerritoryAccounts(repEmail: string): Promise<Territor
       AND RecordType.Name = 'Enterprise Account Record'
       AND (NOT Owner.Name LIKE '%grave%')
       AND (NOT Owner.Name LIKE '%shark%')
-      AND (Last_Rep_Communication_Date__c < THIS_YEAR OR Last_Rep_Communication_Date__c = null)
       AND Owner.Email = '${soqlEscape(repEmail)}'
+      ${buildFilterClauses(filters).map((c) => `AND ${c}`).join('\n      ')}
     ORDER BY Name ASC
   `.trim()
 
