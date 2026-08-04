@@ -4,7 +4,7 @@ import cors from 'cors'
 import { config } from './config'
 import { db } from './db'
 import { initSlack } from './slack/bot'
-import { startWorker, alertQueue, scheduleReassignmentJob } from './jobs/scheduler'
+import { startWorker, alertQueue, scheduleReassignmentJob, clearOrphanedActiveJobs } from './jobs/scheduler'
 import authRouter from './api/auth'
 import configRouter from './api/config'
 import notificationsRouter from './api/notifications'
@@ -61,6 +61,14 @@ async function main() {
     // HTTP server from accepting requests. A slow or unavailable Redis won't
     // delay startup — these will retry or log a warning and move on.
     setImmediate(async () => {
+      // Clear jobs orphaned by a previous crash — with concurrency 1 a single
+      // stuck `active` job blocks every subsequent job indefinitely.
+      try {
+        await clearOrphanedActiveJobs()
+      } catch (err) {
+        console.warn('⚠️  Could not clear orphaned jobs:', (err as Error).message)
+      }
+
       // Clear any previously scheduled repeatable alert jobs — alerts are now sent manually only
       try {
         const repeatableJobs = await alertQueue.getRepeatableJobs()

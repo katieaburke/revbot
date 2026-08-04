@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { db } from '../db'
 import { requireAdmin } from '../middleware/adminAuth'
-import { triggerAlertJobNow, triggerDryRunJob } from '../jobs/scheduler'
+import { triggerAlertJobNow, triggerDryRunJob, getJobStatus } from '../jobs/scheduler'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { buildCombinedMessage, buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildManagerAlertMessage } from '../slack/messages'
 import { AlertType } from '../types'
@@ -176,6 +176,17 @@ router.post('/dry-run', async (req, res) => {
     const bustCache = (req.query.bustCache === 'true') || (req.body as { bustCache?: boolean })?.bustCache === true
     const jobId = await triggerDryRunJob(bustCache)
     res.status(202).json({ status: 'started', jobId })
+  } catch (err) {
+    res.status(500).json({ error: String(err) })
+  }
+})
+
+// Poll a queued job's state. Lets the UI surface a real failure reason (e.g. an
+// expired Salesforce token) instead of spinning until its own timeout, because a
+// failed dry run never persists a result for /last-dry-run to return.
+router.get('/job-status/:jobId', async (req, res) => {
+  try {
+    res.json(await getJobStatus(req.params.jobId))
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }

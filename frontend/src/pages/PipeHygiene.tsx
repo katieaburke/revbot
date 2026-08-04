@@ -345,16 +345,50 @@ export function PipeHygiene() {
     })
   }
 
+  // POST /dry-run returns 202 { status: 'started' } — the scan runs in the BullMQ
+  // worker and persists its result. So we kick it off, then poll /last-dry-run
+  // until a result newer than the one we already had shows up.
   const dryRun = useMutation({
-    mutationFn: () => api.post('/notifications/dry-run').then((r) => r.data as DryRunResult),
+    mutationFn: async () => {
+      const baseline = dryRunResult?.timestamp ?? null
+      const { jobId } = await api
+        .post('/notifications/dry-run')
+        .then((r) => r.data as { status: string; jobId: string | null })
+
+      const DEADLINE = Date.now() + 10 * 60_000
+      const POLL_MS = 3_000
+      while (Date.now() < DEADLINE) {
+        await new Promise((r) => setTimeout(r, POLL_MS))
+
+        const fresh = await api
+          .get('/notifications/last-dry-run')
+          .then((r) => r.data as DryRunResult | null)
+          .catch(() => null)
+        if (fresh?.timestamp && fresh.timestamp !== baseline) return fresh
+
+        // A failed run never persists a result, so watch the job itself too —
+        // otherwise the spinner would run to the full timeout on e.g. an
+        // expired Salesforce token.
+        if (jobId) {
+          const job = await api
+            .get(`/notifications/job-status/${jobId}`)
+            .then((r) => r.data as { found: boolean; state?: string; failedReason?: string | null })
+            .catch(() => null)
+          if (job?.found && job.state === 'failed') {
+            throw new Error(job.failedReason || 'Scan failed — check the backend worker logs.')
+          }
+        }
+      }
+      throw new Error('Scan timed out after 10 minutes — check the backend worker logs.')
+    },
     onSuccess: (data) => {
       setDryRunOverride(data)
       setDryRunError(null)
       qc.invalidateQueries({ queryKey: ['last-dry-run'] })
     },
     onError: (err: unknown) => {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? String(err)
-      setDryRunError(msg)
+      const e = err as { response?: { data?: { error?: string } }; message?: string }
+      setDryRunError(e?.response?.data?.error ?? e?.message ?? String(err))
     },
   })
 

@@ -49,6 +49,29 @@ export function startWorker() {
   return worker
 }
 
+// A job left in `active` with no lock is orphaned: a worker picked it up and the
+// process died before finishing. Because the worker runs with concurrency 1, a
+// single orphan permanently blocks every later job (this is what made manual
+// dry-runs hang forever). Clear them on boot.
+export async function clearOrphanedActiveJobs(): Promise<number> {
+  const client = await alertQueue.client
+  const active = await alertQueue.getJobs(['active'])
+  let cleared = 0
+  for (const job of active) {
+    if (!job.id) continue
+    const lock = await client.get(`bull:${QUEUE_NAME}:${job.id}:lock`)
+    if (lock) continue // genuinely being worked on right now
+    try {
+      await job.remove()
+      cleared++
+      console.log(`[Scheduler] Cleared orphaned active job: ${job.id} (${job.name})`)
+    } catch (err) {
+      console.warn(`[Scheduler] Could not clear orphaned job ${job.id}:`, (err as Error).message)
+    }
+  }
+  return cleared
+}
+
 const DEFAULT_CRON = '0 8 * * 1-5' // Mon–Fri 8am
 
 // Schedule the recurring alert check based on DB config
@@ -97,6 +120,24 @@ export async function triggerDryRunJob(bustGongCache = false): Promise<string | 
     console.warn('[Scheduler] BullMQ unavailable, running dry-run in background:', (err as Error).message)
     runDryRun({ bustGongCache }).catch((e) => console.error('[DryRun] Background run failed:', e))
     return null
+  }
+}
+
+export interface JobStatus {
+  found: boolean
+  state?: string
+  failedReason?: string | null
+  attemptsMade?: number
+}
+
+export async function getJobStatus(jobId: string): Promise<JobStatus> {
+  const job = await alertQueue.getJob(jobId)
+  if (!job) return { found: false }
+  return {
+    found: true,
+    state: await job.getState(),
+    failedReason: job.failedReason ?? null,
+    attemptsMade: job.attemptsMade,
   }
 }
 
