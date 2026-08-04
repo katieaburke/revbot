@@ -73,6 +73,34 @@ interface TerritoryAccount {
   sfdcUrl: string
 }
 
+interface PicklistOption {
+  value: string
+  label: string
+}
+
+interface RepPicklists {
+  industry: string[]
+  icpIppFitRating: string[]
+  operatingModel: string[]
+  /** Optional: the frontend can deploy ahead of a backend that doesn't send it. */
+  productFit?: PicklistOption[]
+}
+
+/**
+ * Product Fit value written when a rep keeps an account. Mirrors
+ * PRODUCT_FIT_STRONG on the server — the API value, not the Setup label.
+ */
+const PRODUCT_FIT_STRONG = 'Strong Fit'
+
+/**
+ * Show the Salesforce label for a stored Product Fit value. These diverge: the
+ * option labelled "No Fit" is stored as `No Need`, so displaying the raw value
+ * would show reps a term that no longer exists in Salesforce.
+ */
+function productFitLabel(value: string, picklists: RepPicklists): string {
+  return picklists.productFit?.find((o) => o.value === value)?.label ?? value
+}
+
 interface TerritoryFilters {
   lastCommBefore: string
   includeBlankLastComm: boolean
@@ -84,7 +112,7 @@ interface TerritoryResponse {
   accounts: TerritoryAccount[]
   totalInTerritory: number
   alreadyValidated: number
-  picklists: { industry: string[]; icpIppFitRating: string[]; operatingModel: string[] }
+  picklists: RepPicklists
   appliedFilters?: {
     lastCommBefore: string
     includeBlankLastComm: boolean
@@ -1237,7 +1265,7 @@ function TerritoryAccountCard({
   onDone,
 }: {
   account: TerritoryAccount
-  picklists: { industry: string[]; icpIppFitRating: string[]; operatingModel: string[] }
+  picklists: RepPicklists
   token: string
   onDone: (accountId: string) => void
 }) {
@@ -1371,7 +1399,10 @@ function TerritoryAccountCard({
               value={account.parentName ?? account.ultimateParent ?? null}
             />
             <Detail label="Operating model" value={account.operatingModel} />
-            <Detail label="Product fit" value={account.productFit} />
+            <Detail
+              label="Product fit"
+              value={account.productFit ? productFitLabel(account.productFit, picklists) : null}
+            />
             {account.productFitRationale?.trim() && (
               <div className="col-span-2">
                 <p className="text-[10px] uppercase tracking-wide text-gray-400">
@@ -1480,10 +1511,14 @@ function TerritoryAccountCard({
               </div>
 
               {/* Say the quiet part out loud — reps should know what we'll write. */}
-              {account.productFit !== 'Structural Need' && (
+              {account.productFit !== PRODUCT_FIT_STRONG && (
                 <p className="text-[10px] text-gray-400">
-                  Keeping this account will set <strong>Product Fit</strong> to “Structural Need”
-                  {account.productFit ? ` (currently ${account.productFit})` : ''}.
+                  Keeping this account will set <strong>Product Fit</strong> to “
+                  {productFitLabel(PRODUCT_FIT_STRONG, picklists)}”
+                  {account.productFit
+                    ? ` (currently ${productFitLabel(account.productFit, picklists)})`
+                    : ''}
+                  .
                 </p>
               )}
 

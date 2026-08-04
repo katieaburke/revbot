@@ -316,10 +316,21 @@ export async function fetchTerritoryAccounts(
 // change very rarely, but that made adding a value in Setup look broken in the
 // portal for up to an hour. A describe is cheap; being confusing is not.
 
+export interface PicklistOption {
+  value: string
+  label: string
+}
+
 export interface AccountPicklists {
   industry: string[]
   icpIppFitRating: string[]
   operatingModel: string[]
+  /**
+   * Value + label, because these diverge on this field: the option shown as
+   * "No Fit" is stored as `No Need`. Records hold the value, so the UI needs the
+   * mapping to avoid displaying a term nobody uses in Salesforce any more.
+   */
+  productFit: PicklistOption[]
 }
 
 const PICKLIST_TTL_MS = 5 * 60 * 1000
@@ -341,10 +352,18 @@ export async function getAccountPicklists(): Promise<AccountPicklists> {
       .filter((v): v is string => typeof v === 'string' && v.length > 0)
   }
 
+  const optionsFor = (apiName: string): PicklistOption[] => {
+    const field = meta.fields.find((f) => f.name === apiName)
+    return (field?.picklistValues ?? [])
+      .filter((v) => v.active && typeof v.value === 'string' && v.value.length > 0)
+      .map((v) => ({ value: v.value as string, label: v.label || (v.value as string) }))
+  }
+
   const data: AccountPicklists = {
     industry: valuesFor('Industry'),
     icpIppFitRating: valuesFor('ICP_IPP_Fit_Rating__c'),
     operatingModel: valuesFor('Operating_Model_s__c'),
+    productFit: optionsFor('Product_Fit__c'),
   }
   _picklistCache = { at: Date.now(), data }
   return data
@@ -366,10 +385,14 @@ export interface DispositionInput {
 }
 
 /**
- * The Product Fit value implied by a rep keeping an account in territory: they've
- * confirmed it's a real business with a structural need for the product.
+ * The Product Fit value implied by a rep keeping an account in territory.
+ *
+ * This is the API value, which is what the REST API writes — not the Setup label.
+ * They mostly match on this picklist, but not always: the value shown as "No Fit"
+ * is still stored as `No Need`. Was `Structural Need` until the picklist was
+ * renamed; existing records were migrated to `Strong Fit` at the same time.
  */
-export const PRODUCT_FIT_STRUCTURAL_NEED = 'Structural Need'
+export const PRODUCT_FIT_STRONG = 'Strong Fit'
 
 /**
  * Current SFDC values that affect what we write, read just before the update.
@@ -410,8 +433,8 @@ export function buildDispositionFields(
       // Keeping an account in territory means the rep is asserting a structural
       // need. Skip the write when it already says that, so we don't touch the
       // record (and bump LastModified) for no reason.
-      if (current.productFit !== PRODUCT_FIT_STRUCTURAL_NEED) {
-        fields.Product_Fit__c = PRODUCT_FIT_STRUCTURAL_NEED
+      if (current.productFit !== PRODUCT_FIT_STRONG) {
+        fields.Product_Fit__c = PRODUCT_FIT_STRONG
       }
       break
 
