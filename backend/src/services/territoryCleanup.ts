@@ -18,8 +18,14 @@ import { db } from '../db'
 // requesting rep, which implies the rollup filter as long as the rep is a New
 // Business AE (enforced separately by isAccountExecutive).
 
-/** Default API name for the free-text feedback field. Overridable via AppSetting. */
-const DEFAULT_FEEDBACK_FIELD = 'Territory_Cleanup_Feedback__c'
+/**
+ * Default API name for the free-text feedback field. Overridable via AppSetting.
+ *
+ * This is the old "ICP/IPP Fit Rationale" field, relabelled in Setup to "Data
+ * Feedback" and repurposed rather than creating a new one — so the API name
+ * deliberately doesn't match the label.
+ */
+const DEFAULT_FEEDBACK_FIELD = 'ICP_IPP_Fit_Rationale__c'
 const FEEDBACK_FIELD_SETTING_KEY = 'territoryCleanupFeedbackField'
 
 export const DISPOSITIONS = [
