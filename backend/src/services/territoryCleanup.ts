@@ -81,6 +81,12 @@ export interface TerritoryAccount {
   /** Operating_Model_s__c — the live field, not the legacy Operating_Model__c. */
   operatingModel: string | null
   productFit: string | null
+  /**
+   * Product_Fit_Rationale__c — the "why" behind Product Fit. A distinct field from
+   * ICP_IPP_Fit_Rationale__c, which is now labelled "Data Feedback" and is what
+   * this tool writes rep feedback into.
+   */
+  productFitRationale: string | null
 }
 
 // Role parsing now lives in lib/repRoles (it gates the Whitespace tab too).
@@ -129,6 +135,7 @@ const ACCOUNT_FIELDS = [
   'BillingCountry',
   'Operating_Model_s__c',
   'Product_Fit__c',
+  'Product_Fit_Rationale__c',
 ].join(', ')
 
 interface RawAccount {
@@ -155,6 +162,7 @@ interface RawAccount {
   BillingCountry: string | null
   Operating_Model_s__c: string | null
   Product_Fit__c: string | null
+  Product_Fit_Rationale__c: string | null
 }
 
 interface SfdcPage {
@@ -297,6 +305,7 @@ export async function fetchTerritoryAccounts(
     billingCountry: r.BillingCountry,
     operatingModel: r.Operating_Model_s__c,
     productFit: r.Product_Fit__c,
+    productFitRationale: r.Product_Fit_Rationale__c,
   }))
 }
 

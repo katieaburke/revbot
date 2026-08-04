@@ -69,6 +69,7 @@ interface TerritoryAccount {
   billingCountry: string | null
   operatingModel: string | null
   productFit: string | null
+  productFitRationale: string | null
   sfdcUrl: string
 }
 
@@ -1309,6 +1310,16 @@ function TerritoryAccountCard({
             {locationsDisplay != null && <span>{locationsDisplay} locations</span>}
             {account.billingCountry && <span>{account.billingCountry}</span>}
           </div>
+          {/* Description on the collapsed card: it's the fastest way to tell what a
+              company does, and a rep shouldn't have to expand every row to get it.
+              Hidden once expanded, where the full untruncated text is shown. */}
+          {!expanded && (
+            <p className="text-[11px] text-gray-500 mt-1 line-clamp-2 whitespace-pre-line">
+              {account.description?.trim() || (
+                <span className="text-gray-300 italic">No description on record</span>
+              )}
+            </p>
+          )}
           <p className="text-[11px] text-gray-400 mt-1">
             Last rep contact:{' '}
             {account.lastRepCommunicationDate
@@ -1341,12 +1352,17 @@ function TerritoryAccountCard({
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs bg-gray-50 rounded-lg p-3">
             {/* Description leads — it's the fastest way for a rep to tell what the
                 company actually does before judging fit. */}
-            {account.description && (
-              <div className="col-span-2">
-                <p className="text-[10px] uppercase tracking-wide text-gray-400">Description</p>
-                <p className="text-gray-700 whitespace-pre-line">{account.description}</p>
-              </div>
-            )}
+            {/* Always rendered, even when blank — the collapsed card says "no
+                description on record", so it would be odd for that to vanish on
+                expand and leave the rep unsure whether it just wasn't shown. */}
+            <div className="col-span-2">
+              <p className="text-[10px] uppercase tracking-wide text-gray-400">Description</p>
+              <p className="text-gray-700 whitespace-pre-line">
+                {account.description?.trim() || (
+                  <span className="text-gray-300 italic">No description on record</span>
+                )}
+              </p>
+            </div>
             <Detail label="Industry" value={account.industry} />
             <Detail label="Sub-industry" value={account.subIndustry} />
             <Detail label="Locations" value={locationsDisplay?.toString() ?? null} />
@@ -1354,6 +1370,20 @@ function TerritoryAccountCard({
               label="Parent"
               value={account.parentName ?? account.ultimateParent ?? null}
             />
+            <Detail label="Operating model" value={account.operatingModel} />
+            <Detail label="Product fit" value={account.productFit} />
+            {account.productFitRationale?.trim() && (
+              <div className="col-span-2">
+                <p className="text-[10px] uppercase tracking-wide text-gray-400">
+                  Product fit rationale
+                </p>
+                {/* Long Text Area (32k) — scroll rather than let one verbose
+                    rationale push the disposition buttons off screen. */}
+                <p className="text-gray-700 whitespace-pre-line max-h-32 overflow-y-auto">
+                  {account.productFitRationale}
+                </p>
+              </div>
+            )}
             {account.website && (
               <div className="col-span-2">
                 <p className="text-[10px] uppercase tracking-wide text-gray-400">Website</p>
