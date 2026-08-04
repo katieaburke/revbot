@@ -311,7 +311,10 @@ export async function fetchTerritoryAccounts(
 
 // ─── Picklist options ────────────────────────────────────────────────────────
 // Served to the rep portal so the dropdowns can't drift from Salesforce.
-// Cached in-process for an hour — these change very rarely.
+//
+// Cached in-process for 5 minutes. It was an hour on the theory that picklists
+// change very rarely, but that made adding a value in Setup look broken in the
+// portal for up to an hour. A describe is cheap; being confusing is not.
 
 export interface AccountPicklists {
   industry: string[]
@@ -319,7 +322,7 @@ export interface AccountPicklists {
   operatingModel: string[]
 }
 
-const PICKLIST_TTL_MS = 60 * 60 * 1000
+const PICKLIST_TTL_MS = 5 * 60 * 1000
 let _picklistCache: { at: number; data: AccountPicklists } | null = null
 
 export async function getAccountPicklists(): Promise<AccountPicklists> {
