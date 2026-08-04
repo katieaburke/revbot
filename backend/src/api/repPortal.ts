@@ -6,11 +6,11 @@ import { requireAdmin } from '../middleware/adminAuth'
 import { getServiceConnection } from '../services/salesforce'
 import { stageApiToLabel } from '../utils/stageMapping'
 import { recheckForRep } from '../jobs/alertOrchestrator'
+import { isAccountExecutive, isExistingBusiness } from '../lib/repRoles'
 import {
   fetchTerritoryAccounts,
   applyDisposition,
   getAccountPicklists,
-  isAccountExecutive,
   DISPOSITIONS,
   NO_ICP_SUB_REASONS,
   type Disposition,
@@ -200,9 +200,11 @@ router.get('/me', async (req, res) => {
         name: user.slackName ?? user.slackEmail ?? 'Rep',
         email: user.slackEmail,
         repRole,
-        // Territory Cleanup tab is AE-only; let the server own this decision so
-        // the role-parsing rule lives in exactly one place.
+        // Tab visibility is decided server-side so the role-parsing rules live in
+        // exactly one place. Territory Cleanup is New Business AEs only;
+        // Whitespace is existing-customer roles only (AM / CSM / Partner AM).
         showTerritoryCleanup: isAccountExecutive(repRole),
+        showWhitespace: isExistingBusiness(repRole),
       },
       notifications,
       pending,
@@ -333,6 +335,17 @@ router.get('/whitespace', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' })
     if (!user.slackEmail) return res.status(400).json({ error: 'No email on record' })
 
+    // Whitespace is for reps who own existing customers. New Business roles are
+    // excluded — the query below filters out accounts they own anyway, so they'd
+    // only ever see an empty list.
+    const wsRole = await fetchRepRole(user.slackEmail)
+    if (!isExistingBusiness(wsRole)) {
+      return res.status(403).json({
+        error: 'Whitespace is only available to reps with existing business accounts',
+        repRole: wsRole,
+      })
+    }
+
     const repEmail = user.slackEmail
 
     const conn = await getServiceConnection()
@@ -424,6 +437,15 @@ router.patch('/whitespace/:id', async (req, res) => {
     const { slackUserId } = verifyRepToken(token)
     const user = await db.user.findUnique({ where: { slackUserId } })
     if (!user) return res.status(404).json({ error: 'User not found' })
+
+    // Same gate as the GET — this one writes to Salesforce, so it matters more.
+    const wsRole = user.slackEmail ? await fetchRepRole(user.slackEmail) : null
+    if (!isExistingBusiness(wsRole)) {
+      return res.status(403).json({
+        error: 'Whitespace is only available to reps with existing business accounts',
+        repRole: wsRole,
+      })
+    }
 
     const conn = await getServiceConnection()
     await axios.patch(

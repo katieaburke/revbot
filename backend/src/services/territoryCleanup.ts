@@ -75,18 +75,9 @@ export interface TerritoryAccount {
   billingCountry: string | null
 }
 
-/**
- * Only New Business AEs get the Territory Cleanup tab. Role names look like:
- *   CCO/Direct/US-CAN/New Business/Sales/Enterprise/Rep   <- AE, included
- *   CCO/Direct/EMEA/New Business/Sales/A/Enterprise/Rep   <- AE, included
- *   CCO/Direct/US-CAN/New Business/BDR/Enterprise/Rep     <- BDR, excluded
- */
-export function isAccountExecutive(repRole: string | null | undefined): boolean {
-  if (!repRole) return false
-  const r = repRole.toLowerCase()
-  if (r.includes('/bdr/') || r.includes('/bdr')) return false
-  return r.includes('new business') && r.includes('/sales')
-}
+// Role parsing now lives in lib/repRoles (it gates the Whitespace tab too).
+// Re-exported so existing importers of this module keep working.
+export { isAccountExecutive } from '../lib/repRoles'
 
 async function getFeedbackField(): Promise<string> {
   try {

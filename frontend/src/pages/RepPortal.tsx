@@ -36,6 +36,7 @@ interface RepData {
     email: string | null
     repRole: string | null
     showTerritoryCleanup?: boolean
+    showWhitespace?: boolean
   }
   notifications: RepNotification[]
   pending: PendingFlag[]
@@ -344,17 +345,19 @@ export function RepPortal() {
           >
             Pipeline
           </button>
-          <button
-            onClick={() => setActiveTab('whitespace')}
-            className={clsx(
-              'px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors',
-              activeTab === 'whitespace'
-                ? 'border-brand-500 text-brand-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
-            )}
-          >
-            📊 Whitespace
-          </button>
+          {data?.rep.showWhitespace && (
+            <button
+              onClick={() => setActiveTab('whitespace')}
+              className={clsx(
+                'px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors',
+                activeTab === 'whitespace'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              )}
+            >
+              📊 Whitespace
+            </button>
+          )}
           {data?.rep.showTerritoryCleanup && (
             <button
               onClick={() => setActiveTab('territory')}
