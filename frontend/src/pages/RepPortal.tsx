@@ -67,6 +67,8 @@ interface TerritoryAccount {
   ultimateParent: string | null
   lastRepCommunicationDate: string | null
   billingCountry: string | null
+  operatingModel: string | null
+  productFit: string | null
   sfdcUrl: string
 }
 
@@ -81,7 +83,7 @@ interface TerritoryResponse {
   accounts: TerritoryAccount[]
   totalInTerritory: number
   alreadyValidated: number
-  picklists: { industry: string[]; icpIppFitRating: string[] }
+  picklists: { industry: string[]; icpIppFitRating: string[]; operatingModel: string[] }
   appliedFilters?: {
     lastCommBefore: string
     includeBlankLastComm: boolean
@@ -1234,7 +1236,7 @@ function TerritoryAccountCard({
   onDone,
 }: {
   account: TerritoryAccount
-  picklists: { industry: string[]; icpIppFitRating: string[] }
+  picklists: { industry: string[]; icpIppFitRating: string[]; operatingModel: string[] }
   token: string
   onDone: (accountId: string) => void
 }) {
@@ -1245,6 +1247,8 @@ function TerritoryAccountCard({
   const [industry, setIndustry] = useState('')
   const [fitRating, setFitRating] = useState('')
   const [locations, setLocations] = useState('')
+  // Seeded from Salesforce so an already-correct value just needs confirming.
+  const [operatingModel, setOperatingModel] = useState(account.operatingModel ?? '')
   const [err, setErr] = useState<string | null>(null)
 
   const submit = useMutation({
@@ -1261,6 +1265,7 @@ function TerritoryAccountCard({
           industry: industry && industry !== account.industry ? industry : null,
           numberOfLocations: locations.trim() ? Number(locations) : null,
           icpIppFitRating: fitRating || null,
+          operatingModel: operatingModel || null,
         })
         .then((r) => r.data),
     onSuccess: () => {
@@ -1279,7 +1284,13 @@ function TerritoryAccountCard({
   // Validation mirrors the server so reps get instant feedback.
   const needsSubReason = disposition === 'NO_ICP' && !subReason
   const needsNote = disposition === 'OTHER' && !feedback.trim()
-  const canSubmit = !!disposition && !needsSubReason && !needsNote && !submit.isPending
+  const needsOperatingModel = disposition === 'GOOD_LEAVE_IN_TERRITORY' && !operatingModel
+  const canSubmit =
+    !!disposition &&
+    !needsSubReason &&
+    !needsNote &&
+    !needsOperatingModel &&
+    !submit.isPending
 
   const locationsDisplay =
     account.numberOfLocations ?? account.currentLocations ?? null
@@ -1413,6 +1424,39 @@ function TerritoryAccountCard({
                   ))}
                 </select>
               </div>
+              <div>
+                <p className="text-[10px] text-gray-400 mb-1">
+                  Operating model{' '}
+                  {account.operatingModel
+                    ? `(currently ${account.operatingModel} — confirm or change)`
+                    : '(currently blank — required)'}
+                </p>
+                <select
+                  value={operatingModel}
+                  onChange={(e) => setOperatingModel(e.target.value)}
+                  className={`w-full text-xs border rounded-lg px-2.5 py-1.5 bg-white ${
+                    needsOperatingModel ? 'border-amber-400' : 'border-gray-200'
+                  }`}
+                >
+                  <option value="">— Select operating model —</option>
+                  {/* ?? [] because the frontend can deploy ahead of the backend,
+                      and an older API response has no operatingModel list. */}
+                  {(picklists.operatingModel ?? []).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Say the quiet part out loud — reps should know what we'll write. */}
+              {account.productFit !== 'Structural Need' && (
+                <p className="text-[10px] text-gray-400">
+                  Keeping this account will set <strong>Product Fit</strong> to “Structural Need”
+                  {account.productFit ? ` (currently ${account.productFit})` : ''}.
+                </p>
+              )}
+
               <div className="text-[11px] text-gray-500">
                 Hierarchy:{' '}
                 {account.parentName || account.ultimateParent ? (

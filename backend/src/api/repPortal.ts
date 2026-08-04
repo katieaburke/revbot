@@ -620,6 +620,7 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
     parentId?: string | null
     numberOfLocations?: number | null
     icpIppFitRating?: string | null
+    operatingModel?: string | null
   }
 
   const resolved = await resolveAeRep(body.token)
@@ -645,6 +646,23 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
     return res.status(400).json({ error: 'Please add a note explaining the reason' })
   }
 
+  // Keeping an account means validating its operating model. Checked against the
+  // live picklist rather than a hardcoded list so the two can't drift apart.
+  let operatingModel: string | null = null
+  if (disposition === 'GOOD_LEAVE_IN_TERRITORY') {
+    const picked = body.operatingModel?.trim()
+    if (!picked) {
+      return res.status(400).json({ error: 'Please confirm the operating model' })
+    }
+    const { operatingModel: allowed } = await getAccountPicklists()
+    if (!allowed.includes(picked)) {
+      return res.status(400).json({
+        error: `Invalid operating model. Expected one of: ${allowed.join(', ')}`,
+      })
+    }
+    operatingModel = picked
+  }
+
   try {
     const result = await applyDisposition(
       body.accountId,
@@ -659,6 +677,7 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
         parentId: body.parentId ?? null,
         numberOfLocations: body.numberOfLocations ?? null,
         icpIppFitRating: body.icpIppFitRating ?? null,
+        operatingModel,
       },
     )
 

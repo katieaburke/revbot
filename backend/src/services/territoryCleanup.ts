@@ -78,6 +78,9 @@ export interface TerritoryAccount {
   ultimateParent: string | null
   lastRepCommunicationDate: string | null
   billingCountry: string | null
+  /** Operating_Model_s__c — the live field, not the legacy Operating_Model__c. */
+  operatingModel: string | null
+  productFit: string | null
 }
 
 // Role parsing now lives in lib/repRoles (it gates the Whitespace tab too).
@@ -124,6 +127,8 @@ const ACCOUNT_FIELDS = [
   'Ultimate_Parent_Account__c',
   'Last_Rep_Communication_Date__c',
   'BillingCountry',
+  'Operating_Model_s__c',
+  'Product_Fit__c',
 ].join(', ')
 
 interface RawAccount {
@@ -148,6 +153,8 @@ interface RawAccount {
   Ultimate_Parent_Account__c: string | null
   Last_Rep_Communication_Date__c: string | null
   BillingCountry: string | null
+  Operating_Model_s__c: string | null
+  Product_Fit__c: string | null
 }
 
 interface SfdcPage {
@@ -288,6 +295,8 @@ export async function fetchTerritoryAccounts(
     ultimateParent: r.Ultimate_Parent_Account__c,
     lastRepCommunicationDate: r.Last_Rep_Communication_Date__c,
     billingCountry: r.BillingCountry,
+    operatingModel: r.Operating_Model_s__c,
+    productFit: r.Product_Fit__c,
   }))
 }
 
@@ -298,6 +307,7 @@ export async function fetchTerritoryAccounts(
 export interface AccountPicklists {
   industry: string[]
   icpIppFitRating: string[]
+  operatingModel: string[]
 }
 
 const PICKLIST_TTL_MS = 60 * 60 * 1000
@@ -322,6 +332,7 @@ export async function getAccountPicklists(): Promise<AccountPicklists> {
   const data: AccountPicklists = {
     industry: valuesFor('Industry'),
     icpIppFitRating: valuesFor('ICP_IPP_Fit_Rating__c'),
+    operatingModel: valuesFor('Operating_Model_s__c'),
   }
   _picklistCache = { at: Date.now(), data }
   return data
@@ -338,6 +349,22 @@ export interface DispositionInput {
   numberOfLocations?: number | null
   /** Rep's 1-5 / Insufficient pick for USE_CASE_LOW_PRIORITY. */
   icpIppFitRating?: string | null
+  /** Rep's validated Operating_Model_s__c for GOOD_LEAVE_IN_TERRITORY. */
+  operatingModel?: string | null
+}
+
+/**
+ * The Product Fit value implied by a rep keeping an account in territory: they've
+ * confirmed it's a real business with a structural need for the product.
+ */
+export const PRODUCT_FIT_STRUCTURAL_NEED = 'Structural Need'
+
+/**
+ * Current SFDC values that affect what we write, read just before the update.
+ * Only needed for the "set Product Fit unless it's already right" rule.
+ */
+export interface DispositionContext {
+  productFit?: string | null
 }
 
 /**
@@ -350,6 +377,7 @@ export interface DispositionInput {
 export function buildDispositionFields(
   input: DispositionInput,
   feedbackField: string,
+  current: DispositionContext = {},
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
 
@@ -363,7 +391,16 @@ export function buildDispositionFields(
 
   switch (input.disposition) {
     case 'GOOD_LEAVE_IN_TERRITORY':
-      // Stays in territory as-is. Only the corrections above plus feedback.
+      // Stays in territory, but the rep validates the operating model on the way
+      // through — it's blank on ~60% of prospects.
+      if (input.operatingModel) fields.Operating_Model_s__c = input.operatingModel
+
+      // Keeping an account in territory means the rep is asserting a structural
+      // need. Skip the write when it already says that, so we don't touch the
+      // record (and bump LastModified) for no reason.
+      if (current.productFit !== PRODUCT_FIT_STRUCTURAL_NEED) {
+        fields.Product_Fit__c = PRODUCT_FIT_STRUCTURAL_NEED
+      }
       break
 
     case 'USE_CASE_LOW_PRIORITY':
@@ -416,6 +453,35 @@ export interface ApplyResult {
 }
 
 /** Write the disposition to SFDC and record the validation locally. */
+/**
+ * Read the handful of current values that change what we write. Only the
+ * in-territory path needs it, so everything else skips the round trip.
+ *
+ * A failed read is not fatal: we fall back to an empty context, which means
+ * Product Fit gets written unconditionally. Writing the value we already intended
+ * is the safe direction — and if Salesforce is unreachable the update that
+ * follows will fail loudly anyway.
+ */
+async function fetchDispositionContext(
+  accountId: string,
+  disposition: Disposition,
+): Promise<DispositionContext> {
+  if (disposition !== 'GOOD_LEAVE_IN_TERRITORY') return {}
+  try {
+    const conn = await getServiceConnection()
+    const result = await conn.query<{ Product_Fit__c: string | null }>(
+      `SELECT Product_Fit__c FROM Account WHERE Id = '${soqlEscape(accountId)}' LIMIT 1`,
+    )
+    return { productFit: result.records[0]?.Product_Fit__c ?? null }
+  } catch (err) {
+    console.warn(
+      `[TerritoryCleanup] could not read current Product Fit for ${accountId}:`,
+      (err as Error).message,
+    )
+    return {}
+  }
+}
+
 export async function applyDisposition(
   accountId: string,
   accountName: string,
@@ -423,7 +489,8 @@ export async function applyDisposition(
   input: DispositionInput,
 ): Promise<ApplyResult> {
   const feedbackField = await getFeedbackField()
-  const fields = buildDispositionFields(input, feedbackField)
+  const current = await fetchDispositionContext(accountId, input.disposition)
+  const fields = buildDispositionFields(input, feedbackField, current)
 
   let sfdcWrittenAt: Date | null = null
   let sfdcError: string | null = null
