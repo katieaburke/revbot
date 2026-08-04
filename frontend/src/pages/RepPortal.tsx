@@ -37,6 +37,7 @@ interface RepData {
     repRole: string | null
     showTerritoryCleanup?: boolean
     showWhitespace?: boolean
+    roleLookupFailed?: boolean
   }
   notifications: RepNotification[]
   pending: PendingFlag[]
@@ -330,6 +331,17 @@ export function RepPortal() {
           </div>
         </div>
       </div>
+
+      {/* Role lookup failed — explain the missing tabs instead of silently hiding
+          them, since a Salesforce outage looks exactly like "you're not allowed". */}
+      {data?.rep.roleLookupFailed && (
+        <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5">
+          <div className="max-w-2xl mx-auto text-xs text-amber-800">
+            Couldn't check your Salesforce role, so some tabs may be hidden. This is a
+            connection problem, not a permissions one — ask RevOps to reconnect Salesforce.
+          </div>
+        </div>
+      )}
 
       {/* Tab bar */}
       <div className="bg-white border-b border-gray-200 px-6">

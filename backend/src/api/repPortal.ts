@@ -128,16 +128,13 @@ router.get('/me', async (req, res) => {
       }
     } catch { /* non-fatal */ }
 
-    // Fetch rep's Salesforce UserRole.Name (non-fatal)
-    let repRole: string | null = null
-    try {
-      const conn = await getServiceConnection()
-      const roleUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(`SELECT UserRole.Name FROM User WHERE Email = '${user.slackEmail}' LIMIT 1`)}`
-      const roleResp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
-        roleUrl, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
-      )
-      repRole = roleResp.data.records[0]?.UserRole?.Name ?? null
-    } catch { /* non-fatal */ }
+    // Fetch rep's Salesforce UserRole.Name. Non-fatal for the Pipeline tab, but
+    // it decides tab visibility, so track whether the lookup actually succeeded.
+    const roleLookup = user.slackEmail
+      ? await fetchRepRole(user.slackEmail)
+      : ({ ok: true, role: null } as const)
+    const repRole = roleLookup.ok ? roleLookup.role : null
+    const roleLookupFailed = !roleLookup.ok
 
     // Fetch live opp data from SFDC for ALL opp IDs (notifications + pending)
     // Using SFDC's native IsClosed field — reliable across custom stage names
@@ -205,6 +202,10 @@ router.get('/me', async (req, res) => {
         // Whitespace is existing-customer roles only (AM / CSM / Partner AM).
         showTerritoryCleanup: isAccountExecutive(repRole),
         showWhitespace: isExistingBusiness(repRole),
+        // True when Salesforce couldn't be reached, so the portal can say "tabs
+        // are missing because we couldn't check your role" rather than implying
+        // the rep isn't allowed in.
+        roleLookupFailed,
       },
       notifications,
       pending,
@@ -338,11 +339,15 @@ router.get('/whitespace', async (req, res) => {
     // Whitespace is for reps who own existing customers. New Business roles are
     // excluded — the query below filters out accounts they own anyway, so they'd
     // only ever see an empty list.
-    const wsRole = await fetchRepRole(user.slackEmail)
-    if (!isExistingBusiness(wsRole)) {
+    const wsLookup = await fetchRepRole(user.slackEmail)
+    if (!wsLookup.ok) {
+      const { status, body } = roleUnavailable(wsLookup.error)
+      return res.status(status).json(body)
+    }
+    if (!isExistingBusiness(wsLookup.role)) {
       return res.status(403).json({
         error: 'Whitespace is only available to reps with existing business accounts',
-        repRole: wsRole,
+        repRole: wsLookup.role,
       })
     }
 
@@ -439,11 +444,16 @@ router.patch('/whitespace/:id', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' })
 
     // Same gate as the GET — this one writes to Salesforce, so it matters more.
-    const wsRole = user.slackEmail ? await fetchRepRole(user.slackEmail) : null
-    if (!isExistingBusiness(wsRole)) {
+    if (!user.slackEmail) return res.status(400).json({ error: 'No email on record' })
+    const wsLookup = await fetchRepRole(user.slackEmail)
+    if (!wsLookup.ok) {
+      const { status, body } = roleUnavailable(wsLookup.error)
+      return res.status(status).json(body)
+    }
+    if (!isExistingBusiness(wsLookup.role)) {
       return res.status(403).json({
         error: 'Whitespace is only available to reps with existing business accounts',
-        repRole: wsRole,
+        repRole: wsLookup.role,
       })
     }
 
@@ -472,8 +482,20 @@ router.patch('/whitespace/:id', async (req, res) => {
 
 // ─── Territory Cleanup ───────────────────────────────────────────────────────
 
-/** Look up a rep's SFDC UserRole.Name. Returns null if it can't be determined. */
-async function fetchRepRole(email: string): Promise<string | null> {
+/**
+ * Look up a rep's SFDC UserRole.Name.
+ *
+ * Role now decides which tabs a rep sees, so "Salesforce was unreachable" and
+ * "this rep genuinely has no/another role" must not collapse into the same
+ * answer. Swallowing the error would silently strip tabs from legitimate users
+ * whenever the SFDC token expires — which looks identical to a permissions
+ * problem and is miserable to debug.
+ */
+type RepRoleLookup =
+  | { ok: true; role: string | null }
+  | { ok: false; error: string }
+
+async function fetchRepRole(email: string): Promise<RepRoleLookup> {
   try {
     const conn = await getServiceConnection()
     const soql = `SELECT UserRole.Name FROM User WHERE Email = '${email.replace(/'/g, "\\'")}' LIMIT 1`
@@ -481,10 +503,17 @@ async function fetchRepRole(email: string): Promise<string | null> {
     const resp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
       url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
     )
-    return resp.data.records[0]?.UserRole?.Name ?? null
-  } catch {
-    return null
+    return { ok: true, role: resp.data.records[0]?.UserRole?.Name ?? null }
+  } catch (err) {
+    const message = (err as Error).message
+    console.error(`[RepPortal] role lookup failed for ${email}:`, message)
+    return { ok: false, error: `Could not verify your Salesforce role: ${message}` }
   }
+}
+
+/** 503, not 403 — the rep may well be authorised; we just couldn't check. */
+function roleUnavailable(error: string) {
+  return { status: 503, body: { error, roleLookupFailed: true } }
 }
 
 type AeRepResult =
@@ -506,16 +535,18 @@ async function resolveAeRep(token: string | undefined): Promise<AeRepResult> {
   if (!user) return { ok: false, status: 404, body: { error: 'User not found' } }
   if (!user.slackEmail) return { ok: false, status: 400, body: { error: 'No email on record' } }
 
-  const repRole = await fetchRepRole(user.slackEmail)
-  if (!isAccountExecutive(repRole)) {
+  const lookup = await fetchRepRole(user.slackEmail)
+  if (!lookup.ok) return { ok: false, ...roleUnavailable(lookup.error) }
+
+  if (!isAccountExecutive(lookup.role)) {
     return {
       ok: false,
       status: 403,
-      body: { error: 'Territory Cleanup is only available to New Business AEs', repRole },
+      body: { error: 'Territory Cleanup is only available to New Business AEs', repRole: lookup.role },
     }
   }
 
-  return { ok: true, user: { id: user.id, slackEmail: user.slackEmail }, repRole }
+  return { ok: true, user: { id: user.id, slackEmail: user.slackEmail }, repRole: lookup.role }
 }
 
 // GET /api/rep/territory-cleanup?token=xxx
