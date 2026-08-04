@@ -49,6 +49,7 @@ interface TerritoryAccount {
   accountId: string
   accountName: string
   website: string | null
+  description: string | null
   industry: string | null
   subIndustry: string | null
   numberOfLocations: number | null
@@ -1296,11 +1297,6 @@ function TerritoryAccountCard({
             {account.industry && <span>{account.industry}</span>}
             {locationsDisplay != null && <span>{locationsDisplay} locations</span>}
             {account.billingCountry && <span>{account.billingCountry}</span>}
-            {account.icpIppFit && (
-              <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
-                {account.icpIppFit}
-              </span>
-            )}
           </div>
           <p className="text-[11px] text-gray-400 mt-1">
             Last rep contact:{' '}
@@ -1332,6 +1328,14 @@ function TerritoryAccountCard({
         <div className="border-t border-gray-100 p-4 space-y-4">
           {/* Context the rep needs to judge */}
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs bg-gray-50 rounded-lg p-3">
+            {/* Description leads — it's the fastest way for a rep to tell what the
+                company actually does before judging fit. */}
+            {account.description && (
+              <div className="col-span-2">
+                <p className="text-[10px] uppercase tracking-wide text-gray-400">Description</p>
+                <p className="text-gray-700 whitespace-pre-line">{account.description}</p>
+              </div>
+            )}
             <Detail label="Industry" value={account.industry} />
             <Detail label="Sub-industry" value={account.subIndustry} />
             <Detail label="Locations" value={locationsDisplay?.toString() ?? null} />
@@ -1339,8 +1343,6 @@ function TerritoryAccountCard({
               label="Parent"
               value={account.parentName ?? account.ultimateParent ?? null}
             />
-            <Detail label="ICP/IPP Fit" value={account.icpIppFit} />
-            <Detail label="ICP" value={account.icp} />
             {account.website && (
               <div className="col-span-2">
                 <p className="text-[10px] uppercase tracking-wide text-gray-400">Website</p>

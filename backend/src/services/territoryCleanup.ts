@@ -57,6 +57,8 @@ export interface TerritoryAccount {
   accountId: string
   accountName: string
   website: string | null
+  /** Account.Description — the 1-2 sentence company brief. */
+  description: string | null
   industry: string | null
   subIndustry: string | null
   numberOfLocations: number | null
@@ -104,6 +106,7 @@ const ACCOUNT_FIELDS = [
   'Id',
   'Name',
   'Website',
+  'Description',
   'Industry',
   'Sub_Industry__c',
   'Number_of_locations__c',
@@ -127,6 +130,7 @@ interface RawAccount {
   Id: string
   Name: string
   Website: string | null
+  Description: string | null
   Industry: string | null
   Sub_Industry__c: string | null
   Number_of_locations__c: number | null
@@ -266,6 +270,7 @@ export async function fetchTerritoryAccounts(
     accountId: r.Id,
     accountName: r.Name,
     website: r.Website,
+    description: r.Description,
     industry: r.Industry,
     subIndustry: r.Sub_Industry__c,
     numberOfLocations: r.Number_of_locations__c,
