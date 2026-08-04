@@ -31,10 +31,116 @@ interface PendingFlag {
 }
 
 interface RepData {
-  rep: { name: string; email: string | null; repRole: string | null }
+  rep: {
+    name: string
+    email: string | null
+    repRole: string | null
+    showTerritoryCleanup?: boolean
+  }
   notifications: RepNotification[]
   pending: PendingFlag[]
 }
+
+// ── Territory Cleanup ─────────────────────────────────────────────────────────
+
+interface TerritoryAccount {
+  accountId: string
+  accountName: string
+  website: string | null
+  industry: string | null
+  subIndustry: string | null
+  numberOfLocations: number | null
+  currentLocations: number | null
+  ultimateParentLocations: number | null
+  icpIppFit: string | null
+  icpIppFitRating: string | null
+  icp: string | null
+  accountStage: string | null
+  prospectingStatus: string | null
+  prospectingPauseReason: string | null
+  duplicateFlag: boolean
+  parentId: string | null
+  parentName: string | null
+  ultimateParent: string | null
+  lastRepCommunicationDate: string | null
+  billingCountry: string | null
+  sfdcUrl: string
+}
+
+interface TerritoryResponse {
+  accounts: TerritoryAccount[]
+  totalInTerritory: number
+  alreadyValidated: number
+  picklists: { industry: string[]; icpIppFitRating: string[] }
+}
+
+type Disposition =
+  | 'GOOD_LEAVE_IN_TERRITORY'
+  | 'USE_CASE_LOW_PRIORITY'
+  | 'NO_ICP'
+  | 'DUPLICATE'
+  | 'DECISION_ON_PARENT'
+  | 'DECISION_ON_CHILD'
+  | 'OTHER'
+
+type NoIcpSubReason = 'TOO_SMALL' | 'JUNK' | 'PARTNER' | 'DEFUNCT'
+
+const DISPOSITION_OPTIONS: {
+  value: Disposition
+  label: string
+  hint: string
+  tone: string
+}[] = [
+  {
+    value: 'GOOD_LEAVE_IN_TERRITORY',
+    label: 'Good account — leave in my territory',
+    hint: 'Double-check the industry and hierarchy below while you\'re here.',
+    tone: 'border-green-300 bg-green-50 text-green-800',
+  },
+  {
+    value: 'USE_CASE_LOW_PRIORITY',
+    label: 'Has a use case, but not strong ICP',
+    hint: 'Low priority. Sets ICP/IPP Fit to "ICP" — pick a fit rating below.',
+    tone: 'border-amber-300 bg-amber-50 text-amber-800',
+  },
+  {
+    value: 'NO_ICP',
+    label: 'No ICP',
+    hint: 'Disqualifies the account and sets ICP/IPP Fit to "NO ICP". Pick a reason.',
+    tone: 'border-red-300 bg-red-50 text-red-800',
+  },
+  {
+    value: 'DUPLICATE',
+    label: 'Duplicate',
+    hint: 'Flags the account as a potential duplicate for RevOps to merge.',
+    tone: 'border-purple-300 bg-purple-50 text-purple-800',
+  },
+  {
+    value: 'DECISION_ON_PARENT',
+    label: 'ICP, but decision is made on the parent',
+    hint: 'Puts prospecting on hold with reason "Decision on parent".',
+    tone: 'border-blue-300 bg-blue-50 text-blue-800',
+  },
+  {
+    value: 'DECISION_ON_CHILD',
+    label: 'ICP, but decision is made on the child',
+    hint: 'Puts prospecting on hold with reason "Decision on child".',
+    tone: 'border-blue-300 bg-blue-50 text-blue-800',
+  },
+  {
+    value: 'OTHER',
+    label: 'Other',
+    hint: 'Tell us what\'s going on — a note is required.',
+    tone: 'border-gray-300 bg-gray-50 text-gray-700',
+  },
+]
+
+const NO_ICP_REASONS: { value: NoIcpSubReason; label: string }[] = [
+  { value: 'TOO_SMALL', label: 'Too small — location count is wrong' },
+  { value: 'JUNK', label: 'Junk account' },
+  { value: 'PARTNER', label: 'Partner account' },
+  { value: 'DEFUNCT', label: 'Defunct account' },
+]
 
 interface WhitespaceLine {
   id: string
@@ -96,7 +202,7 @@ function wsStatusBadgeClass(status: string | null): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-type PortalTab = 'pipeline' | 'whitespace'
+type PortalTab = 'pipeline' | 'whitespace' | 'territory'
 
 export function RepPortal() {
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
@@ -153,7 +259,15 @@ export function RepPortal() {
     retry: false,
   })
 
+  const territoryQuery = useQuery<TerritoryResponse>({
+    queryKey: ['rep-territory', token],
+    queryFn: () => repApi.get(`/rep/territory-cleanup?token=${token}`).then((r) => r.data),
+    enabled: !!token && activeTab === 'territory',
+    retry: false,
+  })
+
   const [wsRemovedIds, setWsRemovedIds] = useState<Set<string>>(new Set())
+  const [territoryDoneIds, setTerritoryDoneIds] = useState<Set<string>>(new Set())
 
   const wsRecords = (whitespaceQuery.data?.records ?? [])
     .map((group) => ({
@@ -241,6 +355,19 @@ export function RepPortal() {
           >
             📊 Whitespace
           </button>
+          {data?.rep.showTerritoryCleanup && (
+            <button
+              onClick={() => setActiveTab('territory')}
+              className={clsx(
+                'px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors',
+                activeTab === 'territory'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              )}
+            >
+              🧹 Territory Cleanup
+            </button>
+          )}
         </div>
       </div>
 
@@ -387,6 +514,79 @@ export function RepPortal() {
                   />
                 ))}
               </div>
+            )}
+          </>
+        )}
+
+        {/* ── Territory Cleanup tab ── */}
+        {activeTab === 'territory' && (
+          <>
+            {territoryQuery.isLoading && (
+              <div className="flex flex-col items-center gap-3 py-16 text-center">
+                <RefreshCw size={28} className="animate-spin text-blue-400" />
+                <p className="text-sm text-gray-400">Loading your territory…</p>
+              </div>
+            )}
+
+            {territoryQuery.error && (
+              <div className="bg-white rounded-xl border border-red-200 p-6 text-center">
+                <AlertCircle size={28} className="mx-auto text-red-400 mb-3" />
+                <p className="text-sm font-medium text-gray-700">Couldn't load your territory</p>
+                <p className="text-xs text-gray-400 mt-1 font-mono">
+                  {(territoryQuery.error as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+                    String(territoryQuery.error)}
+                </p>
+              </div>
+            )}
+
+            {territoryQuery.data && (
+              <>
+                <div className="bg-white rounded-xl border border-gray-200 p-4 mb-3">
+                  <p className="text-sm text-gray-700">
+                    These are <strong>Prospect</strong> accounts you own with no rep communication logged
+                    this year. Tell us what each one should be, and we'll update Salesforce for you.
+                  </p>
+                  <div className="flex items-center gap-4 mt-2.5 text-xs text-gray-500">
+                    <span>
+                      <strong className="text-gray-800">{territoryQuery.data.accounts.length}</strong> to review
+                    </span>
+                    {territoryQuery.data.alreadyValidated > 0 && (
+                      <span className="text-green-600">
+                        <Check size={11} className="inline mb-px" /> {territoryQuery.data.alreadyValidated} done
+                      </span>
+                    )}
+                    <span className="text-gray-400">
+                      {territoryQuery.data.totalInTerritory} in territory
+                    </span>
+                  </div>
+                </div>
+
+                {territoryQuery.data.accounts.length === 0 ? (
+                  <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                    <CheckCircle size={32} className="mx-auto text-green-400 mb-3" />
+                    <p className="text-sm font-medium text-gray-700">
+                      Territory's clean — nothing to review 🎉
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      We'll queue up more if new accounts go quiet.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {territoryQuery.data.accounts
+                      .filter((a) => !territoryDoneIds.has(a.accountId))
+                      .map((account) => (
+                        <TerritoryAccountCard
+                          key={account.accountId}
+                          account={account}
+                          picklists={territoryQuery.data!.picklists}
+                          token={token}
+                          onDone={(id) => setTerritoryDoneIds((prev) => new Set([...prev, id]))}
+                        />
+                      ))}
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
@@ -834,6 +1034,332 @@ function NotifCard({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Territory Cleanup card ────────────────────────────────────────────────────
+
+function TerritoryAccountCard({
+  account,
+  picklists,
+  token,
+  onDone,
+}: {
+  account: TerritoryAccount
+  picklists: { industry: string[]; icpIppFitRating: string[] }
+  token: string
+  onDone: (accountId: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [disposition, setDisposition] = useState<Disposition | null>(null)
+  const [subReason, setSubReason] = useState<NoIcpSubReason | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const [industry, setIndustry] = useState('')
+  const [fitRating, setFitRating] = useState('')
+  const [locations, setLocations] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+
+  const submit = useMutation({
+    mutationFn: () =>
+      repApi
+        .post('/rep/territory-cleanup/disposition', {
+          token,
+          accountId: account.accountId,
+          accountName: account.accountName,
+          disposition,
+          subReason,
+          feedback: feedback.trim() || null,
+          // Only send corrections the rep actually changed.
+          industry: industry && industry !== account.industry ? industry : null,
+          numberOfLocations: locations.trim() ? Number(locations) : null,
+          icpIppFitRating: fitRating || null,
+        })
+        .then((r) => r.data),
+    onSuccess: () => {
+      setErr(null)
+      onDone(account.accountId)
+    },
+    onError: (e: unknown) => {
+      setErr(
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? String(e),
+      )
+    },
+  })
+
+  const selected = DISPOSITION_OPTIONS.find((o) => o.value === disposition)
+
+  // Validation mirrors the server so reps get instant feedback.
+  const needsSubReason = disposition === 'NO_ICP' && !subReason
+  const needsNote = disposition === 'OTHER' && !feedback.trim()
+  const canSubmit = !!disposition && !needsSubReason && !needsNote && !submit.isPending
+
+  const locationsDisplay =
+    account.numberOfLocations ?? account.currentLocations ?? null
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      {/* Header */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-start justify-between gap-3 p-4 text-left hover:bg-gray-50"
+      >
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-gray-900 truncate">{account.accountName}</p>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-gray-500">
+            {account.industry && <span>{account.industry}</span>}
+            {locationsDisplay != null && <span>{locationsDisplay} locations</span>}
+            {account.billingCountry && <span>{account.billingCountry}</span>}
+            {account.icpIppFit && (
+              <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                {account.icpIppFit}
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">
+            Last rep contact:{' '}
+            {account.lastRepCommunicationDate
+              ? fmtDate(account.lastRepCommunicationDate)
+              : 'never logged'}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <a
+            href={account.sfdcUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="p-1.5 text-gray-300 hover:text-brand-500"
+            title="Open in Salesforce"
+          >
+            <ExternalLink size={13} />
+          </a>
+          {expanded ? (
+            <ChevronUp size={15} className="text-gray-400" />
+          ) : (
+            <ChevronDown size={15} className="text-gray-400" />
+          )}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-100 p-4 space-y-4">
+          {/* Context the rep needs to judge */}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs bg-gray-50 rounded-lg p-3">
+            <Detail label="Industry" value={account.industry} />
+            <Detail label="Sub-industry" value={account.subIndustry} />
+            <Detail label="Locations" value={locationsDisplay?.toString() ?? null} />
+            <Detail
+              label="Parent"
+              value={account.parentName ?? account.ultimateParent ?? null}
+            />
+            <Detail label="ICP/IPP Fit" value={account.icpIppFit} />
+            <Detail label="ICP" value={account.icp} />
+            {account.website && (
+              <div className="col-span-2">
+                <p className="text-[10px] uppercase tracking-wide text-gray-400">Website</p>
+                <a
+                  href={account.website.startsWith('http') ? account.website : `https://${account.website}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-brand-600 hover:underline break-all"
+                >
+                  {account.website}
+                </a>
+              </div>
+            )}
+          </div>
+
+          {/* Disposition picker */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-gray-700">What should happen to this account?</p>
+            {DISPOSITION_OPTIONS.map((opt) => (
+              <label
+                key={opt.value}
+                className={clsx(
+                  'flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-colors',
+                  disposition === opt.value
+                    ? opt.tone
+                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
+                )}
+              >
+                <input
+                  type="radio"
+                  name={`disp-${account.accountId}`}
+                  checked={disposition === opt.value}
+                  onChange={() => {
+                    setDisposition(opt.value)
+                    setSubReason(null)
+                    setErr(null)
+                  }}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0">
+                  <span className="block text-xs font-medium">{opt.label}</span>
+                  <span className="block text-[11px] opacity-75 mt-0.5">{opt.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {/* Good account → confirm industry + hierarchy */}
+          {disposition === 'GOOD_LEAVE_IN_TERRITORY' && (
+            <div className="space-y-2.5 border-l-2 border-green-300 pl-3">
+              <p className="text-[11px] font-medium text-gray-600">
+                Quick check while you're here — correct anything that's wrong.
+              </p>
+              <div>
+                <p className="text-[10px] text-gray-400 mb-1">
+                  Industry {account.industry ? `(currently ${account.industry})` : '(currently blank)'}
+                </p>
+                <select
+                  value={industry || account.industry || ''}
+                  onChange={(e) => setIndustry(e.target.value)}
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white"
+                >
+                  <option value="">— Select industry —</option>
+                  {picklists.industry.map((i) => (
+                    <option key={i} value={i}>
+                      {i}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-[11px] text-gray-500">
+                Hierarchy:{' '}
+                {account.parentName || account.ultimateParent ? (
+                  <span className="text-gray-700">
+                    {account.parentName ?? account.ultimateParent}
+                  </span>
+                ) : (
+                  <span className="text-amber-600">no parent set</span>
+                )}
+                {' — '}
+                <a
+                  href={account.sfdcUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-brand-600 hover:underline"
+                >
+                  fix in Salesforce
+                </a>
+              </div>
+            </div>
+          )}
+
+          {/* Low priority → fit rating */}
+          {disposition === 'USE_CASE_LOW_PRIORITY' && (
+            <div className="space-y-1.5 border-l-2 border-amber-300 pl-3">
+              <p className="text-[10px] text-gray-400">
+                ICP/IPP Fit Rating{' '}
+                {account.icpIppFitRating ? `(currently ${account.icpIppFitRating})` : '(currently blank)'}
+              </p>
+              <select
+                value={fitRating}
+                onChange={(e) => setFitRating(e.target.value)}
+                className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white"
+              >
+                <option value="">— Leave unchanged —</option>
+                {picklists.icpIppFitRating.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* No ICP → reason */}
+          {disposition === 'NO_ICP' && (
+            <div className="space-y-1.5 border-l-2 border-red-300 pl-3">
+              <p className="text-[11px] font-medium text-gray-600">Why is it not ICP?</p>
+              {NO_ICP_REASONS.map((r) => (
+                <label key={r.value} className="flex items-center gap-2 text-xs text-gray-700">
+                  <input
+                    type="radio"
+                    name={`noicp-${account.accountId}`}
+                    checked={subReason === r.value}
+                    onChange={() => setSubReason(r.value)}
+                  />
+                  {r.label}
+                </label>
+              ))}
+              {subReason === 'TOO_SMALL' && (
+                <div className="pt-1.5">
+                  <p className="text-[10px] text-gray-400 mb-1">
+                    Correct location count{' '}
+                    {locationsDisplay != null ? `(currently ${locationsDisplay})` : ''}
+                  </p>
+                  <input
+                    type="number"
+                    min={0}
+                    value={locations}
+                    onChange={(e) => setLocations(e.target.value)}
+                    placeholder="e.g. 4"
+                    className="w-32 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Feedback — always available, required for Other */}
+          <div>
+            <p className="text-[10px] text-gray-400 mb-1">
+              Anything else we should know? {disposition === 'OTHER' && <span className="text-red-500">(required)</span>}
+            </p>
+            <textarea
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              rows={2}
+              placeholder="Optional context for RevOps…"
+              className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 resize-none"
+            />
+          </div>
+
+          {selected && (
+            <p className="text-[11px] text-gray-500 bg-gray-50 rounded-lg px-2.5 py-2">
+              <strong>On save:</strong> {selected.hint}
+            </p>
+          )}
+
+          {err && (
+            <p className="text-[11px] text-red-600 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2">
+              {err}
+            </p>
+          )}
+
+          <div className="flex items-center gap-2">
+            <button
+              disabled={!canSubmit}
+              onClick={() => submit.mutate()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg disabled:opacity-40 hover:bg-brand-600"
+            >
+              {submit.isPending ? (
+                <RefreshCw size={11} className="animate-spin" />
+              ) : (
+                <Check size={11} />
+              )}
+              {submit.isPending ? 'Saving…' : 'Save to Salesforce'}
+            </button>
+            <button
+              onClick={() => setExpanded(false)}
+              className="text-xs text-gray-400 hover:text-gray-600"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Detail({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-gray-400">{label}</p>
+      <p className="text-gray-700">{value || <span className="text-gray-300">—</span>}</p>
     </div>
   )
 }

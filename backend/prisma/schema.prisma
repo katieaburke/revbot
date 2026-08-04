@@ -32,6 +32,7 @@ model User {
   notifications Notification[]
   nudgesReceived NudgeLog[]     @relation("NudgeTarget")
   nudgesSent     NudgeLog[]     @relation("NudgeSender")
+  territoryValidations TerritoryValidation[]
 
   @@map("users")
 }
@@ -277,6 +278,41 @@ model FlagSnapshot {
   @@index([ownerEmail])
   @@index([managerEmail])
   @@map("flag_snapshots")
+}
+
+// ─── Territory Cleanup ───────────────────────────────────────────────────────
+
+// One row per account a rep has dispositioned. Drives two things:
+//   1. Removing the account from the rep's queue (several dispositions don't
+//      change any SFDC field that the queue SOQL filters on, so we can't rely
+//      on the account naturally falling out of the query).
+//   2. An audit trail of who said what, and exactly which SFDC fields we wrote.
+model TerritoryValidation {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accountId   String // SFDC Account Id (18-char)
+  accountName String
+
+  repId    String
+  rep      User   @relation(fields: [repId], references: [id])
+  repEmail String
+
+  disposition String  // see DISPOSITIONS in services/territoryCleanup.ts
+  subReason   String? // NO_ICP sub-reason: TOO_SMALL | JUNK | PARTNER | DEFUNCT
+  feedback    String? // free text the rep typed
+
+  // SFDC write audit — null sfdcWrittenAt means the write failed or was skipped
+  sfdcWrittenAt DateTime?
+  sfdcFields    Json?
+  sfdcError     String?
+
+  @@unique([accountId, repId])
+  @@index([accountId])
+  @@index([repEmail])
+  @@index([disposition])
+  @@map("territory_validations")
 }
 
 // ─── Admin Users ─────────────────────────────────────────────────────────────

@@ -6,6 +6,16 @@ import { requireAdmin } from '../middleware/adminAuth'
 import { getServiceConnection } from '../services/salesforce'
 import { stageApiToLabel } from '../utils/stageMapping'
 import { recheckForRep } from '../jobs/alertOrchestrator'
+import {
+  fetchTerritoryAccounts,
+  applyDisposition,
+  getAccountPicklists,
+  isAccountExecutive,
+  DISPOSITIONS,
+  NO_ICP_SUB_REASONS,
+  type Disposition,
+  type NoIcpSubReason,
+} from '../services/territoryCleanup'
 
 const router = Router()
 
@@ -186,7 +196,14 @@ router.get('/me', async (req, res) => {
       .slice(0, 10)
 
     res.json({
-      rep: { name: user.slackName ?? user.slackEmail ?? 'Rep', email: user.slackEmail, repRole },
+      rep: {
+        name: user.slackName ?? user.slackEmail ?? 'Rep',
+        email: user.slackEmail,
+        repRole,
+        // Territory Cleanup tab is AE-only; let the server own this decision so
+        // the role-parsing rule lives in exactly one place.
+        showTerritoryCleanup: isAccountExecutive(repRole),
+      },
       notifications,
       pending,
     })
@@ -430,6 +447,160 @@ router.patch('/whitespace/:id', async (req, res) => {
 
 // ── Admin: generate a magic link for any rep (by email or slackUserId) ───────
 // POST /api/rep/admin/generate-link  — requires admin JWT
+
+// ─── Territory Cleanup ───────────────────────────────────────────────────────
+
+/** Look up a rep's SFDC UserRole.Name. Returns null if it can't be determined. */
+async function fetchRepRole(email: string): Promise<string | null> {
+  try {
+    const conn = await getServiceConnection()
+    const soql = `SELECT UserRole.Name FROM User WHERE Email = '${email.replace(/'/g, "\\'")}' LIMIT 1`
+    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
+    const resp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
+      url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
+    )
+    return resp.data.records[0]?.UserRole?.Name ?? null
+  } catch {
+    return null
+  }
+}
+
+type AeRepResult =
+  | { ok: true; user: { id: string; slackEmail: string }; repRole: string | null }
+  | { ok: false; status: number; body: Record<string, unknown> }
+
+/** Resolve + authorise a rep for the Territory Cleanup tab (AEs only). */
+async function resolveAeRep(token: string | undefined): Promise<AeRepResult> {
+  if (!token) return { ok: false, status: 400, body: { error: 'Missing token' } }
+
+  let slackUserId: string
+  try {
+    ({ slackUserId } = verifyRepToken(token))
+  } catch {
+    return { ok: false, status: 401, body: { error: 'Invalid or expired link — ask RevBot for a fresh one' } }
+  }
+
+  const user = await db.user.findUnique({ where: { slackUserId } })
+  if (!user) return { ok: false, status: 404, body: { error: 'User not found' } }
+  if (!user.slackEmail) return { ok: false, status: 400, body: { error: 'No email on record' } }
+
+  const repRole = await fetchRepRole(user.slackEmail)
+  if (!isAccountExecutive(repRole)) {
+    return {
+      ok: false,
+      status: 403,
+      body: { error: 'Territory Cleanup is only available to New Business AEs', repRole },
+    }
+  }
+
+  return { ok: true, user: { id: user.id, slackEmail: user.slackEmail }, repRole }
+}
+
+// GET /api/rep/territory-cleanup?token=xxx
+// The rep's Prospect accounts with no rep communication this year, minus any
+// they've already dispositioned.
+router.get('/territory-cleanup', async (req, res) => {
+  const resolved = await resolveAeRep((req.query as { token?: string }).token)
+  if (!resolved.ok) return res.status(resolved.status).json(resolved.body)
+  const { user } = resolved
+
+  try {
+    const [accounts, validated, picklists] = await Promise.all([
+      fetchTerritoryAccounts(user.slackEmail),
+      db.territoryValidation.findMany({
+        where: { repId: user.id },
+        select: { accountId: true },
+      }),
+      getAccountPicklists(),
+    ])
+
+    const validatedIds = new Set(validated.map((v) => v.accountId))
+    const pending = accounts.filter((a) => !validatedIds.has(a.accountId))
+
+    res.json({
+      accounts: pending.map((a) => ({
+        ...a,
+        sfdcUrl: `${SFDC_BASE}/lightning/r/Account/${a.accountId}/view`,
+      })),
+      totalInTerritory: accounts.length,
+      alreadyValidated: accounts.length - pending.length,
+      picklists,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    console.error('[TerritoryCleanup] GET failed:', message)
+    res.status(500).json({ error: message })
+  }
+})
+
+// POST /api/rep/territory-cleanup/disposition
+router.post('/territory-cleanup/disposition', async (req, res) => {
+  const body = req.body as {
+    token?: string
+    accountId?: string
+    accountName?: string
+    disposition?: string
+    subReason?: string | null
+    feedback?: string | null
+    industry?: string | null
+    subIndustry?: string | null
+    parentId?: string | null
+    numberOfLocations?: number | null
+    icpIppFitRating?: string | null
+  }
+
+  const resolved = await resolveAeRep(body.token)
+  if (!resolved.ok) return res.status(resolved.status).json(resolved.body)
+  const { user } = resolved
+
+  if (!body.accountId) return res.status(400).json({ error: 'Missing accountId' })
+  if (!DISPOSITIONS.includes(body.disposition as Disposition)) {
+    return res.status(400).json({ error: `Invalid disposition. Expected one of: ${DISPOSITIONS.join(', ')}` })
+  }
+  const disposition = body.disposition as Disposition
+
+  let subReason: NoIcpSubReason | null = null
+  if (disposition === 'NO_ICP') {
+    if (!NO_ICP_SUB_REASONS.includes(body.subReason as NoIcpSubReason)) {
+      return res.status(400).json({ error: `NO_ICP requires a subReason: ${NO_ICP_SUB_REASONS.join(', ')}` })
+    }
+    subReason = body.subReason as NoIcpSubReason
+  }
+
+  // "Other" is meaningless without an explanation.
+  if (disposition === 'OTHER' && !body.feedback?.trim()) {
+    return res.status(400).json({ error: 'Please add a note explaining the reason' })
+  }
+
+  try {
+    const result = await applyDisposition(
+      body.accountId,
+      body.accountName ?? body.accountId,
+      { id: user.id, email: user.slackEmail },
+      {
+        disposition,
+        subReason,
+        feedback: body.feedback ?? null,
+        industry: body.industry ?? null,
+        subIndustry: body.subIndustry ?? null,
+        parentId: body.parentId ?? null,
+        numberOfLocations: body.numberOfLocations ?? null,
+        icpIppFitRating: body.icpIppFitRating ?? null,
+      },
+    )
+
+    // The validation is recorded either way; surface the SFDC failure so the rep
+    // knows their answer was saved but Salesforce wasn't updated.
+    if (!result.ok) {
+      return res.status(502).json({ error: `Saved your answer, but the Salesforce update failed: ${result.error}`, fields: result.fields })
+    }
+    res.json({ ok: true, fields: result.fields })
+  } catch (err) {
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    console.error('[TerritoryCleanup] disposition failed:', message)
+    res.status(500).json({ error: message })
+  }
+})
 
 router.post('/admin/generate-link', requireAdmin, async (req, res) => {
   const { email, slackUserId } = req.body as { email?: string; slackUserId?: string }
