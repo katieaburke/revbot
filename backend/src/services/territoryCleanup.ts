@@ -454,6 +454,88 @@ export const PRODUCT_FIT_BY_DISPOSITION: Partial<Record<Disposition, string>> = 
 }
 
 /**
+ * Where a "No fit" account goes, by reason.
+ *
+ * Reassigning the owner is what removes it from the rep's territory: the queue
+ * filters on `Owner.Email`, and separately excludes these two owners by name, so a
+ * routed account drops off every rep's list rather than just moving between them.
+ *
+ * Shark Tank re-works accounts later; Grave Yard is the end of the line. TOO_SMALL
+ * deliberately keeps the Enterprise record type — the account is real and may grow
+ * into ICP, it's just mis-sized today, and the rep corrects the count on the way
+ * through. PARTNER is the only reason that changes record type.
+ */
+const SHARK_TANK = 'Shark Tank'
+const GRAVE_YARD = 'Grave Yard'
+const PARTNER_RECORD_TYPE = 'Partner Account Record'
+
+const NO_ICP_ROUTING: Record<
+  NoIcpSubReason,
+  { ownerName: string; recordTypeName?: string }
+> = {
+  TOO_SMALL: { ownerName: SHARK_TANK },
+  JUNK: { ownerName: GRAVE_YARD },
+  PARTNER: { ownerName: SHARK_TANK, recordTypeName: PARTNER_RECORD_TYPE },
+  DEFUNCT: { ownerName: GRAVE_YARD },
+}
+
+export interface NoIcpRouting {
+  ownerId: string
+  /** Only set when the reason changes record type, i.e. PARTNER. */
+  recordTypeId?: string
+}
+
+/**
+ * Ids are resolved by name at runtime rather than hardcoded, so this keeps working
+ * against a sandbox and breaks loudly instead of silently writing a dead id if
+ * someone renames or deactivates one of these. Cached for an hour — they change
+ * about never.
+ */
+const ROUTING_TTL_MS = 60 * 60 * 1000
+let routingCache: { at: number; ownerIds: Map<string, string>; recordTypeIds: Map<string, string> } | null =
+  null
+
+async function getRoutingIds() {
+  if (routingCache && Date.now() - routingCache.at < ROUTING_TTL_MS) return routingCache
+
+  const conn = await getServiceConnection()
+  const names = [SHARK_TANK, GRAVE_YARD].map((n) => `'${soqlEscape(n)}'`).join(', ')
+
+  const users = await conn.query<{ Id: string; Name: string }>(
+    `SELECT Id, Name FROM User WHERE Name IN (${names}) AND IsActive = true`,
+  )
+  const recordTypes = await conn.query<{ Id: string; Name: string }>(
+    `SELECT Id, Name FROM RecordType WHERE SobjectType = 'Account' AND IsActive = true`,
+  )
+
+  routingCache = {
+    at: Date.now(),
+    ownerIds: new Map(users.records.map((u) => [u.Name, u.Id])),
+    recordTypeIds: new Map(recordTypes.records.map((r) => [r.Name, r.Id])),
+  }
+  return routingCache
+}
+
+/** Throws rather than returning a partial route — see the caller for why. */
+export async function resolveNoIcpRouting(subReason: NoIcpSubReason): Promise<NoIcpRouting> {
+  const { ownerName, recordTypeName } = NO_ICP_ROUTING[subReason]
+  const ids = await getRoutingIds()
+
+  const ownerId = ids.ownerIds.get(ownerName)
+  if (!ownerId) {
+    throw new Error(`Could not find an active Salesforce user named "${ownerName}"`)
+  }
+
+  if (!recordTypeName) return { ownerId }
+
+  const recordTypeId = ids.recordTypeIds.get(recordTypeName)
+  if (!recordTypeId) {
+    throw new Error(`Could not find an active Account record type named "${recordTypeName}"`)
+  }
+  return { ownerId, recordTypeId }
+}
+
+/**
  * Current SFDC values that affect what we write, read just before the update:
  * "set Product Fit unless it's already right", and "only promote prospecting
  * status to Planned from blank or Hold".
@@ -461,6 +543,8 @@ export const PRODUCT_FIT_BY_DISPOSITION: Partial<Record<Disposition, string>> = 
 export interface DispositionContext {
   productFit?: string | null
   prospectingStatus?: string | null
+  /** Resolved owner / record type for a NO_ICP reason. Absent for every other. */
+  routing?: NoIcpRouting
 }
 
 /**
@@ -528,6 +612,13 @@ export function buildDispositionFields(
       fields.Account_Stage__c = 'Disqualified'
       fields.BATCH_TAM__c = 'NO ICP'
       fields.Prospecting_Pause_Reason__c = 'Not ICP'
+      // Hand the account off. The reason decides where — see NO_ICP_ROUTING.
+      if (current.routing) {
+        fields.OwnerId = current.routing.ownerId
+        if (current.routing.recordTypeId) {
+          fields.RecordTypeId = current.routing.recordTypeId
+        }
+      }
       break
 
     case 'DUPLICATE':
@@ -635,6 +726,21 @@ export async function applyDisposition(
 ): Promise<ApplyResult> {
   const feedbackField = await getFeedbackField()
   const current = await fetchDispositionContext(accountId, input.disposition)
+
+  // Resolving the handoff target has to succeed before anything is written.
+  // Disqualifying the account but leaving it sitting in the rep's territory is a
+  // worse state than not saving at all, and it's one nobody would notice — so bail
+  // out and let the rep retry instead.
+  if (input.disposition === 'NO_ICP' && input.subReason) {
+    try {
+      current.routing = await resolveNoIcpRouting(input.subReason)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[TerritoryCleanup] routing lookup failed for ${accountId}:`, message)
+      return { ok: false, fields: {}, error: message }
+    }
+  }
+
   const fields = buildDispositionFields(input, feedbackField, current)
 
   let sfdcWrittenAt: Date | null = null

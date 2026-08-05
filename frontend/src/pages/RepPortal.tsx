@@ -177,7 +177,7 @@ const DISPOSITION_OPTIONS: {
   {
     value: 'NO_ICP',
     label: 'No fit',
-    hint: 'Disqualifies the account and sets ICP/IPP Fit to "NO ICP". Pick a reason.',
+    hint: 'Disqualifies the account, removes it from your territory and sets Product Fit to "No Fit". Pick a disposition.',
     tone: 'border-red-300 bg-red-50 text-red-800',
   },
   {
@@ -206,11 +206,24 @@ const DISPOSITION_OPTIONS: {
   },
 ]
 
-const NO_ICP_REASONS: { value: NoIcpSubReason; label: string }[] = [
-  { value: 'TOO_SMALL', label: 'Too small — location count is wrong' },
-  { value: 'JUNK', label: 'Junk account' },
-  { value: 'PARTNER', label: 'Partner account' },
-  { value: 'DEFUNCT', label: 'Defunct account' },
+/**
+ * `effect` mirrors NO_ICP_ROUTING on the server. Shown next to each reason because
+ * these all reassign the account away from the rep, which is not obvious from the
+ * reason alone and isn't something they can undo from here.
+ */
+const NO_ICP_REASONS: { value: NoIcpSubReason; label: string; effect: string }[] = [
+  {
+    value: 'TOO_SMALL',
+    label: 'Too small — location count is wrong',
+    effect: 'Stays an Enterprise record, goes to Shark Tank',
+  },
+  { value: 'JUNK', label: 'Junk account', effect: 'Goes to Grave Yard' },
+  {
+    value: 'PARTNER',
+    label: 'Partner account',
+    effect: 'Converts to a Partner record, goes to Shark Tank',
+  },
+  { value: 'DEFUNCT', label: 'Defunct account', effect: 'Goes to Grave Yard' },
 ]
 
 interface WhitespaceLine {
@@ -1648,14 +1661,21 @@ function TerritoryAccountCard({
             <div className="space-y-1.5 border-l-2 border-red-300 pl-3">
               <p className="text-[11px] font-medium text-gray-600">Why is it not a fit?</p>
               {NO_ICP_REASONS.map((r) => (
-                <label key={r.value} className="flex items-center gap-2 text-xs text-gray-700">
+                <label
+                  key={r.value}
+                  className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer"
+                >
                   <input
                     type="radio"
+                    className="mt-0.5"
                     name={`noicp-${account.accountId}`}
                     checked={subReason === r.value}
                     onChange={() => setSubReason(r.value)}
                   />
-                  {r.label}
+                  <span>
+                    {r.label}
+                    <span className="block text-[10px] text-gray-400">{r.effect}</span>
+                  </span>
                 </label>
               ))}
               {subReason === 'TOO_SMALL' && (
