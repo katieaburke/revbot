@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
-import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save } from 'lucide-react'
+import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save, Table2, LayoutList } from 'lucide-react'
 import clsx from 'clsx'
 
 // Plain axios instance — no admin auth interceptors, no 401→/login redirect
@@ -177,7 +177,7 @@ const DISPOSITION_OPTIONS: {
   {
     value: 'NO_ICP',
     label: 'No fit',
-    hint: 'Disqualifies the account, removes it from your territory and sets Product Fit to "No Fit". Pick a disposition.',
+    hint: 'Disqualifies the account, removes it from your territory and sets Product Fit to "No Fit".',
     tone: 'border-red-300 bg-red-50 text-red-800',
   },
   {
@@ -356,6 +356,49 @@ function describeTerritoryFilters(f: TerritoryResponse['appliedFilters']): strin
   return `${contact}${locations}`
 }
 
+type TerritoryView = 'table' | 'cards'
+
+const TERRITORY_VIEW_KEY = 'beacon.territoryView'
+
+/**
+ * Remembers the rep's choice of grid vs cards across visits, but forces cards on
+ * narrow screens — the table needs ~62rem and reps open this from Slack on a
+ * phone, where a horizontally-scrolling 8-column grid is unusable.
+ */
+function useTerritoryView(): [TerritoryView, (v: TerritoryView) => void, boolean] {
+  const [stored, setStored] = useState<TerritoryView>(() => {
+    try {
+      return localStorage.getItem(TERRITORY_VIEW_KEY) === 'cards' ? 'cards' : 'table'
+    } catch {
+      // Safari in private mode throws on localStorage access.
+      return 'table'
+    }
+  })
+
+  const query = '(min-width: 1024px)'
+  const [wide, setWide] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(query).matches,
+  )
+
+  useEffect(() => {
+    const mq = window.matchMedia(query)
+    const onChange = (e: MediaQueryListEvent) => setWide(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
+  function choose(v: TerritoryView) {
+    setStored(v)
+    try {
+      localStorage.setItem(TERRITORY_VIEW_KEY, v)
+    } catch {
+      // Preference just won't persist — not worth surfacing.
+    }
+  }
+
+  return [wide ? stored : 'cards', choose, wide]
+}
+
 export function RepPortal() {
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
   const qc = useQueryClient()
@@ -436,6 +479,7 @@ export function RepPortal() {
 
   const [wsRemovedIds, setWsRemovedIds] = useState<Set<string>>(new Set())
   const [territoryDoneIds, setTerritoryDoneIds] = useState<Set<string>>(new Set())
+  const [territoryView, setTerritoryView, canUseTable] = useTerritoryView()
 
   const wsRecords = (whitespaceQuery.data?.records ?? [])
     .map((group) => ({
@@ -833,6 +877,30 @@ export function RepPortal() {
                     <span className="text-gray-400">
                       {territoryQuery.data.totalInTerritory} in territory
                     </span>
+
+                    {/* Hidden on narrow screens, where the table isn't an option. */}
+                    {canUseTable && (
+                      <div className="ml-auto flex items-center rounded-lg border border-gray-200 p-0.5">
+                        {([
+                          { view: 'table' as const, icon: Table2, label: 'Grid' },
+                          { view: 'cards' as const, icon: LayoutList, label: 'Cards' },
+                        ]).map(({ view, icon: Icon, label }) => (
+                          <button
+                            key={view}
+                            onClick={() => setTerritoryView(view)}
+                            className={clsx(
+                              'flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium',
+                              territoryView === view
+                                ? 'bg-brand-50 text-brand-700'
+                                : 'text-gray-400 hover:text-gray-600',
+                            )}
+                          >
+                            <Icon size={12} />
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -846,6 +914,15 @@ export function RepPortal() {
                       We'll queue up more if new accounts go quiet.
                     </p>
                   </div>
+                ) : territoryView === 'table' ? (
+                  <TerritoryTable
+                    accounts={territoryQuery.data.accounts.filter(
+                      (a) => !territoryDoneIds.has(a.accountId),
+                    )}
+                    picklists={territoryQuery.data.picklists}
+                    token={token}
+                    onDone={(id) => setTerritoryDoneIds((prev) => new Set([...prev, id]))}
+                  />
                 ) : (
                   <div className="space-y-3">
                     {territoryQuery.data.accounts
@@ -1315,18 +1392,20 @@ function NotifCard({
 
 // ── Territory Cleanup card ────────────────────────────────────────────────────
 
-function TerritoryAccountCard({
+/**
+ * Everything a disposition needs: form state, the mirrored validation rules, and
+ * the save. Shared by the card and the table row so the two views can't drift
+ * apart on what's required — the rules here are the ones the server enforces.
+ */
+function useDispositionForm({
   account,
-  picklists,
   token,
   onDone,
 }: {
   account: TerritoryAccount
-  picklists: RepPicklists
   token: string
   onDone: (accountId: string) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
   const [disposition, setDisposition] = useState<Disposition | null>(null)
   const [subReason, setSubReason] = useState<NoIcpSubReason | null>(null)
   const [feedback, setFeedback] = useState('')
@@ -1397,6 +1476,76 @@ function TerritoryAccountCard({
   const impliedProductFit = disposition
     ? PRODUCT_FIT_BY_DISPOSITION[disposition]
     : undefined
+
+  /** Reset to a clean slate on a new pick — a stale sub-reason must not survive. */
+  function pickDisposition(value: Disposition | null) {
+    setDisposition(value)
+    setSubReason(null)
+    setErr(null)
+  }
+
+  return {
+    disposition,
+    pickDisposition,
+    subReason,
+    setSubReason,
+    feedback,
+    setFeedback,
+    locations,
+    setLocations,
+    operatingModel,
+    setOperatingModel,
+    productFitRationale,
+    setProductFitRationale,
+    nominateForBdrFocus,
+    setNominateForBdrFocus,
+    err,
+    submit,
+    selected,
+    needsSubReason,
+    needsNote,
+    needsOperatingModel,
+    canSubmit,
+    locationsDisplay,
+    impliedProductFit,
+  }
+}
+
+function TerritoryAccountCard({
+  account,
+  picklists,
+  token,
+  onDone,
+}: {
+  account: TerritoryAccount
+  picklists: RepPicklists
+  token: string
+  onDone: (accountId: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const {
+    disposition,
+    pickDisposition,
+    subReason,
+    setSubReason,
+    feedback,
+    setFeedback,
+    locations,
+    setLocations,
+    operatingModel,
+    setOperatingModel,
+    productFitRationale,
+    setProductFitRationale,
+    nominateForBdrFocus,
+    setNominateForBdrFocus,
+    err,
+    submit,
+    selected,
+    needsOperatingModel,
+    canSubmit,
+    locationsDisplay,
+    impliedProductFit,
+  } = useDispositionForm({ account, token, onDone })
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -1521,11 +1670,7 @@ function TerritoryAccountCard({
                   type="radio"
                   name={`disp-${account.accountId}`}
                   checked={disposition === opt.value}
-                  onChange={() => {
-                    setDisposition(opt.value)
-                    setSubReason(null)
-                    setErr(null)
-                  }}
+                  onChange={() => pickDisposition(opt.value)}
                   className="mt-0.5"
                 />
                 <span className="min-w-0">
@@ -1758,6 +1903,337 @@ function TerritoryAccountCard({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Territory table (grid view) ───────────────────────────────────────────────
+
+/** Shared cell padding so the header and body columns line up. */
+const TD = 'px-2.5 py-2 align-middle'
+
+/**
+ * One account per row. Picking a disposition opens a detail row underneath for
+ * the follow-ups that don't fit in a cell — required ones are marked, and Save
+ * stays disabled until they're filled, same rules as the card.
+ */
+function TerritoryAccountRow({
+  account,
+  picklists,
+  token,
+  onDone,
+}: {
+  account: TerritoryAccount
+  picklists: RepPicklists
+  token: string
+  onDone: (accountId: string) => void
+}) {
+  const {
+    disposition,
+    pickDisposition,
+    subReason,
+    setSubReason,
+    feedback,
+    setFeedback,
+    locations,
+    setLocations,
+    operatingModel,
+    setOperatingModel,
+    productFitRationale,
+    setProductFitRationale,
+    nominateForBdrFocus,
+    setNominateForBdrFocus,
+    err,
+    submit,
+    selected,
+    needsSubReason,
+    needsNote,
+    needsOperatingModel,
+    canSubmit,
+    locationsDisplay,
+    impliedProductFit,
+  } = useDispositionForm({ account, token, onDone })
+
+  const parent = account.parentName ?? account.ultimateParent
+
+  return (
+    <>
+      <tr className={clsx('border-t border-gray-100', disposition && 'bg-brand-50/40')}>
+        <td className={clsx(TD, 'max-w-[15rem]')}>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate font-medium text-gray-900" title={account.accountName}>
+              {account.accountName}
+            </span>
+            <a
+              href={account.sfdcUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 text-gray-300 hover:text-brand-500"
+              title="Open in Salesforce"
+            >
+              <ExternalLink size={11} />
+            </a>
+          </div>
+          {/* No column fits a description, but it's the fastest read on what a
+              company does — so it lives here, truncated, full text on hover. */}
+          {account.description?.trim() && (
+            <p className="truncate text-[11px] text-gray-400" title={account.description}>
+              {account.description}
+            </p>
+          )}
+        </td>
+        <td className={clsx(TD, 'max-w-[9rem] truncate text-gray-600')} title={account.industry ?? ''}>
+          {account.industry || <span className="text-gray-300">—</span>}
+        </td>
+        <td className={clsx(TD, 'text-right tabular-nums text-gray-600')}>
+          {locationsDisplay ?? <span className="text-gray-300">—</span>}
+        </td>
+        {/* nowrap: "United States" wrapping to two lines makes the row taller than
+            its neighbours and the grid loses its scannability. */}
+        <td className={clsx(TD, 'max-w-[8rem] truncate whitespace-nowrap text-gray-600')}>
+          {account.billingCountry || <span className="text-gray-300">—</span>}
+        </td>
+        <td className={clsx(TD, 'max-w-[11rem] truncate text-gray-600')} title={parent ?? ''}>
+          {parent || <span className="text-amber-600">no parent</span>}
+        </td>
+        <td className={clsx(TD, 'whitespace-nowrap text-gray-500')}>
+          {account.lastRepCommunicationDate ? (
+            fmtDate(account.lastRepCommunicationDate)
+          ) : (
+            <span className="text-gray-400">never</span>
+          )}
+        </td>
+        <td className={TD}>
+          <select
+            value={disposition ?? ''}
+            onChange={(e) => pickDisposition((e.target.value || null) as Disposition | null)}
+            className="w-full min-w-[13rem] rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs"
+          >
+            <option value="">— Pick one —</option>
+            {DISPOSITION_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </td>
+        <td className={clsx(TD, 'text-right')}>
+          <button
+            disabled={!canSubmit}
+            onClick={() => submit.mutate()}
+            className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-40"
+          >
+            {submit.isPending ? (
+              <RefreshCw size={11} className="animate-spin" />
+            ) : (
+              <Check size={11} />
+            )}
+            Save
+          </button>
+        </td>
+      </tr>
+
+      {disposition && (
+        <tr className="bg-brand-50/40">
+          <td colSpan={8} className="px-2.5 pb-3 pt-0">
+            <div className="space-y-2.5 rounded-lg border border-gray-200 bg-white p-2.5">
+              {/* Both "keep it" verdicts validate the operating model. */}
+              {(disposition === 'GOOD_LEAVE_IN_TERRITORY' ||
+                disposition === 'USE_CASE_LOW_PRIORITY') && (
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <p className="mb-1 text-[10px] text-gray-400">
+                      Operating model{' '}
+                      {account.operatingModel
+                        ? `(currently ${account.operatingModel})`
+                        : '(blank — required)'}
+                    </p>
+                    <select
+                      value={operatingModel}
+                      onChange={(e) => setOperatingModel(e.target.value)}
+                      className={clsx(
+                        'min-w-[12rem] rounded-lg border bg-white px-2 py-1.5 text-xs',
+                        needsOperatingModel ? 'border-amber-400' : 'border-gray-200',
+                      )}
+                    >
+                      <option value="">— Select operating model —</option>
+                      {(picklists.operatingModel ?? []).map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {disposition === 'GOOD_LEAVE_IN_TERRITORY' && (
+                    <>
+                      <label className="flex cursor-pointer items-center gap-1.5 pb-1.5 text-xs text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={nominateForBdrFocus}
+                          onChange={(e) => setNominateForBdrFocus(e.target.checked)}
+                        />
+                        Nominate for next month’s BDR focus list
+                      </label>
+                      <a
+                        href={account.sfdcUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="pb-1.5 text-xs text-brand-600 hover:underline"
+                      >
+                        Check the hierarchy
+                      </a>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {disposition === 'USE_CASE_LOW_PRIORITY' && (
+                <div>
+                  <p className="mb-1 text-[10px] text-gray-400">
+                    Product fit rationale — why is this only a partial fit?
+                  </p>
+                  <textarea
+                    value={productFitRationale}
+                    onChange={(e) => setProductFitRationale(e.target.value)}
+                    rows={2}
+                    placeholder="e.g. Listings use case, but only 12 locations and no local marketing team."
+                    className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                  />
+                </div>
+              )}
+
+              {disposition === 'NO_ICP' && (
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <p className="mb-1 text-[10px] text-gray-400">Why is it not a fit? (required)</p>
+                    <select
+                      value={subReason ?? ''}
+                      onChange={(e) =>
+                        setSubReason((e.target.value || null) as NoIcpSubReason | null)
+                      }
+                      className={clsx(
+                        'min-w-[16rem] rounded-lg border bg-white px-2 py-1.5 text-xs',
+                        needsSubReason ? 'border-amber-400' : 'border-gray-200',
+                      )}
+                    >
+                      <option value="">— Select a reason —</option>
+                      {NO_ICP_REASONS.map((r) => (
+                        <option key={r.value} value={r.value}>
+                          {r.label} → {r.effect}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {subReason === 'TOO_SMALL' && (
+                    <div>
+                      <p className="mb-1 text-[10px] text-gray-400">
+                        Correct location count{' '}
+                        {locationsDisplay != null ? `(currently ${locationsDisplay})` : ''}
+                      </p>
+                      <input
+                        type="number"
+                        min={0}
+                        value={locations}
+                        onChange={(e) => setLocations(e.target.value)}
+                        placeholder="e.g. 4"
+                        className="w-28 rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <p className="mb-1 text-[10px] text-gray-400">
+                  {disposition === 'DUPLICATE'
+                    ? 'Which account is it a duplicate of?'
+                    : 'Anything else we should know?'}{' '}
+                  {needsNote && <span className="text-red-500">(required)</span>}
+                </p>
+                <textarea
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  rows={2}
+                  className={clsx(
+                    'w-full resize-none rounded-lg border px-2 py-1.5 text-xs',
+                    needsNote ? 'border-amber-400' : 'border-gray-200',
+                  )}
+                  placeholder={
+                    disposition === 'DUPLICATE'
+                      ? 'e.g. duplicate of Acme Corp (the record with the open opp)'
+                      : 'Optional context for RevOps…'
+                  }
+                />
+              </div>
+
+              {selected && (
+                <p className="text-[11px] text-gray-500">
+                  <strong>On save:</strong> {selected.hint}
+                  {/* Only add the Product Fit sentence when the hint doesn't already
+                      say it, or it reads twice in a row. */}
+                  {impliedProductFit &&
+                    impliedProductFit !== account.productFit &&
+                    !selected.hint.includes('Product Fit') && (
+                      <>
+                        {' '}
+                        Sets Product Fit to “{productFitLabel(impliedProductFit, picklists)}”.
+                      </>
+                    )}
+                </p>
+              )}
+
+              {err && (
+                <p className="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-600">
+                  {err}
+                </p>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+function TerritoryTable({
+  accounts,
+  picklists,
+  token,
+  onDone,
+}: {
+  accounts: TerritoryAccount[]
+  picklists: RepPicklists
+  token: string
+  onDone: (accountId: string) => void
+}) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+      <table className="w-full min-w-[62rem] text-xs">
+        {/* Sticky so the columns stay identifiable once a rep scrolls a long queue. */}
+        <thead className="sticky top-0 z-10 bg-gray-50 text-[10px] uppercase tracking-wide text-gray-400">
+          <tr className="[&>th]:whitespace-nowrap [&>th]:px-2.5 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
+            <th>Account</th>
+            <th>Industry</th>
+            <th className="!text-right">Locs</th>
+            <th>Country</th>
+            <th>Parent</th>
+            <th>Last contact</th>
+            <th>What should happen?</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {accounts.map((account) => (
+            <TerritoryAccountRow
+              key={account.accountId}
+              account={account}
+              picklists={picklists}
+              token={token}
+              onDone={onDone}
+            />
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
