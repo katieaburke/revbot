@@ -621,6 +621,7 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
     numberOfLocations?: number | null
     icpIppFitRating?: string | null
     operatingModel?: string | null
+    nominateForBdrFocus?: boolean
   }
 
   const resolved = await resolveAeRep(body.token)
@@ -678,6 +679,10 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
         numberOfLocations: body.numberOfLocations ?? null,
         icpIppFitRating: body.icpIppFitRating ?? null,
         operatingModel,
+        // Ignored for every other disposition, so pin it to the one that offers it
+        // rather than trusting the client to only send it when relevant.
+        nominateForBdrFocus:
+          disposition === 'GOOD_LEAVE_IN_TERRITORY' && body.nominateForBdrFocus === true,
       },
     )
 

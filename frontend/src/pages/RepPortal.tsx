@@ -98,6 +98,25 @@ const PRODUCT_FIT_BY_DISPOSITION: Record<string, string> = {
 }
 
 /**
+ * Prospecting statuses a BDR nomination will promote to "Planned". Mirrors
+ * NOMINATABLE_PROSPECTING_STATUSES on the server; anything else is already being
+ * worked, so nomination only moves the target date.
+ */
+const NOMINATABLE_PROSPECTING_STATUSES = ['', 'Hold']
+
+/**
+ * The 2nd of next month as `YYYY-MM-DD` — what a BDR nomination will set Target
+ * Prospecting Date to. Deliberately the same UTC arithmetic as `nextMonthSecond`
+ * on the server, so the preview here and the value written there agree even for a
+ * rep whose local date is a day ahead of or behind UTC.
+ */
+function nextMonthSecond(now: Date = new Date()): string {
+  const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 2))
+  const mm = String(target.getUTCMonth() + 1).padStart(2, '0')
+  return `${target.getUTCFullYear()}-${mm}-02`
+}
+
+/**
  * Show the Salesforce label for a stored Product Fit value. These diverge: the
  * option labelled "No Fit" is stored as `No Need`, so displaying the raw value
  * would show reps a term that no longer exists in Salesforce.
@@ -145,7 +164,7 @@ const DISPOSITION_OPTIONS: {
 }[] = [
   {
     value: 'GOOD_LEAVE_IN_TERRITORY',
-    label: 'Good account — leave in my territory',
+    label: 'Great account — leave in my territory',
     hint: 'Double-check the industry and hierarchy below while you\'re here.',
     tone: 'border-green-300 bg-green-50 text-green-800',
   },
@@ -1283,6 +1302,7 @@ function TerritoryAccountCard({
   const [locations, setLocations] = useState('')
   // Seeded from Salesforce so an already-correct value just needs confirming.
   const [operatingModel, setOperatingModel] = useState(account.operatingModel ?? '')
+  const [nominateForBdrFocus, setNominateForBdrFocus] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const submit = useMutation({
@@ -1300,6 +1320,7 @@ function TerritoryAccountCard({
           numberOfLocations: locations.trim() ? Number(locations) : null,
           icpIppFitRating: fitRating || null,
           operatingModel: operatingModel || null,
+          nominateForBdrFocus,
         })
         .then((r) => r.data),
     onSuccess: () => {
@@ -1519,6 +1540,31 @@ function TerritoryAccountCard({
                   ))}
                 </select>
               </div>
+
+              <label className="flex items-start gap-2 text-xs text-gray-700 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={nominateForBdrFocus}
+                  onChange={(e) => setNominateForBdrFocus(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">
+                    Nominate for next month’s BDR focus list
+                  </span>
+                  <span className="block text-[10px] text-gray-500 mt-0.5">
+                    Sets <strong>Target Prospecting Date</strong> to{' '}
+                    {fmtDateOnly(nextMonthSecond())}
+                    {/* Mirror the server rule so the checkbox doesn't promise a status
+                        change it won't make on an account already being worked. */}
+                    {NOMINATABLE_PROSPECTING_STATUSES.includes(
+                      account.prospectingStatus ?? '',
+                    )
+                      ? ' and Prospecting Status to “Planned”.'
+                      : `. Prospecting Status stays “${account.prospectingStatus}”.`}
+                  </span>
+                </span>
+              </label>
 
               <div className="text-[11px] text-gray-500">
                 Hierarchy:{' '}

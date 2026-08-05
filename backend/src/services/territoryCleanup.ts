@@ -382,6 +382,34 @@ export interface DispositionInput {
   icpIppFitRating?: string | null
   /** Rep's validated Operating_Model_s__c for GOOD_LEAVE_IN_TERRITORY. */
   operatingModel?: string | null
+  /**
+   * Rep nominated the account for next month's BDR focus list. Only offered on
+   * GOOD_LEAVE_IN_TERRITORY — nominating an account you've just disqualified
+   * makes no sense.
+   */
+  nominateForBdrFocus?: boolean
+}
+
+/**
+ * Prospecting statuses a BDR nomination is allowed to overwrite: blank, or on
+ * hold. `Prospecting`, `Nurturing` and `Success` describe work already underway,
+ * and rewinding them to `Planned` would lose that.
+ */
+const NOMINATABLE_PROSPECTING_STATUSES = new Set(['', 'Hold'])
+
+/**
+ * The 2nd of next month as `YYYY-MM-DD`, the date the BDR focus list works from.
+ *
+ * Built from UTC parts and formatted by hand rather than via `toISOString()` on a
+ * local-time Date, which would shift the day either side of midnight. Month 12
+ * overflows into January of the next year on its own, which is what we want.
+ */
+export function nextMonthSecond(now: Date = new Date()): string {
+  const y = now.getUTCFullYear()
+  const m = now.getUTCMonth() + 1 // 0-indexed -> next month, still 0-indexed
+  const target = new Date(Date.UTC(y, m, 2))
+  const mm = String(target.getUTCMonth() + 1).padStart(2, '0')
+  return `${target.getUTCFullYear()}-${mm}-02`
 }
 
 /**
@@ -407,11 +435,13 @@ export const PRODUCT_FIT_BY_DISPOSITION: Partial<Record<Disposition, string>> = 
 }
 
 /**
- * Current SFDC values that affect what we write, read just before the update.
- * Only needed for the "set Product Fit unless it's already right" rule.
+ * Current SFDC values that affect what we write, read just before the update:
+ * "set Product Fit unless it's already right", and "only promote prospecting
+ * status to Planned from blank or Hold".
  */
 export interface DispositionContext {
   productFit?: string | null
+  prospectingStatus?: string | null
 }
 
 /**
@@ -425,6 +455,7 @@ export function buildDispositionFields(
   input: DispositionInput,
   feedbackField: string,
   current: DispositionContext = {},
+  now: Date = new Date(),
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
 
@@ -441,6 +472,28 @@ export function buildDispositionFields(
       // Stays in territory, but the rep validates the operating model on the way
       // through — it's blank on ~60% of prospects.
       if (input.operatingModel) fields.Operating_Model_s__c = input.operatingModel
+
+      if (input.nominateForBdrFocus) {
+        // The date is the nomination: it's what the focus list is built from, so
+        // it's set whatever the current status.
+        fields.Target_Prospecting_Date__c = nextMonthSecond(now)
+
+        // The status only moves up from "nobody's on this" or "parked". An account
+        // already being prospected or nurtured is further along than Planned.
+        // `undefined` means we couldn't read it, and guessing risks demoting a live
+        // account, so we leave the status alone and let the date carry the signal.
+        if (
+          current.prospectingStatus !== undefined &&
+          NOMINATABLE_PROSPECTING_STATUSES.has(current.prospectingStatus ?? '')
+        ) {
+          fields.Prospecting_Status__c = 'Planned'
+          // A pause reason surviving the un-pause would leave the account looking
+          // both planned and on hold, and the hygiene alerts read this field.
+          if (current.prospectingStatus === 'Hold') {
+            fields.Prospecting_Pause_Reason__c = null
+          }
+        }
+      }
       break
 
     case 'USE_CASE_LOW_PRIORITY':
@@ -507,7 +560,8 @@ export interface ApplyResult {
  * A failed read is not fatal: we fall back to an empty context, which means
  * Product Fit gets written unconditionally. Writing the value we already intended
  * is the safe direction — and if Salesforce is unreachable the update that
- * follows will fail loudly anyway.
+ * follows will fail loudly anyway. Prospecting status is the exception: there an
+ * unknown value makes us skip the write rather than risk demoting a live account.
  */
 async function fetchDispositionContext(
   accountId: string,
@@ -516,13 +570,23 @@ async function fetchDispositionContext(
   if (!PRODUCT_FIT_BY_DISPOSITION[disposition]) return {}
   try {
     const conn = await getServiceConnection()
-    const result = await conn.query<{ Product_Fit__c: string | null }>(
-      `SELECT Product_Fit__c FROM Account WHERE Id = '${soqlEscape(accountId)}' LIMIT 1`,
+    const result = await conn.query<{
+      Product_Fit__c: string | null
+      Prospecting_Status__c: string | null
+    }>(
+      `SELECT Product_Fit__c, Prospecting_Status__c FROM Account WHERE Id = '${soqlEscape(accountId)}' LIMIT 1`,
     )
-    return { productFit: result.records[0]?.Product_Fit__c ?? null }
+    const record = result.records[0]
+    // No record is a genuine unknown, not a set of blanks — return nothing so the
+    // callers that distinguish the two can. The update will fail on its own merits.
+    if (!record) return {}
+    return {
+      productFit: record.Product_Fit__c ?? null,
+      prospectingStatus: record.Prospecting_Status__c ?? null,
+    }
   } catch (err) {
     console.warn(
-      `[TerritoryCleanup] could not read current Product Fit for ${accountId}:`,
+      `[TerritoryCleanup] could not read current Account state for ${accountId}:`,
       (err as Error).message,
     )
     return {}
