@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save, Table2, LayoutList } from 'lucide-react'
@@ -1573,7 +1574,7 @@ function TerritoryAccountCard({
           {!expanded && (
             <p className="text-[11px] text-gray-500 mt-1 line-clamp-2 whitespace-pre-line">
               {account.description?.trim() || (
-                <span className="text-gray-300 italic">No description on record</span>
+                <span className="text-gray-300 italic">No company description on record</span>
               )}
             </p>
           )}
@@ -1613,10 +1614,10 @@ function TerritoryAccountCard({
                 description on record", so it would be odd for that to vanish on
                 expand and leave the rep unsure whether it just wasn't shown. */}
             <div className="col-span-2">
-              <p className="text-[10px] uppercase tracking-wide text-gray-400">Description</p>
+              <p className="text-[10px] uppercase tracking-wide text-gray-400">Company description</p>
               <p className="text-gray-700 whitespace-pre-line">
                 {account.description?.trim() || (
-                  <span className="text-gray-300 italic">No description on record</span>
+                  <span className="text-gray-300 italic">No company description on record</span>
                 )}
               </p>
             </div>
@@ -1918,6 +1919,91 @@ function TerritoryAccountCard({
 /** Shared cell padding so the header and body columns line up. */
 const TD = 'px-2.5 py-2 align-middle'
 
+const HOVER_CARD_W = 340
+
+/**
+ * Hover tooltip for text too long to sit in a grid cell.
+ *
+ * Portalled to `document.body` and positioned with fixed coordinates measured on
+ * hover, because the table lives in an `overflow-x-auto` container that clips any
+ * absolutely-positioned child. Renders `children` untouched when there's no text,
+ * so a cell with nothing to reveal gets no hover affordance at all.
+ */
+function HoverCard({
+  label,
+  text,
+  children,
+  className,
+}: {
+  label: string
+  text: string | null | undefined
+  children: React.ReactNode
+  /** Applied to the trigger. Needed for `min-w-0` when the trigger is a flex child. */
+  className?: string
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number; flip: boolean } | null>(null)
+
+  // Fixed coordinates go stale as soon as anything scrolls, so close rather than
+  // try to follow. `capture` is what catches the table's own scroll container.
+  useEffect(() => {
+    if (!pos) return
+    const close = () => setPos(null)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [pos])
+
+  if (!text) return <span className={className}>{children}</span>
+
+  const open = (e: React.MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    // Prefer above; drop below only when there isn't room, so the card doesn't
+    // cover the row the rep is about to act on.
+    const flip = r.top < 240
+    setPos({
+      top: flip ? r.bottom + 6 : r.top - 6,
+      left: Math.min(Math.max(8, r.left), window.innerWidth - HOVER_CARD_W - 8),
+      flip,
+    })
+  }
+
+  return (
+    <span
+      className={clsx(
+        'cursor-help decoration-gray-300 decoration-dotted underline-offset-2 hover:underline',
+        className,
+      )}
+      onMouseEnter={open}
+      onMouseLeave={() => setPos(null)}
+    >
+      {children}
+      {pos &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-50 rounded-lg border border-gray-200 bg-white p-3 shadow-lg"
+            style={{
+              width: HOVER_CARD_W,
+              left: pos.left,
+              top: pos.top,
+              transform: pos.flip ? undefined : 'translateY(-100%)',
+            }}
+          >
+            <p className="mb-1 text-[10px] uppercase tracking-wide text-gray-400">{label}</p>
+            {/* Capped: a very long rationale would otherwise cover the grid. The
+                expanded row still has the full text. */}
+            <p className="max-h-56 overflow-hidden whitespace-pre-line text-[11px] leading-relaxed text-gray-700">
+              {text}
+            </p>
+          </div>,
+          document.body,
+        )}
+    </span>
+  )
+}
+
 /**
  * One account per row. Picking a disposition opens a detail row underneath for
  * the follow-ups that don't fit in a cell — required ones are marked, and Save
@@ -1979,14 +2065,18 @@ function TerritoryAccountRow({
                 'shrink-0 rounded p-0.5 hover:bg-gray-100',
                 showContext ? 'text-brand-500' : 'text-gray-300 hover:text-gray-500',
               )}
-              title={showContext ? 'Hide description' : 'Show description and rationale'}
+              title={showContext ? 'Hide company description' : 'Show company description and rationale'}
               aria-expanded={showContext}
             >
               {showContext ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             </button>
-            <span className="truncate font-medium text-gray-900" title={account.accountName}>
-              {account.accountName}
-            </span>
+            {/* title keeps the full name reachable on hover even though the
+                hover card is showing the description. */}
+            <HoverCard label="Company description" text={description} className="min-w-0 truncate">
+              <span className="truncate font-medium text-gray-900" title={account.accountName}>
+                {account.accountName}
+              </span>
+            </HoverCard>
             <a
               href={account.sfdcUrl}
               target="_blank"
@@ -2003,7 +2093,7 @@ function TerritoryAccountRow({
             className="truncate pl-[1.15rem] text-[11px] text-gray-400"
             title={description || undefined}
           >
-            {description || <span className="italic text-gray-300">No description</span>}
+            {description || <span className="italic text-gray-300">No company description</span>}
           </p>
         </td>
         <td className={clsx(TD, 'max-w-[9rem] truncate text-gray-600')} title={account.industry ?? ''}>
@@ -2021,11 +2111,13 @@ function TerritoryAccountRow({
           {parent || <span className="text-amber-600">no parent</span>}
         </td>
         <td className={clsx(TD, 'whitespace-nowrap text-gray-600')}>
-          {account.productFit ? (
-            productFitLabel(account.productFit, picklists)
-          ) : (
-            <span className="text-gray-300">—</span>
-          )}
+          <HoverCard label="Product fit rationale" text={rationale}>
+            {account.productFit ? (
+              productFitLabel(account.productFit, picklists)
+            ) : (
+              <span className="text-gray-300">—</span>
+            )}
+          </HoverCard>
         </td>
         <td className={clsx(TD, 'whitespace-nowrap text-gray-500')}>
           {account.lastRepCommunicationDate ? (
@@ -2070,9 +2162,9 @@ function TerritoryAccountRow({
           <td colSpan={9} className="px-2.5 pb-2.5 pt-0">
             <div className="grid gap-x-6 gap-y-2 rounded-lg border border-gray-200 bg-white p-3 md:grid-cols-2">
               <div className="md:col-span-2">
-                <p className="text-[10px] uppercase tracking-wide text-gray-400">Description</p>
+                <p className="text-[10px] uppercase tracking-wide text-gray-400">Company description</p>
                 <p className="whitespace-pre-line text-gray-700">
-                  {description || <span className="italic text-gray-300">No description on record</span>}
+                  {description || <span className="italic text-gray-300">No company description on record</span>}
                 </p>
               </div>
               <div className="md:col-span-2">
