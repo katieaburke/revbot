@@ -537,6 +537,11 @@ export function buildDispositionFields(
 
   // Feedback field carries the rep's free text, prefixed with the NO_ICP
   // sub-reason when there is one (those four reasons have no picklist home).
+  //
+  // This deliberately OVERWRITES rather than appends. The field is being
+  // repurposed as "Data Feedback" and the rep's answer is meant to be the current
+  // state of it, not another entry in a log — whatever a prior automation left
+  // there is exactly what we want gone. Decided deliberately; don't "fix" it.
   const parts: string[] = []
   if (input.disposition === 'NO_ICP' && input.subReason) {
     parts.push(`[${SUB_REASON_LABEL[input.subReason]}]`)
