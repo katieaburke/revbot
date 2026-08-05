@@ -72,6 +72,7 @@ export interface TerritoryAccount {
   accountStage: string | null
   prospectingStatus: string | null
   prospectingPauseReason: string | null
+  /** Rep_Flagged_Duplicate__c — the rep's own call, not dupcheck's Duplicate_Flag__c. */
   duplicateFlag: boolean
   parentId: string | null
   parentName: string | null
@@ -127,7 +128,7 @@ const ACCOUNT_FIELDS = [
   'Account_Stage__c',
   'Prospecting_Status__c',
   'Prospecting_Pause_Reason__c',
-  'Duplicate_Flag__c',
+  'Rep_Flagged_Duplicate__c',
   'ParentId',
   'Parent.Name',
   'Ultimate_Parent_Account__c',
@@ -154,7 +155,7 @@ interface RawAccount {
   Account_Stage__c: string | null
   Prospecting_Status__c: string | null
   Prospecting_Pause_Reason__c: string | null
-  Duplicate_Flag__c: boolean | null
+  Rep_Flagged_Duplicate__c: boolean | null
   ParentId: string | null
   Parent: { Name: string } | null
   Ultimate_Parent_Account__c: string | null
@@ -309,7 +310,7 @@ export async function fetchTerritoryAccounts(
     accountStage: r.Account_Stage__c,
     prospectingStatus: r.Prospecting_Status__c,
     prospectingPauseReason: r.Prospecting_Pause_Reason__c,
-    duplicateFlag: r.Duplicate_Flag__c === true,
+    duplicateFlag: r.Rep_Flagged_Duplicate__c === true,
     parentId: r.ParentId,
     parentName: r.Parent?.Name ?? null,
     ultimateParent: r.Ultimate_Parent_Account__c,
@@ -622,7 +623,9 @@ export function buildDispositionFields(
       break
 
     case 'DUPLICATE':
-      fields.Duplicate_Flag__c = true
+      // Rep-asserted, not the dupcheck package's Potential Duplicate Flag
+      // (Duplicate_Flag__c) — that one belongs to other automation.
+      fields.Rep_Flagged_Duplicate__c = true
       break
 
     case 'DECISION_ON_PARENT':
