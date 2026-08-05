@@ -509,11 +509,17 @@ export function RepPortal() {
 
   const firstName = data!.rep.name.split(' ')[0]
 
+  // The grid needs ~62rem minimum, so the default 2xl shell would scroll the
+  // disposition dropdown and Save button off-screen. Widen the whole shell (not
+  // just the table) so the header and tabs stay aligned with the content.
+  const shellWidth =
+    activeTab === 'territory' && territoryView === 'table' ? 'max-w-screen-2xl' : 'max-w-2xl'
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="max-w-2xl mx-auto flex items-center justify-between">
+        <div className={clsx(shellWidth, 'mx-auto flex items-center justify-between')}>
           <div>
             <h1 className="text-lg font-semibold text-gray-900">Hi {firstName} 👋</h1>
             <p className="text-sm text-gray-500 mt-0.5">Your open RevBot flags</p>
@@ -546,7 +552,7 @@ export function RepPortal() {
           them, since a Salesforce outage looks exactly like "you're not allowed". */}
       {data?.rep.roleLookupFailed && (
         <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5">
-          <div className="max-w-2xl mx-auto text-xs text-amber-800">
+          <div className={clsx(shellWidth, 'mx-auto text-xs text-amber-800')}>
             Couldn't check your Salesforce role, so some tabs may be hidden. This is a
             connection problem, not a permissions one — ask RevOps to reconnect Salesforce.
           </div>
@@ -555,7 +561,7 @@ export function RepPortal() {
 
       {/* Tab bar */}
       <div className="bg-white border-b border-gray-200 px-6">
-        <div className="max-w-2xl mx-auto flex gap-0">
+        <div className={clsx(shellWidth, 'mx-auto flex gap-0')}>
           <button
             onClick={() => setActiveTab('pipeline')}
             className={clsx(
@@ -596,7 +602,7 @@ export function RepPortal() {
         </div>
       </div>
 
-      <div className="max-w-2xl mx-auto px-6 py-6 space-y-3">
+      <div className={clsx(shellWidth, 'mx-auto px-6 py-6 space-y-3')}>
 
         {/* ── Pipeline tab ── */}
         {activeTab === 'pipeline' && (
@@ -1954,13 +1960,30 @@ function TerritoryAccountRow({
     impliedProductFit,
   } = useDispositionForm({ account, token, onDone })
 
+  const [showContext, setShowContext] = useState(false)
+
   const parent = account.parentName ?? account.ultimateParent
+  const description = account.description?.trim()
+  const rationale = account.productFitRationale?.trim()
 
   return (
     <>
       <tr className={clsx('border-t border-gray-100', disposition && 'bg-brand-50/40')}>
-        <td className={clsx(TD, 'max-w-[15rem]')}>
+        <td className={clsx(TD, 'max-w-[22rem]')}>
           <div className="flex items-center gap-1.5">
+            {/* Toggles the context row. A hover popover would be clipped by the
+                table's horizontal scroll container, so this expands in place. */}
+            <button
+              onClick={() => setShowContext((v) => !v)}
+              className={clsx(
+                'shrink-0 rounded p-0.5 hover:bg-gray-100',
+                showContext ? 'text-brand-500' : 'text-gray-300 hover:text-gray-500',
+              )}
+              title={showContext ? 'Hide description' : 'Show description and rationale'}
+              aria-expanded={showContext}
+            >
+              {showContext ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            </button>
             <span className="truncate font-medium text-gray-900" title={account.accountName}>
               {account.accountName}
             </span>
@@ -1974,13 +1997,14 @@ function TerritoryAccountRow({
               <ExternalLink size={11} />
             </a>
           </div>
-          {/* No column fits a description, but it's the fastest read on what a
-              company does — so it lives here, truncated, full text on hover. */}
-          {account.description?.trim() && (
-            <p className="truncate text-[11px] text-gray-400" title={account.description}>
-              {account.description}
-            </p>
-          )}
+          {/* Truncated here for a fast scan; the full text is one click away. The
+              native title gives a hover preview without the extra click. */}
+          <p
+            className="truncate pl-[1.15rem] text-[11px] text-gray-400"
+            title={description || undefined}
+          >
+            {description || <span className="italic text-gray-300">No description</span>}
+          </p>
         </td>
         <td className={clsx(TD, 'max-w-[9rem] truncate text-gray-600')} title={account.industry ?? ''}>
           {account.industry || <span className="text-gray-300">—</span>}
@@ -1995,6 +2019,13 @@ function TerritoryAccountRow({
         </td>
         <td className={clsx(TD, 'max-w-[11rem] truncate text-gray-600')} title={parent ?? ''}>
           {parent || <span className="text-amber-600">no parent</span>}
+        </td>
+        <td className={clsx(TD, 'whitespace-nowrap text-gray-600')}>
+          {account.productFit ? (
+            productFitLabel(account.productFit, picklists)
+          ) : (
+            <span className="text-gray-300">—</span>
+          )}
         </td>
         <td className={clsx(TD, 'whitespace-nowrap text-gray-500')}>
           {account.lastRepCommunicationDate ? (
@@ -2033,9 +2064,61 @@ function TerritoryAccountRow({
         </td>
       </tr>
 
+      {/* Read-only context: what's already on the record, for judging fit. */}
+      {showContext && (
+        <tr className={clsx(disposition ? 'bg-brand-50/40' : 'bg-gray-50')}>
+          <td colSpan={9} className="px-2.5 pb-2.5 pt-0">
+            <div className="grid gap-x-6 gap-y-2 rounded-lg border border-gray-200 bg-white p-3 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <p className="text-[10px] uppercase tracking-wide text-gray-400">Description</p>
+                <p className="whitespace-pre-line text-gray-700">
+                  {description || <span className="italic text-gray-300">No description on record</span>}
+                </p>
+              </div>
+              <div className="md:col-span-2">
+                <p className="text-[10px] uppercase tracking-wide text-gray-400">
+                  Product fit rationale
+                  {account.productFit && (
+                    <span className="ml-1.5 normal-case tracking-normal text-gray-500">
+                      (currently {productFitLabel(account.productFit, picklists)})
+                    </span>
+                  )}
+                </p>
+                {/* Long Text Area (32k) — scroll rather than let one verbose
+                    rationale push the rest of the queue off screen. */}
+                <p className="max-h-32 overflow-y-auto whitespace-pre-line text-gray-700">
+                  {rationale || <span className="italic text-gray-300">No rationale on record</span>}
+                </p>
+              </div>
+              <Detail label="Sub-industry" value={account.subIndustry} />
+              <Detail label="Operating model" value={account.operatingModel} />
+              <Detail label="Prospecting status" value={account.prospectingStatus} />
+              <Detail label="Pause reason" value={account.prospectingPauseReason} />
+              {account.website && (
+                <div className="md:col-span-2">
+                  <p className="text-[10px] uppercase tracking-wide text-gray-400">Website</p>
+                  <a
+                    href={
+                      account.website.startsWith('http')
+                        ? account.website
+                        : `https://${account.website}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    className="break-all text-brand-600 hover:underline"
+                  >
+                    {account.website}
+                  </a>
+                </div>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+
       {disposition && (
         <tr className="bg-brand-50/40">
-          <td colSpan={8} className="px-2.5 pb-3 pt-0">
+          <td colSpan={9} className="px-2.5 pb-3 pt-0">
             <div className="space-y-2.5 rounded-lg border border-gray-200 bg-white p-2.5">
               {/* Both "keep it" verdicts validate the operating model. */}
               {(disposition === 'GOOD_LEAVE_IN_TERRITORY' ||
@@ -2208,7 +2291,7 @@ function TerritoryTable({
 }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
-      <table className="w-full min-w-[62rem] text-xs">
+      <table className="w-full min-w-[68rem] text-xs">
         {/* Sticky so the columns stay identifiable once a rep scrolls a long queue. */}
         <thead className="sticky top-0 z-10 bg-gray-50 text-[10px] uppercase tracking-wide text-gray-400">
           <tr className="[&>th]:whitespace-nowrap [&>th]:px-2.5 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
@@ -2217,6 +2300,7 @@ function TerritoryTable({
             <th className="!text-right">Locs</th>
             <th>Country</th>
             <th>Parent</th>
+            <th>Product fit</th>
             <th>Last contact</th>
             <th>What should happen?</th>
             <th />
