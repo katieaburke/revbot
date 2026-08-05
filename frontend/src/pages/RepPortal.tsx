@@ -87,10 +87,15 @@ interface RepPicklists {
 }
 
 /**
- * Product Fit value written when a rep keeps an account. Mirrors
- * PRODUCT_FIT_STRONG on the server — the API value, not the Setup label.
+ * Product Fit written for each disposition. Mirrors PRODUCT_FIT_BY_DISPOSITION on
+ * the server — API values, not Setup labels ("No Fit" is stored as `No Need`).
+ * Dispositions absent here leave Product Fit alone.
  */
-const PRODUCT_FIT_STRONG = 'Strong Fit'
+const PRODUCT_FIT_BY_DISPOSITION: Record<string, string> = {
+  GOOD_LEAVE_IN_TERRITORY: 'Strong Fit',
+  USE_CASE_LOW_PRIORITY: 'Partial Fit',
+  NO_ICP: 'No Need',
+}
 
 /**
  * Show the Salesforce label for a stored Product Fit value. These diverge: the
@@ -1324,6 +1329,11 @@ function TerritoryAccountCard({
   const locationsDisplay =
     account.numberOfLocations ?? account.currentLocations ?? null
 
+  /** Undefined for dispositions that say nothing about product fit. */
+  const impliedProductFit = disposition
+    ? PRODUCT_FIT_BY_DISPOSITION[disposition]
+    : undefined
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       {/* Header */}
@@ -1510,18 +1520,6 @@ function TerritoryAccountCard({
                 </select>
               </div>
 
-              {/* Say the quiet part out loud — reps should know what we'll write. */}
-              {account.productFit !== PRODUCT_FIT_STRONG && (
-                <p className="text-[10px] text-gray-400">
-                  Keeping this account will set <strong>Product Fit</strong> to “
-                  {productFitLabel(PRODUCT_FIT_STRONG, picklists)}”
-                  {account.productFit
-                    ? ` (currently ${productFitLabel(account.productFit, picklists)})`
-                    : ''}
-                  .
-                </p>
-              )}
-
               <div className="text-[11px] text-gray-500">
                 Hierarchy:{' '}
                 {account.parentName || account.ultimateParent ? (
@@ -1598,6 +1596,19 @@ function TerritoryAccountCard({
                 </div>
               )}
             </div>
+          )}
+
+          {/* Say the quiet part out loud — reps should know what we'll write.
+              Suppressed when Salesforce already says it, since we skip that write. */}
+          {impliedProductFit && impliedProductFit !== account.productFit && (
+            <p className="text-[10px] text-gray-400">
+              This will set <strong>Product Fit</strong> to “
+              {productFitLabel(impliedProductFit, picklists)}”
+              {account.productFit
+                ? ` (currently ${productFitLabel(account.productFit, picklists)})`
+                : ''}
+              .
+            </p>
           )}
 
           {/* Feedback — always available, required for Other */}

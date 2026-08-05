@@ -385,14 +385,26 @@ export interface DispositionInput {
 }
 
 /**
- * The Product Fit value implied by a rep keeping an account in territory.
+ * Product Fit implied by each disposition.
  *
- * This is the API value, which is what the REST API writes — not the Setup label.
- * They mostly match on this picklist, but not always: the value shown as "No Fit"
- * is still stored as `No Need`. Was `Structural Need` until the picklist was
- * renamed; existing records were migrated to `Strong Fit` at the same time.
+ * These are API values, which is what the REST API writes — not Setup labels. The
+ * two mostly match on this picklist, but not always: the option displayed as
+ * "No Fit" is still stored as `No Need`. `Strong Fit` was `Structural Need` until
+ * the picklist was renamed, and existing records were migrated at that time.
+ *
+ * Dispositions absent from this map leave Product Fit alone — DUPLICATE and the
+ * DECISION_ON_* pair say something about the record or the hierarchy, not about
+ * whether the product fits.
  */
 export const PRODUCT_FIT_STRONG = 'Strong Fit'
+export const PRODUCT_FIT_PARTIAL = 'Partial Fit'
+export const PRODUCT_FIT_NONE = 'No Need'
+
+export const PRODUCT_FIT_BY_DISPOSITION: Partial<Record<Disposition, string>> = {
+  GOOD_LEAVE_IN_TERRITORY: PRODUCT_FIT_STRONG,
+  USE_CASE_LOW_PRIORITY: PRODUCT_FIT_PARTIAL,
+  NO_ICP: PRODUCT_FIT_NONE,
+}
 
 /**
  * Current SFDC values that affect what we write, read just before the update.
@@ -429,13 +441,6 @@ export function buildDispositionFields(
       // Stays in territory, but the rep validates the operating model on the way
       // through — it's blank on ~60% of prospects.
       if (input.operatingModel) fields.Operating_Model_s__c = input.operatingModel
-
-      // Keeping an account in territory means the rep is asserting a structural
-      // need. Skip the write when it already says that, so we don't touch the
-      // record (and bump LastModified) for no reason.
-      if (current.productFit !== PRODUCT_FIT_STRONG) {
-        fields.Product_Fit__c = PRODUCT_FIT_STRONG
-      }
       break
 
     case 'USE_CASE_LOW_PRIORITY':
@@ -469,6 +474,14 @@ export function buildDispositionFields(
       break
   }
 
+  // Product Fit follows the rep's verdict: good account -> Strong Fit, use case
+  // but weak ICP -> Partial Fit, no ICP -> No Fit. Skipped when it already says
+  // that, so a re-save doesn't touch the record or bump LastModified.
+  const targetProductFit = PRODUCT_FIT_BY_DISPOSITION[input.disposition]
+  if (targetProductFit && current.productFit !== targetProductFit) {
+    fields.Product_Fit__c = targetProductFit
+  }
+
   // Feedback field carries the rep's free text, prefixed with the NO_ICP
   // sub-reason when there is one (those four reasons have no picklist home).
   const parts: string[] = []
@@ -487,10 +500,9 @@ export interface ApplyResult {
   error?: string
 }
 
-/** Write the disposition to SFDC and record the validation locally. */
 /**
- * Read the handful of current values that change what we write. Only the
- * in-territory path needs it, so everything else skips the round trip.
+ * Read the handful of current values that change what we write. Only the three
+ * dispositions that imply a Product Fit need it, so the rest skip the round trip.
  *
  * A failed read is not fatal: we fall back to an empty context, which means
  * Product Fit gets written unconditionally. Writing the value we already intended
@@ -501,7 +513,7 @@ async function fetchDispositionContext(
   accountId: string,
   disposition: Disposition,
 ): Promise<DispositionContext> {
-  if (disposition !== 'GOOD_LEAVE_IN_TERRITORY') return {}
+  if (!PRODUCT_FIT_BY_DISPOSITION[disposition]) return {}
   try {
     const conn = await getServiceConnection()
     const result = await conn.query<{ Product_Fit__c: string | null }>(
