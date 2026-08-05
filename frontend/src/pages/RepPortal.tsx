@@ -165,18 +165,18 @@ const DISPOSITION_OPTIONS: {
   {
     value: 'GOOD_LEAVE_IN_TERRITORY',
     label: 'Great account — leave in my territory',
-    hint: 'Double-check the industry and hierarchy below while you\'re here.',
+    hint: 'Confirm the operating model and hierarchy while you\'re here.',
     tone: 'border-green-300 bg-green-50 text-green-800',
   },
   {
     value: 'USE_CASE_LOW_PRIORITY',
-    label: 'Has a use case, but not strong ICP',
-    hint: 'Low priority. Sets ICP/IPP Fit to "ICP" — pick a fit rating below.',
+    label: 'Has a use case, but not ICP/strong fit',
+    hint: 'Low priority account. Sets Product Fit to "Partial Fit".',
     tone: 'border-amber-300 bg-amber-50 text-amber-800',
   },
   {
     value: 'NO_ICP',
-    label: 'No ICP',
+    label: 'No fit',
     hint: 'Disqualifies the account and sets ICP/IPP Fit to "NO ICP". Pick a reason.',
     tone: 'border-red-300 bg-red-50 text-red-800',
   },
@@ -188,13 +188,13 @@ const DISPOSITION_OPTIONS: {
   },
   {
     value: 'DECISION_ON_PARENT',
-    label: 'ICP, but decision is made on the parent',
+    label: 'Strong/partial fit, but decision is made on the parent',
     hint: 'Puts prospecting on hold with reason "Decision on parent".',
     tone: 'border-blue-300 bg-blue-50 text-blue-800',
   },
   {
     value: 'DECISION_ON_CHILD',
-    label: 'ICP, but decision is made on the child',
+    label: 'Strong/partial fit, but decision is made on the child',
     hint: 'Puts prospecting on hold with reason "Decision on child".',
     tone: 'border-blue-300 bg-blue-50 text-blue-800',
   },
@@ -1297,11 +1297,12 @@ function TerritoryAccountCard({
   const [disposition, setDisposition] = useState<Disposition | null>(null)
   const [subReason, setSubReason] = useState<NoIcpSubReason | null>(null)
   const [feedback, setFeedback] = useState('')
-  const [industry, setIndustry] = useState('')
-  const [fitRating, setFitRating] = useState('')
   const [locations, setLocations] = useState('')
   // Seeded from Salesforce so an already-correct value just needs confirming.
   const [operatingModel, setOperatingModel] = useState(account.operatingModel ?? '')
+  const [productFitRationale, setProductFitRationale] = useState(
+    account.productFitRationale ?? '',
+  )
   const [nominateForBdrFocus, setNominateForBdrFocus] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -1316,11 +1317,15 @@ function TerritoryAccountCard({
           subReason,
           feedback: feedback.trim() || null,
           // Only send corrections the rep actually changed.
-          industry: industry && industry !== account.industry ? industry : null,
           numberOfLocations: locations.trim() ? Number(locations) : null,
-          icpIppFitRating: fitRating || null,
           operatingModel: operatingModel || null,
           nominateForBdrFocus,
+          // Unchanged means don't write it, so an untouched rationale doesn't
+          // rewrite itself and bump LastModified on every save.
+          productFitRationale:
+            productFitRationale.trim() !== (account.productFitRationale ?? '').trim()
+              ? productFitRationale.trim()
+              : null,
         })
         .then((r) => r.data),
     onSuccess: () => {
@@ -1339,7 +1344,12 @@ function TerritoryAccountCard({
   // Validation mirrors the server so reps get instant feedback.
   const needsSubReason = disposition === 'NO_ICP' && !subReason
   const needsNote = disposition === 'OTHER' && !feedback.trim()
-  const needsOperatingModel = disposition === 'GOOD_LEAVE_IN_TERRITORY' && !operatingModel
+  // Both "keep it" verdicts ask the rep to validate the operating model — it's the
+  // field we most need on accounts anyone intends to work.
+  const needsOperatingModel =
+    (disposition === 'GOOD_LEAVE_IN_TERRITORY' ||
+      disposition === 'USE_CASE_LOW_PRIORITY') &&
+    !operatingModel
   const canSubmit =
     !!disposition &&
     !needsSubReason &&
@@ -1493,29 +1503,12 @@ function TerritoryAccountCard({
             ))}
           </div>
 
-          {/* Good account → confirm industry + hierarchy */}
+          {/* Great account → confirm operating model + hierarchy */}
           {disposition === 'GOOD_LEAVE_IN_TERRITORY' && (
             <div className="space-y-2.5 border-l-2 border-green-300 pl-3">
               <p className="text-[11px] font-medium text-gray-600">
                 Quick check while you're here — correct anything that's wrong.
               </p>
-              <div>
-                <p className="text-[10px] text-gray-400 mb-1">
-                  Industry {account.industry ? `(currently ${account.industry})` : '(currently blank)'}
-                </p>
-                <select
-                  value={industry || account.industry || ''}
-                  onChange={(e) => setIndustry(e.target.value)}
-                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white"
-                >
-                  <option value="">— Select industry —</option>
-                  {picklists.industry.map((i) => (
-                    <option key={i} value={i}>
-                      {i}
-                    </option>
-                  ))}
-                </select>
-              </div>
               <div>
                 <p className="text-[10px] text-gray-400 mb-1">
                   Operating model{' '}
@@ -1588,32 +1581,52 @@ function TerritoryAccountCard({
             </div>
           )}
 
-          {/* Low priority → fit rating */}
+          {/* Low priority → operating model + why it's only a partial fit */}
           {disposition === 'USE_CASE_LOW_PRIORITY' && (
-            <div className="space-y-1.5 border-l-2 border-amber-300 pl-3">
-              <p className="text-[10px] text-gray-400">
-                ICP/IPP Fit Rating{' '}
-                {account.icpIppFitRating ? `(currently ${account.icpIppFitRating})` : '(currently blank)'}
-              </p>
-              <select
-                value={fitRating}
-                onChange={(e) => setFitRating(e.target.value)}
-                className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white"
-              >
-                <option value="">— Leave unchanged —</option>
-                {picklists.icpIppFitRating.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
+            <div className="space-y-2.5 border-l-2 border-amber-300 pl-3">
+              <div>
+                <p className="text-[10px] text-gray-400 mb-1">
+                  Operating model{' '}
+                  {account.operatingModel
+                    ? `(currently ${account.operatingModel} — confirm or change)`
+                    : '(currently blank — required)'}
+                </p>
+                <select
+                  value={operatingModel}
+                  onChange={(e) => setOperatingModel(e.target.value)}
+                  className={`w-full text-xs border rounded-lg px-2.5 py-1.5 bg-white ${
+                    needsOperatingModel ? 'border-amber-400' : 'border-gray-200'
+                  }`}
+                >
+                  <option value="">— Select operating model —</option>
+                  {(picklists.operatingModel ?? []).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <p className="text-[10px] text-gray-400 mb-1">
+                  Product fit rationale — why is this only a partial fit?
+                </p>
+                {/* Seeded with what's already on the record, so the rep edits the
+                    existing rationale instead of silently replacing it. */}
+                <textarea
+                  value={productFitRationale}
+                  onChange={(e) => setProductFitRationale(e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Has a use case for listings but only 12 locations, no local marketing team."
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
+                />
+              </div>
             </div>
           )}
 
-          {/* No ICP → reason */}
+          {/* No fit → reason */}
           {disposition === 'NO_ICP' && (
             <div className="space-y-1.5 border-l-2 border-red-300 pl-3">
-              <p className="text-[11px] font-medium text-gray-600">Why is it not ICP?</p>
+              <p className="text-[11px] font-medium text-gray-600">Why is it not a fit?</p>
               {NO_ICP_REASONS.map((r) => (
                 <label key={r.value} className="flex items-center gap-2 text-xs text-gray-700">
                   <input

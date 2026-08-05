@@ -378,10 +378,17 @@ export interface DispositionInput {
   subIndustry?: string | null
   parentId?: string | null
   numberOfLocations?: number | null
-  /** Rep's 1-5 / Insufficient pick for USE_CASE_LOW_PRIORITY. */
-  icpIppFitRating?: string | null
-  /** Rep's validated Operating_Model_s__c for GOOD_LEAVE_IN_TERRITORY. */
+  /**
+   * Rep's validated Operating_Model_s__c. Collected on both "keep it" verdicts.
+   * (ICP_IPP_Fit_Rating__c used to be collected here too; the disposition now
+   * implies the priority, so there's no rating to pick.)
+   */
   operatingModel?: string | null
+  /**
+   * Rep's edit to Product_Fit_Rationale__c. `undefined`/null leaves the field
+   * untouched; a string (including empty, which clears it) is written.
+   */
+  productFitRationale?: string | null
   /**
    * Rep nominated the account for next month's BDR focus list. Only offered on
    * GOOD_LEAVE_IN_TERRITORY — nominating an account you've just disqualified
@@ -497,8 +504,11 @@ export function buildDispositionFields(
       break
 
     case 'USE_CASE_LOW_PRIORITY':
-      // Rep sets the 1-5 fit rating; BATCH_TAM__c ("ICP/IPP Fit") is set to ICP.
-      if (input.icpIppFitRating) fields.ICP_IPP_Fit_Rating__c = input.icpIppFitRating
+      // The verdict itself carries the priority (Product Fit -> Partial Fit below),
+      // so there's no rating to pick. The rep validates the operating model and says
+      // why it's only a partial fit. BATCH_TAM__c ("ICP/IPP Fit") stays ICP: there
+      // is a use case, it's just not a strong one.
+      if (input.operatingModel) fields.Operating_Model_s__c = input.operatingModel
       fields.BATCH_TAM__c = 'ICP'
       break
 
@@ -533,6 +543,13 @@ export function buildDispositionFields(
   const targetProductFit = PRODUCT_FIT_BY_DISPOSITION[input.disposition]
   if (targetProductFit && current.productFit !== targetProductFit) {
     fields.Product_Fit__c = targetProductFit
+  }
+
+  // The "why" behind Product Fit, in its own field rather than the feedback one.
+  // Only sent when the rep actually edited it, so an untouched rationale is left
+  // alone instead of being rewritten with itself.
+  if (typeof input.productFitRationale === 'string') {
+    fields.Product_Fit_Rationale__c = input.productFitRationale.trim() || null
   }
 
   // Feedback field carries the rep's free text, prefixed with the NO_ICP

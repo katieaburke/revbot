@@ -619,8 +619,8 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
     subIndustry?: string | null
     parentId?: string | null
     numberOfLocations?: number | null
-    icpIppFitRating?: string | null
     operatingModel?: string | null
+    productFitRationale?: string | null
     nominateForBdrFocus?: boolean
   }
 
@@ -647,10 +647,10 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
     return res.status(400).json({ error: 'Please add a note explaining the reason' })
   }
 
-  // Keeping an account means validating its operating model. Checked against the
-  // live picklist rather than a hardcoded list so the two can't drift apart.
+  // Either "keep it" verdict means validating the operating model. Checked against
+  // the live picklist rather than a hardcoded list so the two can't drift apart.
   let operatingModel: string | null = null
-  if (disposition === 'GOOD_LEAVE_IN_TERRITORY') {
+  if (disposition === 'GOOD_LEAVE_IN_TERRITORY' || disposition === 'USE_CASE_LOW_PRIORITY') {
     const picked = body.operatingModel?.trim()
     if (!picked) {
       return res.status(400).json({ error: 'Please confirm the operating model' })
@@ -677,8 +677,14 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
         subIndustry: body.subIndustry ?? null,
         parentId: body.parentId ?? null,
         numberOfLocations: body.numberOfLocations ?? null,
-        icpIppFitRating: body.icpIppFitRating ?? null,
         operatingModel,
+        // Only the partial-fit path collects a rationale, and `undefined` means
+        // "leave it alone" — so don't forward a stray value from another verdict.
+        productFitRationale:
+          disposition === 'USE_CASE_LOW_PRIORITY' &&
+          typeof body.productFitRationale === 'string'
+            ? body.productFitRationale
+            : undefined,
         // Ignored for every other disposition, so pin it to the one that offers it
         // rather than trusting the client to only send it when relevant.
         nominateForBdrFocus:
