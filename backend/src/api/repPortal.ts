@@ -5,6 +5,7 @@ import { verifyRepToken, generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
 import { getServiceConnection } from '../services/salesforce'
 import { stageApiToLabel } from '../utils/stageMapping'
+import { buildValidationCsv } from '../services/territoryValidationExport'
 import { recheckForRep } from '../jobs/alertOrchestrator'
 import { isAccountExecutive, isExistingBusiness } from '../lib/repRoles'
 import {
@@ -718,6 +719,64 @@ router.post('/admin/generate-link', requireAdmin, async (req, res) => {
   const token = generateRepToken(user.slackUserId)
 
   res.json({ token, name: user.slackName ?? user.slackEmail, expiresIn: '30d' })
+})
+
+/**
+ * GET /api/rep/admin/territory-validations.csv — every disposition a rep has made,
+ * with the exact Salesforce payload and whether it landed.
+ *
+ * The point is recoverability: `applyDisposition` records the validation whether or
+ * not the SFDC write succeeds, so this is the sheet you fix from when it doesn't.
+ * `?failedOnly=true` narrows it to the rows that need attention.
+ *
+ * One row per account/rep, newest first. The payload columns are flattened out of
+ * `sfdcFields` so they're readable in a spreadsheet instead of raw JSON.
+ */
+router.get('/admin/territory-validations.csv', requireAdmin, async (req, res) => {
+  const failedOnly = req.query.failedOnly === 'true'
+
+  const rows = await db.territoryValidation.findMany({
+    where: failedOnly ? { sfdcWrittenAt: null } : {},
+    orderBy: { updatedAt: 'desc' },
+  })
+
+  const stamp = new Date().toISOString().slice(0, 10)
+  const name = failedOnly
+    ? `territory-validation-failures-${stamp}.csv`
+    : `territory-validations-${stamp}.csv`
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`)
+  res.send(buildValidationCsv(rows))
+})
+
+/**
+ * GET /api/rep/admin/territory-validations/failures — count + rows for the failures,
+ * as JSON. Cheap enough to poll for a "N writes need fixing" banner.
+ */
+router.get('/admin/territory-validations/failures', requireAdmin, async (_req, res) => {
+  const rows = await db.territoryValidation.findMany({
+    where: { sfdcWrittenAt: null },
+    orderBy: { updatedAt: 'desc' },
+    select: {
+      accountId: true,
+      accountName: true,
+      repEmail: true,
+      disposition: true,
+      subReason: true,
+      sfdcError: true,
+      createdAt: true,
+      sfdcFields: true,
+    },
+  })
+
+  res.json({
+    count: rows.length,
+    accounts: rows.map((r) => ({
+      ...r,
+      sfdcUrl: `${SFDC_BASE}/lightning/r/Account/${r.accountId}/view`,
+    })),
+  })
 })
 
 export default router

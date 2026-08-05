@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { Trash2, KeyRound, UserPlus, X, Link, Copy, Check } from 'lucide-react'
+import { Trash2, KeyRound, UserPlus, X, Link, Copy, Check, Download, AlertCircle } from 'lucide-react'
 
 interface AdminUser {
   id: string
@@ -480,7 +480,109 @@ export function Team() {
             </div>
           )}
         </div>
+
+        <TerritoryValidationLog />
       </div>
+    </div>
+  )
+}
+
+/**
+ * Download log of every territory disposition a rep has made.
+ *
+ * Reps' answers are recorded in Postgres whether or not the Salesforce write
+ * succeeds, so this is the recovery path when a write fails: the CSV carries the
+ * account ID and the exact field payload that was attempted, and nothing else
+ * surfaces those failures.
+ */
+function TerritoryValidationLog() {
+  const [downloading, setDownloading] = useState<'all' | 'failed' | null>(null)
+  const [error, setError] = useState('')
+
+  const failures = useQuery<{ count: number }>({
+    queryKey: ['territory-validation-failures'],
+    queryFn: () => api.get('/rep/admin/territory-validations/failures').then((r) => r.data),
+  })
+
+  async function download(failedOnly: boolean) {
+    setDownloading(failedOnly ? 'failed' : 'all')
+    setError('')
+    try {
+      // Fetched rather than linked because the export needs the admin JWT, which
+      // an <a href> can't carry.
+      const res = await api.get('/rep/admin/territory-validations.csv', {
+        params: failedOnly ? { failedOnly: 'true' } : {},
+        responseType: 'blob',
+      })
+      const stamp = new Date().toISOString().slice(0, 10)
+      const name = failedOnly
+        ? `territory-validation-failures-${stamp}.csv`
+        : `territory-validations-${stamp}.csv`
+      const url = URL.createObjectURL(res.data as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError(
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+          'Download failed',
+      )
+    } finally {
+      setDownloading(null)
+    }
+  }
+
+  const failedCount = failures.data?.count ?? 0
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <h3 className="font-medium text-gray-900 text-sm mb-1">Territory cleanup log</h3>
+      <p className="text-xs text-gray-500 mb-4">
+        Every disposition reps have submitted, with the exact Salesforce payload. Rep answers
+        are saved here even when the Salesforce write fails, so you can fix those by hand.
+      </p>
+
+      {failedCount > 0 ? (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+          <AlertCircle size={14} className="mt-0.5 shrink-0 text-amber-500" />
+          <p className="text-xs text-amber-800">
+            <strong>
+              {failedCount} {failedCount === 1 ? 'answer' : 'answers'} didn’t reach Salesforce.
+            </strong>{' '}
+            Download the failures to see the account IDs and what should have been written.
+          </p>
+        </div>
+      ) : (
+        !failures.isLoading &&
+        !failures.error && (
+          <p className="mb-4 text-xs text-green-600">
+            <Check size={12} className="mb-px inline" /> All rep answers have reached Salesforce.
+          </p>
+        )
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => download(false)}
+          disabled={downloading !== null}
+          className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+        >
+          <Download size={13} />
+          {downloading === 'all' ? 'Preparing…' : 'Download all (CSV)'}
+        </button>
+        <button
+          onClick={() => download(true)}
+          disabled={downloading !== null || failedCount === 0}
+          className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+        >
+          <Download size={13} />
+          {downloading === 'failed' ? 'Preparing…' : `Download failures (${failedCount})`}
+        </button>
+      </div>
+
+      {error && <p className="mt-3 text-xs text-red-600">{error}</p>}
     </div>
   )
 }
