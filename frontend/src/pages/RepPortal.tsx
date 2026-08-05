@@ -1608,7 +1608,7 @@ function TerritoryAccountCard({
                   rel="noreferrer"
                   className="text-brand-600 hover:underline"
                 >
-                  fix in Salesforce
+                  Check the hierarchy
                 </a>
               </div>
             </div>
