@@ -275,12 +275,32 @@ function wsStatusBadgeClass(status: string | null): string {
 
 type PortalTab = 'pipeline' | 'whitespace' | 'territory'
 
-// Empty strings mean "unset" — the server then applies its own default, which is
-// "not contacted since Jan 1 of this year, or never contacted".
-const EMPTY_TERRITORY_FILTERS: TerritoryFilters = {
-  lastCommBefore: '',
+/**
+ * `YYYY-MM-DD` for N days ago. UTC arithmetic to match `defaultLastCommBefore` on
+ * the server, so the prefilled date and the server's own fallback agree.
+ */
+function daysAgo(days: number): string {
+  const d = new Date()
+  d.setUTCDate(d.getUTCDate() - days)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * What the filter bar starts on, and what Reset goes back to: accounts with 100+
+ * locations untouched for a year. These are prefilled rather than left blank so
+ * the inputs show the filter that's actually in effect — a blank date box above
+ * copy saying "not contacted since ..." reads like a bug.
+ *
+ * Computed once at module load; a session doesn't outlive a date change in any way
+ * that matters here.
+ *
+ * Empty string still means "unset", so clearing a box genuinely removes that
+ * bound — the rep isn't stuck with the default.
+ */
+const DEFAULT_TERRITORY_FILTERS: TerritoryFilters = {
+  lastCommBefore: daysAgo(365),
   includeBlankLastComm: true,
-  minLocations: '',
+  minLocations: '100',
   maxLocations: '',
 }
 
@@ -381,8 +401,8 @@ export function RepPortal() {
   // Two copies of the filter state: `territoryDraft` is what's in the inputs,
   // `territoryFilters` is what's been applied. Each apply is a fresh Salesforce
   // query, so we don't want one per keystroke.
-  const [territoryDraft, setTerritoryDraft] = useState<TerritoryFilters>(EMPTY_TERRITORY_FILTERS)
-  const [territoryFilters, setTerritoryFilters] = useState<TerritoryFilters>(EMPTY_TERRITORY_FILTERS)
+  const [territoryDraft, setTerritoryDraft] = useState<TerritoryFilters>(DEFAULT_TERRITORY_FILTERS)
+  const [territoryFilters, setTerritoryFilters] = useState<TerritoryFilters>(DEFAULT_TERRITORY_FILTERS)
 
   const territoryQuery = useQuery<TerritoryResponse>({
     queryKey: ['rep-territory', token, territoryFilters],
@@ -744,8 +764,8 @@ export function RepPortal() {
                   </button>
                   <button
                     onClick={() => {
-                      setTerritoryDraft(EMPTY_TERRITORY_FILTERS)
-                      setTerritoryFilters(EMPTY_TERRITORY_FILTERS)
+                      setTerritoryDraft(DEFAULT_TERRITORY_FILTERS)
+                      setTerritoryFilters(DEFAULT_TERRITORY_FILTERS)
                     }}
                     className="px-3 py-1.5 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
                   >

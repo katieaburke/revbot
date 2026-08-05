@@ -180,9 +180,21 @@ export interface TerritoryFilters {
   maxLocations?: number | null
 }
 
-/** Jan 1 of the current year — reproduces the original `< THIS_YEAR` default. */
+/**
+ * A year ago today, as `YYYY-MM-DD`. This used to be Jan 1 of the current year,
+ * which reproduced the original `< THIS_YEAR` report but made the queue shrink as
+ * the year went on — by December it only caught accounts untouched for 11 months.
+ * A rolling 365 days keeps the definition of "stale" steady.
+ *
+ * UTC arithmetic, matching the frontend's copy of this default, so the two agree
+ * regardless of the rep's timezone.
+ */
+export const DEFAULT_LAST_COMM_DAYS = 365
+
 function defaultLastCommBefore(): string {
-  return `${new Date().getFullYear()}-01-01`
+  const d = new Date()
+  d.setUTCDate(d.getUTCDate() - DEFAULT_LAST_COMM_DAYS)
+  return d.toISOString().slice(0, 10)
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
