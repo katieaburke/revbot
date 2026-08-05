@@ -64,7 +64,11 @@ export interface TerritoryAccount {
   numberOfLocations: number | null
   currentLocations: number | null
   ultimateParentLocations: number | null
-  /** BATCH_TAM__c — label "ICP/IPP Fit" */
+  /**
+   * BATCH_TAM__c — label "ICP/IPP Fit". READ-ONLY for this app: it's shown to reps
+   * for context but never written, by decision. Other automation owns it, so don't
+   * add it to a disposition's field payload.
+   */
   icpIppFit: string | null
   /** ICP_IPP_Fit_Rating__c — the 1-5 / Insufficient scoring field */
   icpIppFitRating: string | null
@@ -603,15 +607,12 @@ export function buildDispositionFields(
     case 'USE_CASE_LOW_PRIORITY':
       // The verdict itself carries the priority (Product Fit -> Partial Fit below),
       // so there's no rating to pick. The rep validates the operating model and says
-      // why it's only a partial fit. BATCH_TAM__c ("ICP/IPP Fit") stays ICP: there
-      // is a use case, it's just not a strong one.
+      // why it's only a partial fit.
       if (input.operatingModel) fields.Operating_Model_s__c = input.operatingModel
-      fields.BATCH_TAM__c = 'ICP'
       break
 
     case 'NO_ICP':
       fields.Account_Stage__c = 'Disqualified'
-      fields.BATCH_TAM__c = 'NO ICP'
       fields.Prospecting_Pause_Reason__c = 'Not ICP'
       // Hand the account off. The reason decides where — see NO_ICP_ROUTING.
       if (current.routing) {
