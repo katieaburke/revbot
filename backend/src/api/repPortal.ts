@@ -500,12 +500,31 @@ type RepRoleLookup =
 async function fetchRepRole(email: string): Promise<RepRoleLookup> {
   try {
     const conn = await getServiceConnection()
-    const soql = `SELECT UserRole.Name FROM User WHERE Email = '${email.replace(/'/g, "\\'")}' LIMIT 1`
+    // IsActive is load-bearing, not defensive: reps who change teams get a fresh
+    // User and their old one is deactivated, not deleted, so an email can match
+    // several. An unfiltered `LIMIT 1` returned the *stale* record for at least one
+    // rep — a New Business AE was handed his old AM role and saw the Whitespace tab
+    // instead of Territory Cleanup. Ordering by last login breaks the remaining ties
+    // (7 emails are shared by 2+ active users) toward the account actually in use.
+    const soql =
+      `SELECT Id, Name, UserRole.Name FROM User ` +
+      `WHERE Email = '${email.replace(/'/g, "\\'")}' AND IsActive = true ` +
+      `ORDER BY LastLoginDate DESC NULLS LAST, CreatedDate DESC LIMIT 5`
     const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
-      url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
-    )
-    return { ok: true, role: resp.data.records[0]?.UserRole?.Name ?? null }
+    const resp = await axios.get<{
+      records: { Id: string; Name: string; UserRole: { Name: string } | null }[]
+    }>(url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 })
+
+    const records = resp.data.records ?? []
+    if (records.length > 1) {
+      // Worth a log line: the tie-break is a guess, and if it guesses wrong the
+      // symptom is a missing tab with no error anywhere.
+      console.warn(
+        `[RepPortal] ${records.length} active SFDC users share ${email}; using ${records[0].Id} ` +
+          `(${records[0].Name}, role ${records[0].UserRole?.Name ?? 'none'})`,
+      )
+    }
+    return { ok: true, role: records[0]?.UserRole?.Name ?? null }
   } catch (err) {
     const message = (err as Error).message
     console.error(`[RepPortal] role lookup failed for ${email}:`, message)
