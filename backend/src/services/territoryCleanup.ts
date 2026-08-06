@@ -348,9 +348,9 @@ export interface AccountPicklists {
   icpIppFitRating: string[]
   operatingModel: string[]
   /**
-   * Value + label, because these diverge on this field: the option shown as
-   * "No Fit" is stored as `No Need`. Records hold the value, so the UI needs the
-   * mapping to avoid displaying a term nobody uses in Salesforce any more.
+   * Value + label. These currently agree on every option, but the pair is kept
+   * because they have diverged before ("No Fit" was stored as `No Need` until the
+   * API name was corrected) and records hold the value, not the label.
    */
   productFit: PicklistOption[]
 }
@@ -444,10 +444,11 @@ export function nextMonthSecond(now: Date = new Date()): string {
 /**
  * Product Fit implied by each disposition.
  *
- * These are API values, which is what the REST API writes — not Setup labels. The
- * two mostly match on this picklist, but not always: the option displayed as
- * "No Fit" is still stored as `No Need`. `Strong Fit` was `Structural Need` until
- * the picklist was renamed, and existing records were migrated at that time.
+ * These are API values, which is what the REST API writes — not Setup labels. They
+ * all match their labels as of 2026-08-06: `No Fit` was stored as `No Need` and
+ * `Strong Fit` as `Structural Need` until each picklist was renamed, with existing
+ * records migrated at the same time. Verify the API value in Setup before changing
+ * these — a label/value mismatch here writes a value Salesforce silently rejects.
  *
  * Dispositions absent from this map leave Product Fit alone — DUPLICATE and the
  * DECISION_ON_* pair say something about the record or the hierarchy, not about
@@ -455,7 +456,7 @@ export function nextMonthSecond(now: Date = new Date()): string {
  */
 export const PRODUCT_FIT_STRONG = 'Strong Fit'
 export const PRODUCT_FIT_PARTIAL = 'Partial Fit'
-export const PRODUCT_FIT_NONE = 'No Need'
+export const PRODUCT_FIT_NONE = 'No Fit'
 
 export const PRODUCT_FIT_BY_DISPOSITION: Partial<Record<Disposition, string>> = {
   GOOD_LEAVE_IN_TERRITORY: PRODUCT_FIT_STRONG,

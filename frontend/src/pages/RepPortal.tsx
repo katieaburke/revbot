@@ -89,13 +89,15 @@ interface RepPicklists {
 
 /**
  * Product Fit written for each disposition. Mirrors PRODUCT_FIT_BY_DISPOSITION on
- * the server — API values, not Setup labels ("No Fit" is stored as `No Need`).
+ * the server — API values, not Setup labels. These agree as of 2026-08-06, but they
+ * have diverged before ("No Fit" was stored as `No Need`), so keep this in step with
+ * the server constants rather than assuming the label is the value.
  * Dispositions absent here leave Product Fit alone.
  */
 const PRODUCT_FIT_BY_DISPOSITION: Record<string, string> = {
   GOOD_LEAVE_IN_TERRITORY: 'Strong Fit',
   USE_CASE_LOW_PRIORITY: 'Partial Fit',
-  NO_ICP: 'No Need',
+  NO_ICP: 'No Fit',
 }
 
 /**
@@ -118,9 +120,10 @@ function nextMonthSecond(now: Date = new Date()): string {
 }
 
 /**
- * Show the Salesforce label for a stored Product Fit value. These diverge: the
- * option labelled "No Fit" is stored as `No Need`, so displaying the raw value
- * would show reps a term that no longer exists in Salesforce.
+ * Show the Salesforce label for a stored Product Fit value. Value and label agree
+ * on every option today, so this is a pass-through — kept because they have diverged
+ * before ("No Fit" was stored as `No Need`) and records hold the value, not the
+ * label. Falls back to the raw value if the picklist hasn't loaded.
  */
 function productFitLabel(value: string, picklists: RepPicklists): string {
   return picklists.productFit?.find((o) => o.value === value)?.label ?? value
