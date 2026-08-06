@@ -573,6 +573,17 @@ export function buildDispositionFields(
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
 
+  // Stamped on every disposition, whatever the verdict: this is the "a rep has
+  // been here in RevBot" marker, so SFDC reports and Clay can filter reviewed
+  // accounts out without knowing about our Postgres.
+  //
+  // Reporting only, deliberately: the rep's own queue is filtered from
+  // territory_validations (see repPortal GET /territory-cleanup), and this field
+  // is NOT read back. Keeping it write-only means it can't take the queue down —
+  // an unreadable field fails the whole SOQL and returns an empty queue, which is
+  // exactly how the Company_Description__c bug presented.
+  fields.RevBot_Territory_Cleanup_Date__c = now.toISOString()
+
   // Inline corrections apply to any disposition the rep made them on.
   if (input.industry) fields.Industry = input.industry
   if (input.subIndustry) fields.Sub_Industry__c = input.subIndustry
@@ -766,8 +777,11 @@ export async function applyDisposition(
       console.error(`[TerritoryCleanup] SFDC write failed for ${accountId}:`, sfdcError)
     }
   } else {
-    // Nothing to write (e.g. GOOD_LEAVE_IN_TERRITORY with no corrections and no
-    // feedback). Still record the validation so it leaves the rep's queue.
+    // Unreachable while buildDispositionFields always stamps
+    // RevBot_Territory_Cleanup_Date__c — every disposition now has at least one
+    // field, so there is always an SFDC call. Kept as the safety net for the case
+    // that stamp is ever removed: record the validation anyway so the account
+    // still leaves the rep's queue.
     sfdcWrittenAt = new Date()
   }
 
