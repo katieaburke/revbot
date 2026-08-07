@@ -1443,7 +1443,12 @@ function useDispositionForm({
   const [disposition, setDisposition] = useState<Disposition | null>(null)
   const [subReason, setSubReason] = useState<NoIcpSubReason | null>(null)
   const [feedback, setFeedback] = useState('')
-  const [locations, setLocations] = useState('')
+  // Seeded from Salesforce so the rep edits the real number rather than typing
+  // into a blank box with no idea what they're replacing. `locationsChanged`
+  // below is what decides whether we write, so seeding costs nothing.
+  const [locations, setLocations] = useState(
+    (account.numberOfLocations ?? account.currentLocations ?? '').toString(),
+  )
   // Seeded from Salesforce so an already-correct value just needs confirming.
   const [operatingModel, setOperatingModel] = useState(account.operatingModel ?? '')
   const [productFitRationale, setProductFitRationale] = useState(
@@ -1462,8 +1467,10 @@ function useDispositionForm({
           disposition,
           subReason,
           feedback: feedback.trim() || null,
-          // Only send corrections the rep actually changed.
-          numberOfLocations: locations.trim() ? Number(locations) : null,
+          // Only send corrections the rep actually changed — the box is prefilled
+          // with what Salesforce already has, so sending it unconditionally would
+          // rewrite the same number and bump LastModified on every save.
+          numberOfLocations: locationsChanged ? Number(locations) : null,
           operatingModel: operatingModel || null,
           nominateForBdrFocus,
           // Unchanged means don't write it, so an untouched rationale doesn't
@@ -1506,6 +1513,17 @@ function useDispositionForm({
   const locationsDisplay =
     account.numberOfLocations ?? account.currentLocations ?? null
 
+  /**
+   * True only when the rep typed a different, usable number. Blanking the box is
+   * deliberately not a correction — we have no way to express "unset this" that
+   * can't also fire by accident, and a stray backspace shouldn't wipe a count.
+   */
+  const locationsChanged =
+    locations.trim() !== '' &&
+    Number.isFinite(Number(locations)) &&
+    Number(locations) >= 0 &&
+    Number(locations) !== locationsDisplay
+
   /** Undefined for dispositions that say nothing about product fit. */
   const impliedProductFit = disposition
     ? PRODUCT_FIT_BY_DISPOSITION[disposition]
@@ -1541,6 +1559,7 @@ function useDispositionForm({
     needsOperatingModel,
     canSubmit,
     locationsDisplay,
+    locationsChanged,
     impliedProductFit,
   }
 }
@@ -2069,7 +2088,7 @@ function TerritoryAccountRow({
     needsNote,
     needsOperatingModel,
     canSubmit,
-    locationsDisplay,
+    locationsChanged,
     impliedProductFit,
   } = useDispositionForm({ account, token, onDone })
 
@@ -2126,8 +2145,28 @@ function TerritoryAccountRow({
         <td className={clsx(TD, 'max-w-[9rem] truncate text-gray-600')} title={account.industry ?? ''}>
           {account.industry || <span className="text-gray-300">—</span>}
         </td>
-        <td className={clsx(TD, 'text-right tabular-nums text-gray-600')}>
-          {locationsDisplay ?? <span className="text-gray-300">—</span>}
+        {/* Editable in place. Styled as plain text until hover or focus so the
+            column still scans as numbers rather than as a row of form controls —
+            an input per row is the thing that makes a grid feel heavy. */}
+        <td className={clsx(TD, 'text-right')}>
+          <input
+            type="number"
+            min={0}
+            value={locations}
+            onChange={(e) => setLocations(e.target.value)}
+            placeholder="—"
+            title="Correct the location count"
+            aria-label={`Number of locations for ${account.accountName}`}
+            className={clsx(
+              'w-20 rounded border border-transparent bg-transparent px-1 py-0.5 text-right text-xs tabular-nums',
+              'hover:border-gray-200 focus:border-brand-400 focus:bg-white focus:outline-none',
+              // Spinners in a dense grid are more misclick than affordance.
+              '[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]',
+              locationsChanged
+                ? 'border-brand-300 bg-brand-50 font-medium text-brand-700'
+                : 'text-gray-600 placeholder:text-gray-300',
+            )}
+          />
         </td>
         {/* nowrap: "United States" wrapping to two lines makes the row taller than
             its neighbours and the grid loses its scannability. */}
@@ -2326,21 +2365,15 @@ function TerritoryAccountRow({
                       ))}
                     </select>
                   </div>
+                  {/* No location input here any more: the Locations column in this
+                      row is editable and bound to the same value, so a second box
+                      showing the same number a few inches away is just confusing. */}
                   {subReason === 'TOO_SMALL' && (
-                    <div>
-                      <p className="mb-1 text-[10px] text-gray-400">
-                        Correct location count{' '}
-                        {locationsDisplay != null ? `(currently ${locationsDisplay})` : ''}
-                      </p>
-                      <input
-                        type="number"
-                        min={0}
-                        value={locations}
-                        onChange={(e) => setLocations(e.target.value)}
-                        placeholder="e.g. 4"
-                        className="w-28 rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                      />
-                    </div>
+                    <p className="pb-1.5 text-[10px] text-gray-400">
+                      {locationsChanged
+                        ? `Location count will be corrected to ${locations}.`
+                        : 'Correct the location count in the Locations column above.'}
+                    </p>
                   )}
                 </div>
               )}
