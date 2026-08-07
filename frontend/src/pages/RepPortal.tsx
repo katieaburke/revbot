@@ -39,6 +39,9 @@ interface RepData {
     showTerritoryCleanup?: boolean
     showWhitespace?: boolean
     roleLookupFailed?: boolean
+    sfdcConnected?: boolean
+    /** Null once connected. One-time OAuth link scoped to this rep. */
+    sfdcConnectUrl?: string | null
   }
   notifications: RepNotification[]
   pending: PendingFlag[]
@@ -556,9 +559,30 @@ export function RepPortal() {
           them, since a Salesforce outage looks exactly like "you're not allowed". */}
       {data?.rep.roleLookupFailed && (
         <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5">
-          <div className={clsx(shellWidth, 'mx-auto text-xs text-amber-800')}>
-            Couldn't check your Salesforce role, so some tabs may be hidden. This is a
-            connection problem, not a permissions one — ask RevOps to reconnect Salesforce.
+          <div
+            className={clsx(
+              shellWidth,
+              'mx-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-amber-800',
+            )}
+          >
+            <span>
+              Couldn't check your Salesforce role, so some tabs may be hidden. This is a
+              connection problem, not a permissions one.
+            </span>
+            {/* Connecting their own Salesforce is something the rep can actually do
+                from here — unlike "ask RevOps", which left them stuck waiting. */}
+            {data.rep.sfdcConnectUrl ? (
+              <a
+                href={data.rep.sfdcConnectUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-600 px-2.5 py-1 font-medium text-white hover:bg-amber-700"
+              >
+                <ExternalLink size={11} /> Connect Salesforce
+              </a>
+            ) : (
+              <span>Your Salesforce is connected — ask RevOps to reconnect theirs.</span>
+            )}
           </div>
         </div>
       )}

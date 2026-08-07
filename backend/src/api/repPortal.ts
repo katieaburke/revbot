@@ -1,5 +1,7 @@
 import { Router } from 'express'
 import axios from 'axios'
+import jwt from 'jsonwebtoken'
+import { config } from '../config'
 import { db } from '../db'
 import { verifyRepToken, generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
@@ -213,6 +215,19 @@ router.get('/me', async (req, res) => {
         // are missing because we couldn't check your role" rather than implying
         // the rep isn't allowed in.
         roleLookupFailed,
+        // Whether this rep has linked their own Salesforce, and a one-time link to
+        // do it. Same flow Slack has used for a while (auth.ts `/sfdc/start`): the
+        // state JWT names the rep, and the callback stores the tokens on their row
+        // only — it never sets isRevOps and never touches the shared service
+        // connection, so this can't be used to hijack what RevBot writes through.
+        sfdcConnected: user.sfdcAccessToken !== null,
+        sfdcConnectUrl: user.sfdcAccessToken
+          ? null
+          : `${config.APP_URL}/auth/sfdc/start?state=${jwt.sign(
+              { slackUserId },
+              config.JWT_SECRET,
+              { expiresIn: '1h' },
+            )}`,
       },
       notifications,
       pending,
