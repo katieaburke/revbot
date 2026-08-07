@@ -202,7 +202,12 @@ router.get('/me', async (req, res) => {
         // Tab visibility is decided server-side so the role-parsing rules live in
         // exactly one place. Territory Cleanup is New Business AEs only;
         // Whitespace is existing-customer roles only (AM / CSM / Partner AM).
-        showTerritoryCleanup: isAccountExecutive(repRole),
+        // TEMPORARY (2026-08-07, Katie): shown to every rep regardless of role
+        // while we work out why the role lookup is failing in production. Reps
+        // whose Salesforce role can't be read were losing the tab entirely, and a
+        // non-AE seeing an empty queue is a smaller problem than an AE who can't
+        // work theirs. Restore to `isAccountExecutive(repRole)` once fixed.
+        showTerritoryCleanup: true,
         showWhitespace: isExistingBusiness(repRole),
         // True when Salesforce couldn't be reached, so the portal can say "tabs
         // are missing because we couldn't check your role" rather than implying
