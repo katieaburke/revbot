@@ -510,12 +510,20 @@ async function fetchRepRole(email: string): Promise<RepRoleLookup> {
       `SELECT Id, Name, UserRole.Name FROM User ` +
       `WHERE Email = '${email.replace(/'/g, "\\'")}' AND IsActive = true ` +
       `ORDER BY LastLoginDate DESC NULLS LAST, CreatedDate DESC LIMIT 5`
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{
-      records: { Id: string; Name: string; UserRole: { Name: string } | null }[]
-    }>(url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 })
+    // Goes through jsforce rather than a raw axios GET with `conn.accessToken`.
+    // The connection is cached for the process lifetime, so a hand-rolled request
+    // pins whatever token was current when it was built and 401s forever once that
+    // expires — while every `conn.sobject(...)` call nearby keeps working, because
+    // jsforce refreshes and retries transparently. That mismatch presented as reps
+    // losing their tabs to "Couldn't check your Salesforce role" while the rest of
+    // the portal was fine.
+    const resp = await conn.query<{
+      Id: string
+      Name: string
+      UserRole: { Name: string } | null
+    }>(soql)
 
-    const records = resp.data.records ?? []
+    const records = resp.records ?? []
     if (records.length > 1) {
       // Worth a log line: the tie-break is a guess, and if it guesses wrong the
       // symptom is a missing tab with no error anywhere.
