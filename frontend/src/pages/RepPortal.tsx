@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
-import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save, Table2, LayoutList } from 'lucide-react'
+import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save, Table2, LayoutList, ArrowUpDown } from 'lucide-react'
 import clsx from 'clsx'
 
 // Plain axios instance — no admin auth interceptors, no 401→/login redirect
@@ -367,6 +367,61 @@ type TerritoryView = 'table' | 'cards'
 
 const TERRITORY_VIEW_KEY = 'beacon.territoryView'
 
+type TerritorySort = 'locations-desc' | 'locations-asc' | 'stalest' | 'name'
+
+const TERRITORY_SORT_OPTIONS: { value: TerritorySort; label: string }[] = [
+  { value: 'locations-desc', label: 'Most locations first' },
+  { value: 'locations-asc', label: 'Fewest locations first' },
+  { value: 'stalest', label: 'Longest since contact' },
+  { value: 'name', label: 'Name (A–Z)' },
+]
+
+/**
+ * Biggest accounts first by default: the queue is worked top-down and rarely to
+ * the end, so whatever sits at the top is what actually gets reviewed. Sorting by
+ * name put that decision in the hands of the alphabet.
+ */
+const DEFAULT_TERRITORY_SORT: TerritorySort = 'locations-desc'
+
+/** Same value the Locations column shows, so sorting matches what's on screen. */
+function locationCount(a: TerritoryAccount): number | null {
+  return a.numberOfLocations ?? a.currentLocations ?? null
+}
+
+/**
+ * Sorted copy for display. Accounts with no location count always sink to the
+ * bottom rather than being treated as zero — "unknown" isn't "small", and a rep
+ * scanning for big accounts shouldn't have to wade past a block of blanks.
+ */
+function sortTerritoryAccounts(
+  accounts: TerritoryAccount[],
+  sort: TerritorySort,
+): TerritoryAccount[] {
+  const byName = (a: TerritoryAccount, b: TerritoryAccount) =>
+    a.accountName.localeCompare(b.accountName)
+
+  return [...accounts].sort((a, b) => {
+    if (sort === 'name') return byName(a, b)
+
+    if (sort === 'stalest') {
+      // Never contacted is the stalest thing there is, so it leads.
+      const at = a.lastRepCommunicationDate
+      const bt = b.lastRepCommunicationDate
+      if (!at && !bt) return byName(a, b)
+      if (!at) return -1
+      if (!bt) return 1
+      return at.localeCompare(bt) || byName(a, b)
+    }
+
+    const al = locationCount(a)
+    const bl = locationCount(b)
+    if (al === null && bl === null) return byName(a, b)
+    if (al === null) return 1
+    if (bl === null) return -1
+    return (sort === 'locations-desc' ? bl - al : al - bl) || byName(a, b)
+  })
+}
+
 /**
  * Remembers the rep's choice of grid vs cards across visits, but forces cards on
  * narrow screens — the table needs ~62rem and reps open this from Slack on a
@@ -487,6 +542,23 @@ export function RepPortal() {
   const [wsRemovedIds, setWsRemovedIds] = useState<Set<string>>(new Set())
   const [territoryDoneIds, setTerritoryDoneIds] = useState<Set<string>>(new Set())
   const [territoryView, setTerritoryView, canUseTable] = useTerritoryView()
+  const [territorySort, setTerritorySort] = useState<TerritorySort>(DEFAULT_TERRITORY_SORT)
+
+  /**
+   * One list for both views: filtered of accounts saved this session, then
+   * sorted. Memoised because sorting on every keystroke in a location cell would
+   * re-render every row in the grid.
+   */
+  const visibleTerritoryAccounts = useMemo(
+    () =>
+      sortTerritoryAccounts(
+        (territoryQuery.data?.accounts ?? []).filter(
+          (a) => !territoryDoneIds.has(a.accountId),
+        ),
+        territorySort,
+      ),
+    [territoryQuery.data?.accounts, territoryDoneIds, territorySort],
+  )
 
   const wsRecords = (whitespaceQuery.data?.records ?? [])
     .map((group) => ({
@@ -807,7 +879,15 @@ export function RepPortal() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Locations</label>
+                  {/* Spelled out because a rep read the prefilled 100 as a floor
+                      RevBot was imposing. There's no floor — it's a starting
+                      point, and clearing the box removes the bound entirely. */}
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Locations{' '}
+                    <span className="font-normal text-gray-400">
+                      — starts at 100, change or clear it
+                    </span>
+                  </label>
                   <div className="flex items-center gap-1.5">
                     <input
                       type="number"
@@ -912,9 +992,28 @@ export function RepPortal() {
                       {territoryQuery.data.totalInTerritory} in territory
                     </span>
 
+                    {/* Applies to both views — cards have no column headers to
+                        click, and a rep shouldn't lose their ordering by
+                        switching layout. */}
+                    <label className="ml-auto flex items-center gap-1.5 text-gray-400">
+                      <ArrowUpDown size={12} />
+                      <span className="sr-only">Sort accounts</span>
+                      <select
+                        value={territorySort}
+                        onChange={(e) => setTerritorySort(e.target.value as TerritorySort)}
+                        className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-600 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                      >
+                        {TERRITORY_SORT_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
                     {/* Hidden on narrow screens, where the table isn't an option. */}
                     {canUseTable && (
-                      <div className="ml-auto flex items-center rounded-lg border border-gray-200 p-0.5">
+                      <div className="flex items-center rounded-lg border border-gray-200 p-0.5">
                         {([
                           { view: 'table' as const, icon: Table2, label: 'Grid' },
                           { view: 'cards' as const, icon: LayoutList, label: 'Cards' },
@@ -950,17 +1049,14 @@ export function RepPortal() {
                   </div>
                 ) : territoryView === 'table' ? (
                   <TerritoryTable
-                    accounts={territoryQuery.data.accounts.filter(
-                      (a) => !territoryDoneIds.has(a.accountId),
-                    )}
+                    accounts={visibleTerritoryAccounts}
                     picklists={territoryQuery.data.picklists}
                     token={token}
                     onDone={(id) => setTerritoryDoneIds((prev) => new Set([...prev, id]))}
                   />
                 ) : (
                   <div className="space-y-3">
-                    {territoryQuery.data.accounts
-                      .filter((a) => !territoryDoneIds.has(a.accountId))
+                    {visibleTerritoryAccounts
                       .map((account) => (
                         <TerritoryAccountCard
                           key={account.accountId}
@@ -1597,6 +1693,7 @@ function TerritoryAccountCard({
     needsOperatingModel,
     canSubmit,
     locationsDisplay,
+    locationsChanged,
     impliedProductFit,
   } = useDispositionForm({ account, token, onDone })
 
@@ -1669,7 +1766,28 @@ function TerritoryAccountCard({
             </div>
             <Detail label="Industry" value={account.industry} />
             <Detail label="Sub-industry" value={account.subIndustry} />
-            <Detail label="Locations" value={locationsDisplay?.toString() ?? null} />
+            {/* Editable, same as the grid's Locations column. The count is often
+                the whole reason an account is being judged, so a rep who can see
+                it's wrong should be able to fix it without leaving the card. */}
+            <div>
+              <p className="text-[10px] uppercase tracking-wide text-gray-400">Locations</p>
+              <input
+                type="number"
+                min={0}
+                value={locations}
+                onChange={(e) => setLocations(e.target.value)}
+                placeholder="—"
+                aria-label={`Number of locations for ${account.accountName}`}
+                className={clsx(
+                  'w-24 rounded border border-transparent bg-transparent px-1 py-0.5 text-xs tabular-nums',
+                  'hover:border-gray-200 focus:border-brand-400 focus:bg-white focus:outline-none',
+                  '[&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]',
+                  locationsChanged
+                    ? 'border-brand-300 bg-brand-50 font-medium text-brand-700'
+                    : 'text-gray-700 placeholder:text-gray-300',
+                )}
+              />
+            </div>
             <Detail
               label="Parent"
               value={account.parentName ?? account.ultimateParent ?? null}
@@ -1876,21 +1994,17 @@ function TerritoryAccountCard({
                   </span>
                 </label>
               ))}
+              {/* The Locations field above this is editable and bound to the same
+                  value, so a second box for it here would just be two inputs
+                  showing the same number. */}
               {subReason === 'TOO_SMALL' && (
-                <div className="pt-1.5">
-                  <p className="text-[10px] text-gray-400 mb-1">
-                    Correct location count{' '}
-                    {locationsDisplay != null ? `(currently ${locationsDisplay})` : ''}
-                  </p>
-                  <input
-                    type="number"
-                    min={0}
-                    value={locations}
-                    onChange={(e) => setLocations(e.target.value)}
-                    placeholder="e.g. 4"
-                    className="w-32 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5"
-                  />
-                </div>
+                <p className="pt-1.5 text-[10px] text-gray-400">
+                  {locationsChanged
+                    ? `Location count will be corrected to ${locations}.`
+                    : `Correct the location count in the details above${
+                        locationsDisplay != null ? ` (currently ${locationsDisplay})` : ''
+                      }.`}
+                </p>
               )}
             </div>
           )}
