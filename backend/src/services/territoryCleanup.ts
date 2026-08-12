@@ -331,6 +331,68 @@ export async function fetchTerritoryAccounts(
   }))
 }
 
+/**
+ * What the rep portal's filter bar starts on. Duplicated from the UI's
+ * DEFAULT_TERRITORY_FILTERS so a manager's "still to review" count means the same
+ * thing as the number the rep is looking at — a manager chasing a rep over 40
+ * accounts the rep can't see would be worse than useless.
+ *
+ * If the UI default moves, move this with it.
+ */
+export const DEFAULT_QUEUE_FILTERS: TerritoryFilters = {
+  includeBlankLastComm: true,
+  minLocations: 100,
+}
+
+/**
+ * Queue account Ids for several reps at once, keyed by lowercased owner email.
+ *
+ * Ids only, deliberately: the manager view needs counts, and pulling the full
+ * field set for a whole team would be several thousand records of description
+ * text to answer "how many are left". One query for the team rather than one per
+ * rep, since the row cap is 2000 per page and paging is handled either way.
+ *
+ * Goes through jsforce rather than the raw axios paging `fetchTerritoryAccounts`
+ * uses — that pins the access token from whenever the cached connection was
+ * built and 401s forever once it expires.
+ */
+export async function fetchTerritoryQueueIdsByOwner(
+  repEmails: string[],
+  filters: TerritoryFilters = DEFAULT_QUEUE_FILTERS,
+): Promise<Map<string, string[]>> {
+  const byOwner = new Map<string, string[]>()
+  for (const email of repEmails) byOwner.set(email.toLowerCase(), [])
+  if (repEmails.length === 0) return byOwner
+
+  const conn = await getServiceConnection()
+  const inList = repEmails.map((e) => `'${soqlEscape(e)}'`).join(', ')
+
+  const soql = `
+    SELECT Id, Owner.Email
+    FROM Account
+    WHERE Account_Stage__c = 'Prospect'
+      AND RecordType.Name = 'Enterprise Account Record'
+      AND (NOT Owner.Name LIKE '%grave%')
+      AND (NOT Owner.Name LIKE '%shark%')
+      AND Owner.Email IN (${inList})
+      ${buildFilterClauses(filters).map((c) => `AND ${c}`).join('\n      ')}
+  `.trim()
+
+  type Row = { Id: string; Owner: { Email: string | null } | null }
+  let result = await conn.query<Row>(soql)
+
+  for (;;) {
+    for (const r of result.records ?? []) {
+      const email = r.Owner?.Email?.toLowerCase()
+      if (email && byOwner.has(email)) byOwner.get(email)!.push(r.Id)
+    }
+    if (result.done || !result.nextRecordsUrl) break
+    result = await conn.queryMore<Row>(result.nextRecordsUrl)
+  }
+
+  return byOwner
+}
+
 // ─── Picklist options ────────────────────────────────────────────────────────
 // Served to the rep portal so the dropdowns can't drift from Salesforce.
 //

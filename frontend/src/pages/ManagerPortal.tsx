@@ -670,12 +670,195 @@ function WsRepCard({ rep }: { rep: WsRep }) {
   )
 }
 
+// ── Territory cleanup ─────────────────────────────────────────────────────────
+
+interface TcReviewedAccount {
+  accountId: string
+  accountName: string
+  disposition: string
+  subReason: string | null
+  reviewedAt: string
+  sfdcUrl: string
+  failed: boolean
+}
+
+interface TcRep {
+  name: string
+  email: string
+  roleName: string | null
+  slackUserId: string | null
+  portalUrl: string | null
+  remaining: number
+  reviewed: number
+  failed: number
+  lastReviewedAt: string | null
+  dispositionCounts: Record<string, number>
+  recent: TcReviewedAccount[]
+}
+
+interface TcData {
+  reps: TcRep[]
+  appliedFilters: {
+    lastCommBefore: string
+    includeBlankLastComm: boolean
+    minLocations: number | null
+    maxLocations: number | null
+  } | null
+}
+
+const DISPOSITION_META: Record<string, { label: string; color: string }> = {
+  GOOD_LEAVE_IN_TERRITORY: { label: 'Keep', color: 'bg-green-100 text-green-700' },
+  USE_CASE_LOW_PRIORITY: { label: 'Low priority', color: 'bg-yellow-100 text-yellow-700' },
+  NO_ICP: { label: 'Not ICP', color: 'bg-red-100 text-red-700' },
+  DUPLICATE: { label: 'Duplicate', color: 'bg-purple-100 text-purple-700' },
+  WRONG_OWNER: { label: 'Wrong owner', color: 'bg-blue-100 text-blue-700' },
+  OTHER: { label: 'Other', color: 'bg-gray-100 text-gray-700' },
+}
+
+function dispositionMeta(d: string) {
+  return DISPOSITION_META[d] ?? { label: d, color: 'bg-gray-100 text-gray-700' }
+}
+
+function TcRepCard({ rep, token }: { rep: TcRep; token: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [sent, setSent] = useState(false)
+
+  const nudge = useMutation({
+    mutationFn: () =>
+      managerApi
+        .post('/manager/send-territory-link', { token, repSlackUserId: rep.slackUserId })
+        .then((r) => r.data),
+    onSuccess: () => setSent(true),
+  })
+
+  const total = rep.remaining + rep.reviewed
+  const pct = total > 0 ? Math.round((rep.reviewed / total) * 100) : 0
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="flex items-start justify-between gap-3 p-4">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex-1 min-w-0 text-left"
+          disabled={rep.reviewed === 0}
+        >
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium text-gray-900 truncate">{rep.name}</p>
+            {rep.failed > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
+                <AlertCircle size={10} /> {rep.failed} didn't save
+              </span>
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
+            <span>
+              <strong className="text-gray-800">{rep.remaining}</strong> left to review
+            </span>
+            <span className="text-green-600">{rep.reviewed} done</span>
+            <span className="text-gray-400">
+              {rep.lastReviewedAt
+                ? `last worked ${new Date(rep.lastReviewedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+                : 'never started'}
+            </span>
+          </div>
+          {/* A bar makes "40 of 300" land in a way the numbers alone don't. */}
+          {total > 0 && (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+              <div className="h-full rounded-full bg-green-400" style={{ width: `${pct}%` }} />
+            </div>
+          )}
+        </button>
+
+        <div className="flex shrink-0 items-center gap-2">
+          {/* No Slack id means the rep has never had a RevBot DM, so there's no
+              conversation to send into — saying so beats a button that fails. */}
+          {rep.slackUserId ? (
+            <button
+              onClick={() => nudge.mutate()}
+              disabled={nudge.isPending || sent}
+              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {sent ? <Check size={12} /> : <Send size={12} />}
+              {sent ? 'Sent' : 'Send link'}
+            </button>
+          ) : (
+            <span className="text-[11px] text-gray-300">not on Slack</span>
+          )}
+          {rep.reviewed > 0 &&
+            (expanded ? (
+              <ChevronDown size={15} className="rotate-180 text-gray-400" />
+            ) : (
+              <ChevronDown size={15} className="text-gray-400" />
+            ))}
+        </div>
+      </div>
+
+      {rep.reviewed > 0 && (
+        <div className="flex flex-wrap gap-1.5 border-t border-gray-100 px-4 py-2.5">
+          {Object.entries(rep.dispositionCounts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([d, n]) => {
+              const meta = dispositionMeta(d)
+              return (
+                <span
+                  key={d}
+                  className={clsx('rounded-full px-2 py-0.5 text-[11px] font-medium', meta.color)}
+                >
+                  {meta.label} {n}
+                </span>
+              )
+            })}
+        </div>
+      )}
+
+      {expanded && (
+        <div className="border-t border-gray-100 bg-gray-50 px-4 py-3">
+          <p className="mb-2 text-[10px] uppercase tracking-wide text-gray-400">
+            Last {rep.recent.length} reviewed
+          </p>
+          <div className="space-y-1">
+            {rep.recent.map((a) => {
+              const meta = dispositionMeta(a.disposition)
+              return (
+                <div
+                  key={a.accountId}
+                  className="flex items-center gap-2 rounded-lg bg-white px-2.5 py-1.5 text-xs"
+                >
+                  <a
+                    href={a.sfdcUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="min-w-0 flex-1 truncate text-gray-700 hover:text-brand-600"
+                  >
+                    {a.accountName}
+                  </a>
+                  {a.failed && (
+                    <span title="This didn't reach Salesforce">
+                      <AlertCircle size={11} className="text-red-500" />
+                    </span>
+                  )}
+                  <span className={clsx('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', meta.color)}>
+                    {meta.label}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-gray-400">
+                    {new Date(a.reviewedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function ManagerPortal() {
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
   const qc = useQueryClient()
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'whitespace'>('pipeline')
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'whitespace' | 'territory'>('pipeline')
 
   const { data, isLoading, error } = useQuery<ManagerData>({
     queryKey: ['manager-portal', token],
@@ -688,6 +871,13 @@ export function ManagerPortal() {
     queryKey: ['manager-whitespace', token],
     queryFn: () => managerApi.get(`/manager/whitespace?token=${token}`).then((r) => r.data),
     enabled: !!token && activeTab === 'whitespace',
+    retry: false,
+  })
+
+  const { data: tcData, isFetching: tcFetching } = useQuery<TcData>({
+    queryKey: ['manager-territory', token],
+    queryFn: () => managerApi.get(`/manager/territory-cleanup?token=${token}`).then((r) => r.data),
+    enabled: !!token && activeTab === 'territory',
     retry: false,
   })
 
@@ -745,33 +935,33 @@ export function ManagerPortal() {
             </div>
           </div>
 
-          {/* Tab bar */}
-          {showWhitespaceTab && (
-            <div className="flex gap-1 mt-4">
-              <button
-                onClick={() => setActiveTab('pipeline')}
-                className={clsx(
-                  'px-4 py-1.5 rounded-full text-sm font-medium transition-colors',
-                  activeTab === 'pipeline'
-                    ? 'bg-gray-900 text-white'
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-                )}
-              >
-                Pipeline
-              </button>
-              <button
-                onClick={() => setActiveTab('whitespace')}
-                className={clsx(
-                  'px-4 py-1.5 rounded-full text-sm font-medium transition-colors',
-                  activeTab === 'whitespace'
-                    ? 'bg-gray-900 text-white'
-                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
-                )}
-              >
-                Whitespace
-              </button>
-            </div>
-          )}
+          {/* Tab bar. Territory Cleanup is shown to every manager rather than
+              gated on their Salesforce role: the role lookup is a live query that
+              can fail, and hiding a tab on failure is exactly how reps lost their
+              territory tab in the rep portal. A manager with no AE reports sees an
+              empty state, which is a much smaller problem than a missing tab. */}
+          <div className="flex gap-1 mt-4">
+            {([
+              { id: 'pipeline' as const, label: 'Pipeline', show: true },
+              { id: 'whitespace' as const, label: 'Whitespace', show: showWhitespaceTab },
+              { id: 'territory' as const, label: 'Territory Cleanup', show: true },
+            ])
+              .filter((t) => t.show)
+              .map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={clsx(
+                    'px-4 py-1.5 rounded-full text-sm font-medium transition-colors',
+                    activeTab === t.id
+                      ? 'bg-gray-900 text-white'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                  )}
+                >
+                  {t.label}
+                </button>
+              ))}
+          </div>
         </div>
       </div>
 
@@ -821,6 +1011,50 @@ export function ManagerPortal() {
                 </p>
                 {wsData.reps.map((rep) => (
                   <WsRepCard key={rep.ownerEmail} rep={rep} />
+                ))}
+              </>
+            )}
+          </>
+        )}
+
+        {activeTab === 'territory' && (
+          <>
+            {tcFetching && !tcData && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <p className="text-sm text-gray-400">Loading your team's territory…</p>
+              </div>
+            )}
+
+            {tcData && tcData.reps.length === 0 && (
+              <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+                <Users size={32} className="mx-auto text-gray-300 mb-3" />
+                <p className="text-sm font-medium text-gray-700">No direct reports found</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  This reads Salesforce's manager hierarchy — ask RevOps if your team isn't
+                  set up there.
+                </p>
+              </div>
+            )}
+
+            {tcData && tcData.reps.length > 0 && (
+              <>
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                  <p className="text-sm text-gray-700">
+                    How your team is doing on <strong>territory cleanup</strong> — Prospect
+                    accounts they own that nobody has contacted in a while.
+                  </p>
+                  <p className="mt-1.5 text-xs text-gray-400">
+                    Counts match what each rep sees in their own portal
+                    {tcData.appliedFilters?.minLocations != null
+                      ? ` (${tcData.appliedFilters.minLocations}+ locations)`
+                      : ''}
+                    . You can see and chase, but only the rep can disposition — that keeps
+                    the Salesforce record showing who actually made the call.
+                  </p>
+                </div>
+
+                {tcData.reps.map((rep) => (
+                  <TcRepCard key={rep.email} rep={rep} token={token} />
                 ))}
               </>
             )}

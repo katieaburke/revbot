@@ -5,6 +5,11 @@ import { verifyManagerToken, generateManagerToken } from '../lib/managerToken'
 import { generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
 import { getServiceConnection, fetchOpenOpportunities } from '../services/salesforce'
+import {
+  DEFAULT_QUEUE_FILTERS,
+  fetchTerritoryQueueIdsByOwner,
+  resolveTerritoryFilters,
+} from '../services/territoryCleanup'
 import { sendDm } from '../slack/bot'
 import { config } from '../config'
 import { stageApiToLabel } from '../utils/stageMapping'
@@ -464,6 +469,223 @@ router.get('/whitespace', async (req, res) => {
   } catch (err) {
     console.error('[ManagerPortal] /whitespace error:', err)
     res.status(500).json({ error: 'Failed to load whitespace data' })
+  }
+})
+
+// ─── Territory cleanup ───────────────────────────────────────────────────────
+
+interface DirectReport {
+  sfdcUserId: string
+  name: string
+  email: string
+  roleName: string | null
+}
+
+/**
+ * A manager's direct reports, straight from Salesforce's User hierarchy.
+ *
+ * Not the opportunity-owner derivation `/me` uses. That one infers the team from
+ * open opps, which is fine for pipeline flags but wrong here: territory cleanup
+ * is about Prospect accounts, so a rep with no open pipeline — often exactly the
+ * rep a manager most wants to look at — would disappear from their team.
+ */
+async function fetchDirectReports(managerEmail: string): Promise<DirectReport[]> {
+  const conn = await getServiceConnection()
+  const escaped = managerEmail.replace(/'/g, "\\'")
+
+  type Row = { Id: string; Name: string; Email: string; UserRole: { Name: string } | null }
+  const resp = await conn.query<Row>(
+    `SELECT Id, Name, Email, UserRole.Name
+     FROM User
+     WHERE IsActive = true
+       AND Manager.Email = '${escaped}'
+     ORDER BY Name ASC`,
+  )
+
+  return (resp.records ?? [])
+    .filter((r) => r.Email)
+    .map((r) => ({
+      sfdcUserId: r.Id,
+      // Some records carry a leading '#' as an internal marker; it isn't part of
+      // anyone's name and looks like a typo in a manager's team list.
+      name: r.Name.replace(/^#+\s*/, ''),
+      email: r.Email,
+      roleName: r.UserRole?.Name ?? null,
+    }))
+}
+
+// GET /api/manager/territory-cleanup?token=xxx
+// Read-only progress for each direct report. Managers can see and chase; they
+// can't disposition, so every Salesforce write stays attributed to the rep who
+// actually made the judgement.
+router.get('/territory-cleanup', async (req, res) => {
+  const { token } = req.query as { token?: string }
+  if (!token) return res.status(400).json({ error: 'Missing token' })
+
+  let slackUserId: string
+  try {
+    ;({ slackUserId } = verifyManagerToken(token))
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired link — ask RevOps for a fresh one' })
+  }
+
+  try {
+    const managerUser = await db.user.findUnique({ where: { slackUserId } })
+    if (!managerUser?.slackEmail) {
+      return res.status(404).json({ error: 'Manager not found' })
+    }
+
+    const directReports = await fetchDirectReports(managerUser.slackEmail)
+    if (directReports.length === 0) {
+      // Not an error: a manager with no reports in Salesforce should be told
+      // that plainly rather than shown an empty table they'll read as broken.
+      return res.json({ reps: [], appliedFilters: resolveTerritoryFilters(DEFAULT_QUEUE_FILTERS) })
+    }
+
+    const emails = directReports.map((r) => r.email)
+
+    const [queueIdsByOwner, validations] = await Promise.all([
+      fetchTerritoryQueueIdsByOwner(emails),
+      // By email, not repId: a rep who has dispositioned accounts always has a
+      // row here, whether or not they still have a matching users record.
+      db.territoryValidation.findMany({
+        where: { repEmail: { in: emails, mode: 'insensitive' } },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          accountId: true,
+          accountName: true,
+          repEmail: true,
+          disposition: true,
+          subReason: true,
+          sfdcWrittenAt: true,
+          sfdcError: true,
+          createdAt: true,
+        },
+      }),
+    ])
+
+    const byRep = new Map<string, typeof validations>()
+    for (const v of validations) {
+      const key = v.repEmail.toLowerCase()
+      if (!byRep.has(key)) byRep.set(key, [])
+      byRep.get(key)!.push(v)
+    }
+
+    const reps = await Promise.all(
+      directReports.map(async (rep) => {
+        const key = rep.email.toLowerCase()
+        const queueIds = queueIdsByOwner.get(key) ?? []
+        const done = byRep.get(key) ?? []
+        const doneIds = new Set(done.map((d) => d.accountId))
+
+        // Dispositioned accounts mostly leave the queue on their own — NO_ICP
+        // moves the stage off Prospect — but "leave in territory" stays a
+        // Prospect and would otherwise be counted as outstanding forever.
+        const remaining = queueIds.filter((id) => !doneIds.has(id)).length
+
+        const dispositionCounts: Record<string, number> = {}
+        for (const d of done) {
+          dispositionCounts[d.disposition] = (dispositionCounts[d.disposition] ?? 0) + 1
+        }
+
+        const repUser = await db.user.findFirst({
+          where: { slackEmail: { equals: rep.email, mode: 'insensitive' } },
+        })
+
+        return {
+          name: rep.name,
+          email: rep.email,
+          roleName: rep.roleName,
+          slackUserId: repUser?.slackUserId ?? null,
+          // Null when the rep has never talked to RevBot on Slack, which is what
+          // the UI keys the nudge button off.
+          portalUrl: repUser?.slackUserId
+            ? `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${generateRepToken(repUser.slackUserId)}`
+            : null,
+          remaining,
+          reviewed: done.length,
+          // Failures are the manager's early warning that a rep's work didn't
+          // land — the rep sees an error at the time, but nobody sees it after.
+          failed: done.filter((d) => d.sfdcError !== null).length,
+          lastReviewedAt: done[0]?.createdAt.toISOString() ?? null,
+          dispositionCounts,
+          // No feedback text: reps wrote those notes for RevOps, not their
+          // manager. Account plus verdict is enough to spot someone marking a
+          // whole territory "Not ICP" without reading over their shoulder.
+          recent: done.slice(0, 25).map((d) => ({
+            accountId: d.accountId,
+            accountName: d.accountName,
+            disposition: d.disposition,
+            subReason: d.subReason,
+            reviewedAt: d.createdAt.toISOString(),
+            sfdcUrl: `${SFDC_BASE}/lightning/r/Account/${d.accountId}/view`,
+            failed: d.sfdcError !== null,
+          })),
+        }
+      }),
+    )
+
+    // Most left to do first — that's the list a manager is looking for.
+    reps.sort((a, b) => b.remaining - a.remaining || a.name.localeCompare(b.name))
+
+    res.json({ reps, appliedFilters: resolveTerritoryFilters(DEFAULT_QUEUE_FILTERS) })
+  } catch (err) {
+    console.error('[ManagerPortal] /territory-cleanup error:', err)
+    res.status(500).json({ error: 'Failed to load territory cleanup data' })
+  }
+})
+
+// POST /api/manager/send-territory-link
+// Body: { token, repSlackUserId }
+router.post('/send-territory-link', async (req, res) => {
+  const { token, repSlackUserId } = req.body as { token?: string; repSlackUserId?: string }
+  if (!token || !repSlackUserId) return res.status(400).json({ error: 'Missing fields' })
+
+  let managerSlackUserId: string
+  try {
+    ;({ slackUserId: managerSlackUserId } = verifyManagerToken(token))
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired link' })
+  }
+
+  try {
+    const [manager, repUser] = await Promise.all([
+      db.user.findUnique({ where: { slackUserId: managerSlackUserId } }),
+      db.user.findUnique({ where: { slackUserId: repSlackUserId } }),
+    ])
+    if (!repUser) return res.status(404).json({ error: 'Rep not found' })
+
+    const portalUrl = `${config.FRONTEND_URL ?? config.APP_URL}/my-flags?token=${generateRepToken(repSlackUserId)}`
+    // Named rather than "your manager": a nudge you can't attribute is easy to
+    // ignore, and the rep should know who to reply to.
+    const from = manager?.slackName ?? 'Your manager'
+
+    const blocks: KnownBlock[] = [
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `${from} asked RevBot to send you this` }],
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*<${portalUrl}|Review your territory>*\nProspect accounts you own that nobody has touched in a while. Tell RevBot what each one should be and it'll update Salesforce for you.`,
+        },
+        accessory: {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Open territory cleanup', emoji: true },
+          url: portalUrl,
+          action_id: 'open_territory_cleanup',
+        },
+      },
+    ]
+
+    await sendDm(repSlackUserId, blocks, `${from} shared your RevBot territory cleanup queue`)
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[ManagerPortal] /send-territory-link error:', err)
+    res.status(500).json({ error: 'Could not send the Slack message' })
   }
 })
 
