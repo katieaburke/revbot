@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
-import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save, Table2, LayoutList, ArrowUpDown } from 'lucide-react'
+import { ExternalLink, Clock, CheckCircle, AlertCircle, ChevronDown, BellOff, Check, RefreshCw, ChevronUp, Save, Table2, LayoutList, ArrowUpDown, UserCog } from 'lucide-react'
 import clsx from 'clsx'
 
 // Plain axios instance — no admin auth interceptors, no 401→/login redirect
@@ -150,6 +150,14 @@ interface TerritoryResponse {
     minLocations: number | null
     maxLocations: number | null
   }
+  /**
+   * Whose queue this is, when it isn't yours. Set only on an admin-minted
+   * "work on behalf of" link; null on every ordinary session, so the banner
+   * below simply doesn't render and nobody has to think about it.
+   */
+  onBehalfOf?: string | null
+  /** True when that queue's owner is deactivated in Salesforce. */
+  queueOwnerInactive?: boolean
 }
 
 type Disposition =
@@ -973,11 +981,35 @@ export function RepPortal() {
 
             {territoryQuery.data && (
               <>
+                {/* Impossible to miss on purpose. Everything on this screen writes
+                    to Salesforce, and the one thing that changes here is whose
+                    accounts you're changing — that can't be something you have to
+                    infer from the account names. */}
+                {territoryQuery.data.onBehalfOf && (
+                  <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 mb-3 flex gap-3">
+                    <UserCog size={18} className="text-amber-600 shrink-0 mt-px" />
+                    <div className="text-sm">
+                      <p className="font-semibold text-amber-900">
+                        You're working {territoryQuery.data.onBehalfOf}'s territory
+                        {territoryQuery.data.queueOwnerInactive && ' (deactivated in Salesforce)'}
+                      </p>
+                      <p className="text-amber-800 mt-1 text-xs leading-relaxed">
+                        These accounts belong to them, not you — dispositions update their
+                        records and leave ownership alone. Everything you save is logged
+                        under your own name, on their behalf.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 <div className="bg-white rounded-xl border border-gray-200 p-4 mb-3">
                   <p className="text-sm text-gray-700">
-                    These are <strong>Prospect</strong> accounts you own,{' '}
-                    {describeTerritoryFilters(territoryQuery.data.appliedFilters)}. Tell us what each
-                    one should be, and we'll update Salesforce for you.
+                    These are <strong>Prospect</strong> accounts{' '}
+                    {territoryQuery.data.onBehalfOf
+                      ? `owned by ${territoryQuery.data.onBehalfOf}`
+                      : 'you own'}
+                    , {describeTerritoryFilters(territoryQuery.data.appliedFilters)}. Tell us what
+                    each one should be, and we'll update Salesforce for you.
                   </p>
                   <div className="flex items-center gap-4 mt-2.5 text-xs text-gray-500">
                     <span>

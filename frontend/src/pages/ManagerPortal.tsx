@@ -11,6 +11,7 @@ import {
   Check,
   AlertCircle,
   Users,
+  UserX,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -686,6 +687,12 @@ interface TcRep {
   name: string
   email: string
   roleName: string | null
+  /**
+   * Deactivated in Salesforce. Shown rather than filtered out because
+   * deactivating a user doesn't move their accounts — a departed rep's queue is
+   * the one a manager can be certain nobody is working.
+   */
+  inactive: boolean
   slackUserId: string | null
   portalUrl: string | null
   remaining: number
@@ -744,6 +751,13 @@ function TcRepCard({ rep, token }: { rep: TcRep; token: string }) {
         >
           <div className="flex items-center gap-2">
             <p className="text-sm font-medium text-gray-900 truncate">{rep.name}</p>
+            {/* The count next to this badge is the manager's actual decision:
+                reassign the book, or have someone work it on their behalf. */}
+            {rep.inactive && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600">
+                <UserX size={10} /> Deactivated
+              </span>
+            )}
             {rep.failed > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
                 <AlertCircle size={10} /> {rep.failed} didn't save
@@ -782,7 +796,11 @@ function TcRepCard({ rep, token }: { rep: TcRep; token: string }) {
               {sent ? 'Sent' : 'Send link'}
             </button>
           ) : (
-            <span className="text-[11px] text-gray-300">not on Slack</span>
+            // Distinguish the two reasons there's no button: "never DM'd RevBot"
+            // is fixable by the rep, "has left" needs RevOps.
+            <span className="text-[11px] text-gray-300">
+              {rep.inactive ? 'ask RevOps to reassign' : 'not on Slack'}
+            </span>
           )}
           {rep.reviewed > 0 &&
             (expanded ? (

@@ -295,9 +295,17 @@ model TerritoryValidation {
   accountId   String // SFDC Account Id (18-char)
   accountName String
 
+  // Who actually did the work. Always a real logged-in user, even when the book
+  // being worked belongs to somebody else.
   repId    String
   rep      User   @relation(fields: [repId], references: [id])
   repEmail String
+
+  // Whose queue this account came out of, when that isn't repEmail. Set only on
+  // admin-minted "work on behalf of" sessions — the way a departed rep's book
+  // gets cleaned up without anyone impersonating them in this table. Null on an
+  // ordinary session, so existing rows and queries are unaffected.
+  onBehalfOfEmail String?
 
   disposition String  // see DISPOSITIONS in services/territoryCleanup.ts
   subReason   String? // NO_ICP sub-reason: TOO_SMALL | JUNK | PARTNER | DEFUNCT
@@ -311,6 +319,7 @@ model TerritoryValidation {
   @@unique([accountId, repId])
   @@index([accountId])
   @@index([repEmail])
+  @@index([onBehalfOfEmail])
   @@index([disposition])
   @@map("territory_validations")
 }

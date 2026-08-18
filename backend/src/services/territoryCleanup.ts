@@ -804,7 +804,10 @@ async function fetchDispositionContext(
 export async function applyDisposition(
   accountId: string,
   accountName: string,
-  rep: { id: string; email: string },
+  // `onBehalfOf` is the queue owner's email on an admin-minted on-behalf-of
+  // session, and null otherwise. `rep` stays the person actually clicking either
+  // way — the audit trail should never claim a departed rep did this work.
+  rep: { id: string; email: string; onBehalfOf?: string | null },
   input: DispositionInput,
 ): Promise<ApplyResult> {
   const feedbackField = await getFeedbackField()
@@ -854,6 +857,7 @@ export async function applyDisposition(
       accountName,
       repId: rep.id,
       repEmail: rep.email,
+      onBehalfOfEmail: rep.onBehalfOf ?? null,
       disposition: input.disposition,
       subReason: input.subReason ?? null,
       feedback: input.feedback?.trim() || null,
@@ -862,6 +866,7 @@ export async function applyDisposition(
       sfdcError,
     },
     update: {
+      onBehalfOfEmail: rep.onBehalfOf ?? null,
       disposition: input.disposition,
       subReason: input.subReason ?? null,
       feedback: input.feedback?.trim() || null,

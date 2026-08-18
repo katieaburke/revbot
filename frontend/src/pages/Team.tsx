@@ -138,6 +138,63 @@ export function Team() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  // ── On-behalf-of link generator ─────────────────────────────────────────────
+  // For the case the ordinary generator can't cover: a rep has left, their
+  // Salesforce user is deactivated, and their accounts are still theirs. There's
+  // no `users` row to mint a token from and no one to send it to — so instead an
+  // active person gets a link that opens the departed rep's queue under their own
+  // name.
+  const [oboActor, setOboActor] = useState('')
+  const [oboQueueFor, setOboQueueFor] = useState('')
+  const [oboLink, setOboLink] = useState<{
+    url: string
+    name: string
+    queueFor: string
+    queueOwnerInactive: boolean
+  } | null>(null)
+  const [oboCopied, setOboCopied] = useState(false)
+  const [oboError, setOboError] = useState('')
+
+  const generateObo = useMutation({
+    mutationFn: (vars: { actorEmail: string; queueFor: string }) =>
+      api.post('/rep/admin/generate-on-behalf-link', vars).then((r) => {
+        const { token, name, queueFor, queueOwnerInactive } = r.data as {
+          token: string
+          name: string
+          queueFor: string
+          queueOwnerInactive: boolean
+        }
+        return {
+          url: `${window.location.origin}/my-flags?token=${token}`,
+          name,
+          queueFor,
+          queueOwnerInactive,
+        }
+      }),
+    onSuccess: (data) => {
+      setOboLink(data)
+      setOboError('')
+    },
+    onError: (err: any) => {
+      setOboError(err.response?.data?.error ?? 'Could not generate the link')
+      setOboLink(null)
+    },
+  })
+
+  function handleGenerateObo(e: React.FormEvent) {
+    e.preventDefault()
+    setOboLink(null)
+    setOboCopied(false)
+    generateObo.mutate({ actorEmail: oboActor, queueFor: oboQueueFor })
+  }
+
+  function copyOboLink() {
+    if (!oboLink) return
+    navigator.clipboard.writeText(oboLink.url)
+    setOboCopied(true)
+    setTimeout(() => setOboCopied(false), 2000)
+  }
+
   // ── Manager link generator ───────────────────────────────────────────────────
   const [managerEmail, setManagerEmail] = useState('')
   const [generatedManagerLink, setGeneratedManagerLink] = useState<{ url: string; name: string } | null>(null)
@@ -426,6 +483,78 @@ export function Team() {
                 </button>
               </div>
               <p className="text-xs text-gray-400 truncate">{generatedLink.url}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── On-behalf-of link generator ───────────────────────────────────────── */}
+      <div className="mt-10">
+        <h3 className="text-lg font-semibold text-gray-900 mb-1">Work someone else's territory</h3>
+        <p className="text-sm text-gray-500 mb-5">
+          For books whose owner has left. The link opens their territory queue, but
+          signs in as whoever you name below — dispositions are logged under that
+          person, on the owner's behalf, and account ownership isn't touched. Valid
+          for 7 days.
+        </p>
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <form onSubmit={handleGenerateObo} className="flex gap-3 items-end flex-wrap">
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Who's doing the work
+              </label>
+              <input
+                type="email"
+                required
+                value={oboActor}
+                onChange={(e) => { setOboActor(e.target.value); setOboLink(null); setOboError('') }}
+                className="input w-full"
+                placeholder="you@uberall.com"
+              />
+            </div>
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                Whose territory
+              </label>
+              <input
+                type="email"
+                required
+                value={oboQueueFor}
+                onChange={(e) => { setOboQueueFor(e.target.value); setOboLink(null); setOboError('') }}
+                className="input w-full"
+                placeholder="departed.rep@uberall.com"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={generateObo.isPending}
+              className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-lg hover:bg-brand-600 disabled:opacity-50 whitespace-nowrap"
+            >
+              <Link size={14} />
+              {generateObo.isPending ? 'Generating…' : 'Generate link'}
+            </button>
+          </form>
+
+          {oboError && <p className="mt-3 text-xs text-red-600">{oboError}</p>}
+
+          {oboLink && (
+            <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+              <div className="flex items-center justify-between gap-3 mb-1">
+                <span className="text-xs font-medium text-gray-700">
+                  {oboLink.name} → {oboLink.queueFor}
+                  {oboLink.queueOwnerInactive && (
+                    <span className="ml-1.5 font-normal text-gray-400">(deactivated)</span>
+                  )}
+                </span>
+                <button
+                  onClick={copyOboLink}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-white transition-colors"
+                >
+                  {oboCopied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
+                  {oboCopied ? 'Copied!' : 'Copy link'}
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 truncate">{oboLink.url}</p>
             </div>
           )}
         </div>

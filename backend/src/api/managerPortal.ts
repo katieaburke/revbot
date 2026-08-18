@@ -479,6 +479,8 @@ interface DirectReport {
   name: string
   email: string
   roleName: string | null
+  /** Deactivated in Salesforce — they've left, but their accounts haven't. */
+  inactive: boolean
 }
 
 /**
@@ -488,17 +490,27 @@ interface DirectReport {
  * open opps, which is fine for pipeline flags but wrong here: territory cleanup
  * is about Prospect accounts, so a rep with no open pipeline — often exactly the
  * rep a manager most wants to look at — would disappear from their team.
+ *
+ * Deactivated reports are included deliberately. Deactivating a user doesn't move
+ * their accounts, so a departed rep's book is the one queue with certainty that
+ * nobody is working it — filtering them out hid 257 untouched accounts from the
+ * manager who most needed to see them.
  */
 async function fetchDirectReports(managerEmail: string): Promise<DirectReport[]> {
   const conn = await getServiceConnection()
   const escaped = managerEmail.replace(/'/g, "\\'")
 
-  type Row = { Id: string; Name: string; Email: string; UserRole: { Name: string } | null }
+  type Row = {
+    Id: string
+    Name: string
+    Email: string
+    IsActive: boolean
+    UserRole: { Name: string } | null
+  }
   const resp = await conn.query<Row>(
-    `SELECT Id, Name, Email, UserRole.Name
+    `SELECT Id, Name, Email, IsActive, UserRole.Name
      FROM User
-     WHERE IsActive = true
-       AND Manager.Email = '${escaped}'
+     WHERE Manager.Email = '${escaped}'
      ORDER BY Name ASC`,
   )
 
@@ -511,6 +523,7 @@ async function fetchDirectReports(managerEmail: string): Promise<DirectReport[]>
       name: r.Name.replace(/^#+\s*/, ''),
       email: r.Email,
       roleName: r.UserRole?.Name ?? null,
+      inactive: r.IsActive === false,
     }))
 }
 
@@ -548,13 +561,22 @@ router.get('/territory-cleanup', async (req, res) => {
       fetchTerritoryQueueIdsByOwner(emails),
       // By email, not repId: a rep who has dispositioned accounts always has a
       // row here, whether or not they still have a matching users record.
+      // `onBehalfOfEmail` matters for the same reason — when somebody works a
+      // departed rep's book, the progress belongs on that book's card, not on
+      // the card of whoever happened to click.
       db.territoryValidation.findMany({
-        where: { repEmail: { in: emails, mode: 'insensitive' } },
+        where: {
+          OR: [
+            { repEmail: { in: emails, mode: 'insensitive' } },
+            { onBehalfOfEmail: { in: emails, mode: 'insensitive' } },
+          ],
+        },
         orderBy: { createdAt: 'desc' },
         select: {
           accountId: true,
           accountName: true,
           repEmail: true,
+          onBehalfOfEmail: true,
           disposition: true,
           subReason: true,
           sfdcWrittenAt: true,
@@ -566,7 +588,10 @@ router.get('/territory-cleanup', async (req, res) => {
 
     const byRep = new Map<string, typeof validations>()
     for (const v of validations) {
-      const key = v.repEmail.toLowerCase()
+      // The queue owner wins: an on-behalf-of row is work on their book, and
+      // counting it against the actor would leave the departed rep's card
+      // looking untouched while their accounts quietly got cleaned up.
+      const key = (v.onBehalfOfEmail ?? v.repEmail).toLowerCase()
       if (!byRep.has(key)) byRep.set(key, [])
       byRep.get(key)!.push(v)
     }
@@ -588,14 +613,21 @@ router.get('/territory-cleanup', async (req, res) => {
           dispositionCounts[d.disposition] = (dispositionCounts[d.disposition] ?? 0) + 1
         }
 
-        const repUser = await db.user.findFirst({
-          where: { slackEmail: { equals: rep.email, mode: 'insensitive' } },
-        })
+        // Deactivated reps get no link and no nudge button — there's nobody to
+        // send it to. Their remaining count is still the point: it tells the
+        // manager how much of a departed rep's book needs reassigning or
+        // working on their behalf.
+        const repUser = rep.inactive
+          ? null
+          : await db.user.findFirst({
+              where: { slackEmail: { equals: rep.email, mode: 'insensitive' } },
+            })
 
         return {
           name: rep.name,
           email: rep.email,
           roleName: rep.roleName,
+          inactive: rep.inactive,
           slackUserId: repUser?.slackUserId ?? null,
           // Null when the rep has never talked to RevBot on Slack, which is what
           // the UI keys the nudge button off.

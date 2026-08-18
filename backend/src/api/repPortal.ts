@@ -514,7 +514,7 @@ router.patch('/whitespace/:id', async (req, res) => {
  * problem and is miserable to debug.
  */
 type RepRoleLookup =
-  | { ok: true; role: string | null }
+  | { ok: true; role: string | null; inactive: boolean }
   | { ok: false; error: string }
 
 async function fetchRepRole(email: string): Promise<RepRoleLookup> {
@@ -552,7 +552,34 @@ async function fetchRepRole(email: string): Promise<RepRoleLookup> {
           `(${records[0].Name}, role ${records[0].UserRole?.Name ?? 'none'})`,
       )
     }
-    return { ok: true, role: records[0]?.UserRole?.Name ?? null }
+    if (records.length > 0) {
+      return { ok: true, role: records[0].UserRole?.Name ?? null, inactive: false }
+    }
+
+    // Nobody active on this email. Deactivated users keep owning their accounts,
+    // so a departed rep's territory is still real work that has to go somewhere —
+    // and their old role is still the right answer about what kind of book it is.
+    // Only reached when the active lookup found nothing, so this can't reintroduce
+    // the stale-record bug the IsActive filter exists to prevent.
+    const inactiveResp = await conn.query<{
+      Id: string
+      Name: string
+      UserRole: { Name: string } | null
+    }>(
+      `SELECT Id, Name, UserRole.Name FROM User ` +
+        `WHERE Email = '${email.replace(/'/g, "\\'")}' AND IsActive = false ` +
+        `ORDER BY LastLoginDate DESC NULLS LAST, CreatedDate DESC LIMIT 1`,
+    )
+    const inactive = inactiveResp.records?.[0]
+    if (inactive) {
+      console.warn(
+        `[RepPortal] ${email} has no active SFDC user; falling back to deactivated ` +
+          `${inactive.Id} (${inactive.Name}, role ${inactive.UserRole?.Name ?? 'none'})`,
+      )
+      return { ok: true, role: inactive.UserRole?.Name ?? null, inactive: true }
+    }
+
+    return { ok: true, role: null, inactive: false }
   } catch (err) {
     const message = (err as Error).message
     console.error(`[RepPortal] role lookup failed for ${email}:`, message)
@@ -566,7 +593,21 @@ function roleUnavailable(error: string) {
 }
 
 type AeRepResult =
-  | { ok: true; user: { id: string; slackEmail: string }; repRole: string | null }
+  | {
+      ok: true
+      /** Who is doing the work. Dispositions are recorded against this user. */
+      user: { id: string; slackEmail: string }
+      /**
+       * Whose accounts to load. Equals the actor's email normally, and someone
+       * else's on an admin-minted on-behalf-of link.
+       */
+      queueEmail: string
+      /** Null unless this is an on-behalf-of session. */
+      onBehalfOf: string | null
+      repRole: string | null
+      /** True when the queue owner is deactivated in Salesforce. */
+      queueOwnerInactive: boolean
+    }
   | { ok: false; status: number; body: Record<string, unknown> }
 
 /** Resolve + authorise a rep for the Territory Cleanup tab (AEs only). */
@@ -574,8 +615,9 @@ async function resolveAeRep(token: string | undefined): Promise<AeRepResult> {
   if (!token) return { ok: false, status: 400, body: { error: 'Missing token' } }
 
   let slackUserId: string
+  let queueFor: string | undefined
   try {
-    ({ slackUserId } = verifyRepToken(token))
+    ({ slackUserId, queueFor } = verifyRepToken(token))
   } catch {
     return { ok: false, status: 401, body: { error: 'Invalid or expired link — ask RevBot for a fresh one' } }
   }
@@ -584,18 +626,34 @@ async function resolveAeRep(token: string | undefined): Promise<AeRepResult> {
   if (!user) return { ok: false, status: 404, body: { error: 'User not found' } }
   if (!user.slackEmail) return { ok: false, status: 400, body: { error: 'No email on record' } }
 
-  const lookup = await fetchRepRole(user.slackEmail)
+  // The queue owner's role is what gates the tab — the point of an on-behalf-of
+  // link is to work an AE's book, so it's their role that decides whether there
+  // is a book to work, not the admin's.
+  const queueEmail = queueFor ?? user.slackEmail
+  const lookup = await fetchRepRole(queueEmail)
   if (!lookup.ok) return { ok: false, ...roleUnavailable(lookup.error) }
 
   if (!isAccountExecutive(lookup.role)) {
     return {
       ok: false,
       status: 403,
-      body: { error: 'Territory Cleanup is only available to New Business AEs', repRole: lookup.role },
+      body: {
+        error: queueFor
+          ? `${queueFor} isn't a New Business AE in Salesforce, so there's no territory queue to work`
+          : 'Territory Cleanup is only available to New Business AEs',
+        repRole: lookup.role,
+      },
     }
   }
 
-  return { ok: true, user: { id: user.id, slackEmail: user.slackEmail }, repRole: lookup.role }
+  return {
+    ok: true,
+    user: { id: user.id, slackEmail: user.slackEmail },
+    queueEmail,
+    onBehalfOf: queueFor ?? null,
+    repRole: lookup.role,
+    queueOwnerInactive: lookup.inactive,
+  }
 }
 
 // GET /api/rep/territory-cleanup?token=xxx
@@ -623,9 +681,19 @@ router.get('/territory-cleanup', async (req, res) => {
 
   try {
     const [accounts, validated, picklists] = await Promise.all([
-      fetchTerritoryAccounts(user.slackEmail, filters),
+      fetchTerritoryAccounts(resolved.queueEmail, filters),
+      // Anyone's prior work on this book counts as done: the departed rep before
+      // they left, and anyone else who has already worked it on their behalf.
+      // Re-serving those is asking the same question twice, and on a shared
+      // clean-up effort two people would otherwise be handed the same accounts.
       db.territoryValidation.findMany({
-        where: { repId: user.id },
+        where: {
+          OR: [
+            { repId: user.id },
+            { repEmail: { equals: resolved.queueEmail, mode: 'insensitive' } },
+            { onBehalfOfEmail: { equals: resolved.queueEmail, mode: 'insensitive' } },
+          ],
+        },
         select: { accountId: true },
       }),
       getAccountPicklists(),
@@ -646,6 +714,10 @@ router.get('/territory-cleanup', async (req, res) => {
       // Echo what was actually applied so the UI can show the effective date when
       // the rep hasn't picked one.
       appliedFilters: resolveTerritoryFilters(filters),
+      // Drives the on-behalf-of banner. Null on an ordinary session, so the UI
+      // shows nothing and nobody has to think about it.
+      onBehalfOf: resolved.onBehalfOf,
+      queueOwnerInactive: resolved.queueOwnerInactive,
     })
   } catch (err) {
     const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
@@ -716,7 +788,7 @@ router.post('/territory-cleanup/disposition', async (req, res) => {
     const result = await applyDisposition(
       body.accountId,
       body.accountName ?? body.accountId,
-      { id: user.id, email: user.slackEmail },
+      { id: user.id, email: user.slackEmail, onBehalfOf: resolved.onBehalfOf },
       {
         disposition,
         subReason,
@@ -766,6 +838,73 @@ router.post('/admin/generate-link', requireAdmin, async (req, res) => {
   const token = generateRepToken(user.slackUserId)
 
   res.json({ token, name: user.slackName ?? user.slackEmail, expiresIn: '30d' })
+})
+
+/**
+ * POST /api/rep/admin/generate-on-behalf-link — a portal link that opens somebody
+ * else's territory queue.
+ *
+ * The problem this solves: a rep leaves, their Salesforce user is deactivated, and
+ * their accounts stay theirs. The book is still real work, but nobody can reach it
+ * — the portal keys the queue off the token holder's own email, and the departed
+ * rep has no `users` row to mint a token from anyway.
+ *
+ * So the actor stays whoever is actually doing the work. Their user row is what
+ * authenticates, and their name is what lands in the audit trail; only the queue
+ * that gets loaded belongs to someone else. Nobody has to log in as a person who
+ * has left the company for the accounts to get cleaned up.
+ *
+ * Body: { actorEmail | actorSlackUserId, queueFor }
+ */
+router.post('/admin/generate-on-behalf-link', requireAdmin, async (req, res) => {
+  const { actorEmail, actorSlackUserId, queueFor } = req.body as {
+    actorEmail?: string
+    actorSlackUserId?: string
+    queueFor?: string
+  }
+  if (!actorEmail && !actorSlackUserId) {
+    return res.status(400).json({ error: 'Provide actorEmail or actorSlackUserId' })
+  }
+  if (!queueFor?.trim()) {
+    return res.status(400).json({ error: 'Provide queueFor — the email of the rep whose queue to open' })
+  }
+  const queueEmail = queueFor.trim().toLowerCase()
+
+  const actor = await db.user.findFirst({
+    where: actorEmail ? { slackEmail: actorEmail } : { slackUserId: actorSlackUserId! },
+  })
+  if (!actor) return res.status(404).json({ error: 'Actor not found' })
+  if (!actor.slackUserId) return res.status(400).json({ error: 'Actor has no Slack ID on record' })
+
+  // Pointless indirection, and a sign of a mistake worth surfacing.
+  if (actor.slackEmail?.toLowerCase() === queueEmail) {
+    return res.status(400).json({
+      error: 'Actor and queueFor are the same person — use the ordinary link instead',
+    })
+  }
+
+  // Fail here rather than at click time. `resolveAeRep` runs the same check when
+  // the link is opened, but a 403 in the browser gives an admin nothing to act on,
+  // whereas this says which rep and what role.
+  const lookup = await fetchRepRole(queueEmail)
+  if (!lookup.ok) return res.status(502).json({ error: `Couldn't check ${queueFor} in Salesforce: ${lookup.error}` })
+  if (!isAccountExecutive(lookup.role)) {
+    return res.status(400).json({
+      error: `${queueFor} isn't a New Business AE in Salesforce, so there's no territory queue to open`,
+      queueOwnerRole: lookup.role,
+    })
+  }
+
+  const token = generateRepToken(actor.slackUserId, { queueFor: queueEmail })
+
+  res.json({
+    token,
+    name: actor.slackName ?? actor.slackEmail,
+    queueFor: queueEmail,
+    queueOwnerRole: lookup.role,
+    queueOwnerInactive: lookup.inactive,
+    expiresIn: '7d',
+  })
 })
 
 /**
