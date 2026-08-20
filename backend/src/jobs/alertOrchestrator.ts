@@ -157,10 +157,42 @@ async function evaluate(opts: { bustGongCache?: boolean } = {}) {
     db.appSetting.findMany({ where: { key: { in: ['pastDueBufferDays', 'nextStepBufferDays', 'cooldownBusinessDays'] } } }),
   ])
 
-  const settingMap = Object.fromEntries(bufferSettings.map((s) => [s.key, JSON.parse(s.value)]))
-  const pastDueBufferDays = Number(settingMap.pastDueBufferDays ?? 0)
-  const nextStepBufferDays = Number(settingMap.nextStepBufferDays ?? 0)
-  const cooldownBusinessDays = Number(settingMap.cooldownBusinessDays ?? DEFAULT_COOLDOWN_BUSINESS_DAYS)
+  const settingMap: Record<string, unknown> = {}
+  for (const s of bufferSettings) {
+    try {
+      settingMap[s.key] = JSON.parse(s.value)
+    } catch {
+      // An unguarded parse here took down the whole evaluate() run, which is worse
+      // than it sounds: the dry-run job fails, `lastDryRunFullResults` is never
+      // overwritten, and Pipe Hygiene keeps rendering the last good snapshot. The
+      // page looks fine and every flag on it is stale.
+      console.warn(`[Evaluate] Malformed appSetting "${s.key}", using default:`, s.value?.slice(0, 100))
+    }
+  }
+
+  /**
+   * A day count from settings, validated rather than just coerced.
+   *
+   * `Number()` on a non-numeric value yields `NaN`, and `NaN` does not behave like
+   * "no buffer" — it makes every threshold comparison false, which switches a flag
+   * off across the board while erroring nowhere and logging nothing. A grace
+   * period that silently suppresses the thing it's meant to delay is the worst
+   * failure mode available here, so a bad value falls back and says so.
+   */
+  function daysSetting(key: string, fallback = 0): number {
+    const raw = settingMap[key]
+    if (raw == null) return fallback
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n < 0) {
+      console.warn(`[Evaluate] Ignoring non-numeric ${key} (${JSON.stringify(raw)}), using ${fallback}`)
+      return fallback
+    }
+    return n
+  }
+
+  const pastDueBufferDays = daysSetting('pastDueBufferDays')
+  const nextStepBufferDays = daysSetting('nextStepBufferDays')
+  const cooldownBusinessDays = daysSetting('cooldownBusinessDays', DEFAULT_COOLDOWN_BUSINESS_DAYS)
 
   return {
     opps,

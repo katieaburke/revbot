@@ -51,8 +51,18 @@ export function evaluateNextStep(opps: SfdcOpportunity[], bufferDays = 0): NextS
       stepDate.setHours(0, 0, 0, 0)
       if (stepDate < today) {
         const daysOverdue = Math.floor((today.getTime() - stepDate.getTime()) / (1000 * 60 * 60 * 24))
-        // Grace period — skip past_date if still within the buffer window
-        if (bufferDays === 0 || daysOverdue > bufferDays) issues.push('past_date')
+        // Grace period — skip past_date if still within the buffer window.
+        //
+        // `buffer` is coerced rather than trusted: a NaN buffer makes this
+        // comparison false for every opportunity, which would switch the past-due
+        // issue off across the board without erroring anywhere — and past_date is
+        // the only issue a buffer can suppress, so the other two would keep
+        // reporting and hide the fact that anything was wrong. The caller
+        // validates too; this is the line whose failure is invisible, so it also
+        // defends itself. `daysOverdue` is always >= 1 inside this branch, so a
+        // buffer of 0 correctly flags everything overdue.
+        const buffer = Number.isFinite(bufferDays) && bufferDays > 0 ? bufferDays : 0
+        if (daysOverdue > buffer) issues.push('past_date')
       }
     }
 
