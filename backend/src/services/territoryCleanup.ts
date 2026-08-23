@@ -1,4 +1,3 @@
-import axios from 'axios'
 import { getServiceConnection } from './salesforce'
 import { db } from '../db'
 
@@ -75,9 +74,6 @@ export interface TerritoryAccount {
    * add it to a disposition's field payload.
    */
   icpIppFit: string | null
-  /** ICP_IPP_Fit_Rating__c — the 1-5 / Insufficient scoring field */
-  icpIppFitRating: string | null
-  icp: string | null
   accountStage: string | null
   prospectingStatus: string | null
   prospectingPauseReason: string | null
@@ -132,8 +128,11 @@ const ACCOUNT_FIELDS = [
   'Current_Locations__c',
   'Ultimate_Parent_Number_of_Locations__c',
   'BATCH_TAM__c',
-  'ICP_IPP_Fit_Rating__c',
-  'ICP__c',
+  // ICP_IPP_Fit_Rating__c and ICP__c used to be here. Both have been deleted from
+  // Account in Salesforce, and a SELECT naming a field that no longer exists is
+  // rejected outright — the whole query 400s, so every rep lost their entire queue
+  // over two fields the UI never rendered. Only add a field here if something
+  // actually displays it.
   'Account_Stage__c',
   'Prospecting_Status__c',
   'Prospecting_Pause_Reason__c',
@@ -159,8 +158,6 @@ interface RawAccount {
   Current_Locations__c: number | null
   Ultimate_Parent_Number_of_Locations__c: number | null
   BATCH_TAM__c: string | null
-  ICP_IPP_Fit_Rating__c: string | null
-  ICP__c: string | null
   Account_Stage__c: string | null
   Prospecting_Status__c: string | null
   Prospecting_Pause_Reason__c: string | null
@@ -173,12 +170,6 @@ interface RawAccount {
   Operating_Model_s__c: string | null
   Product_Fit__c: string | null
   Product_Fit_Rationale__c: string | null
-}
-
-interface SfdcPage {
-  records: RawAccount[]
-  done: boolean
-  nextRecordsUrl?: string
 }
 
 export interface TerritoryFilters {
@@ -289,18 +280,31 @@ export async function fetchTerritoryAccounts(
     ORDER BY Name ASC
   `.trim()
 
+  // Through jsforce rather than a raw axios GET carrying `conn.accessToken`. The
+  // connection is cached for the process lifetime, so a hand-rolled request pins
+  // whatever token was current when it was built and 401s forever once that
+  // expires, while every jsforce call beside it keeps working. Same fix as the
+  // role lookup in repPortal.ts.
+  //
+  // It also gives a usable error. Salesforce rejects a SELECT naming a deleted
+  // field with a 400, and bare axios surfaces that as "Request failed with status
+  // code 400" — which the route then relays to the rep verbatim. Two long-deleted
+  // ICP fields took out every rep's queue behind that message.
   const records: RawAccount[] = []
-  let nextPath: string | null = `/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-
-  while (nextPath) {
-    const page: SfdcPage = await axios
-      .get<SfdcPage>(`${conn.instanceUrl}${nextPath}`, {
-        headers: { Authorization: `Bearer ${conn.accessToken!}` },
-        timeout: 20_000,
-      })
-      .then((r) => r.data)
-    records.push(...page.records)
-    nextPath = page.done ? null : (page.nextRecordsUrl ?? null)
+  try {
+    let result = await conn.query<RawAccount>(soql)
+    for (;;) {
+      records.push(...(result.records ?? []))
+      if (result.done || !result.nextRecordsUrl) break
+      result = await conn.queryMore<RawAccount>(result.nextRecordsUrl)
+    }
+  } catch (err) {
+    // jsforce puts the useful part in `errorCode` + `message` (e.g. INVALID_FIELD,
+    // "No such column 'X' on entity 'Account'"). Name the field so the next one of
+    // these is a one-line diagnosis instead of an investigation.
+    const e = err as { errorCode?: string; message?: string }
+    const detail = [e.errorCode, e.message].filter(Boolean).join(': ')
+    throw new Error(`Salesforce rejected the territory query — ${detail || String(err)}`)
   }
 
   return records.map((r) => ({
@@ -314,8 +318,6 @@ export async function fetchTerritoryAccounts(
     currentLocations: r.Current_Locations__c,
     ultimateParentLocations: r.Ultimate_Parent_Number_of_Locations__c,
     icpIppFit: r.BATCH_TAM__c,
-    icpIppFitRating: r.ICP_IPP_Fit_Rating__c,
-    icp: r.ICP__c,
     accountStage: r.Account_Stage__c,
     prospectingStatus: r.Prospecting_Status__c,
     prospectingPauseReason: r.Prospecting_Pause_Reason__c,
@@ -352,9 +354,6 @@ export const DEFAULT_QUEUE_FILTERS: TerritoryFilters = {
  * text to answer "how many are left". One query for the team rather than one per
  * rep, since the row cap is 2000 per page and paging is handled either way.
  *
- * Goes through jsforce rather than the raw axios paging `fetchTerritoryAccounts`
- * uses — that pins the access token from whenever the cached connection was
- * built and 401s forever once it expires.
  */
 export async function fetchTerritoryQueueIdsByOwner(
   repEmails: string[],
@@ -407,7 +406,6 @@ export interface PicklistOption {
 
 export interface AccountPicklists {
   industry: string[]
-  icpIppFitRating: string[]
   operatingModel: string[]
   /**
    * Value + label. These currently agree on every option, but the pair is kept
@@ -445,7 +443,6 @@ export async function getAccountPicklists(): Promise<AccountPicklists> {
 
   const data: AccountPicklists = {
     industry: valuesFor('Industry'),
-    icpIppFitRating: valuesFor('ICP_IPP_Fit_Rating__c'),
     operatingModel: valuesFor('Operating_Model_s__c'),
     productFit: optionsFor('Product_Fit__c'),
   }
@@ -464,8 +461,9 @@ export interface DispositionInput {
   numberOfLocations?: number | null
   /**
    * Rep's validated Operating_Model_s__c. Collected on both "keep it" verdicts.
-   * (ICP_IPP_Fit_Rating__c used to be collected here too; the disposition now
-   * implies the priority, so there's no rating to pick.)
+   * (A fit rating used to be collected here too; the disposition now implies the
+   * priority, so there's no rating to pick. The field itself has since been
+   * deleted from Account.)
    */
   operatingModel?: string | null
   /**

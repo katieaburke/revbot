@@ -60,8 +60,6 @@ interface TerritoryAccount {
   currentLocations: number | null
   ultimateParentLocations: number | null
   icpIppFit: string | null
-  icpIppFitRating: string | null
-  icp: string | null
   accountStage: string | null
   prospectingStatus: string | null
   prospectingPauseReason: string | null
@@ -84,7 +82,6 @@ interface PicklistOption {
 
 interface RepPicklists {
   industry: string[]
-  icpIppFitRating: string[]
   operatingModel: string[]
   /** Optional: the frontend can deploy ahead of a backend that doesn't send it. */
   productFit?: PicklistOption[]
