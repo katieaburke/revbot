@@ -17,22 +17,100 @@ interface SfdcQueryResponse<T> {
   nextRecordsUrl?: string
 }
 
+// Salesforce returns errors as a JSON array of { errorCode, message }.
+interface SfdcApiError {
+  errorCode?: string
+  message?: string
+}
+
+/**
+ * Turns an axios failure into something a human can act on.
+ *
+ * Bare axios reports every Salesforce rejection as "Request failed with status code
+ * 400", which is how two long-deleted fields in a SELECT once read as a generic
+ * network error and cost an afternoon of guessing. Salesforce always says exactly
+ * what was wrong in the response body; this just refuses to throw that away.
+ */
+function describeSfdcError(err: unknown): string {
+  if (!axios.isAxiosError(err)) return String(err)
+  if (err.code === 'ECONNABORTED') return `Salesforce request timed out — ${err.message}`
+  const body = err.response?.data
+  const parts = Array.isArray(body) ? (body as SfdcApiError[]) : body ? [body as SfdcApiError] : []
+  const detail = parts
+    .map((p) => [p.errorCode, p.message].filter(Boolean).join(': '))
+    .filter(Boolean)
+    .join('; ')
+  return detail || `${err.message} (HTTP ${err.response?.status ?? '?'})`
+}
+
+/**
+ * Rewrites a dead-credential failure into the one message that tells someone what to
+ * actually do about it. runSfdcSoql already retried a 401 with a rebuilt connection,
+ * so seeing one here means the grant itself is gone, not that a token went stale.
+ */
+function asSfdcAuthError(err: unknown): Error {
+  const message = err instanceof Error ? err.message : String(err)
+  if (/INVALID_SESSION_ID|invalid_grant|expired access.?token|HTTP 401/i.test(message)) {
+    _serviceConn = null
+    return new Error('Salesforce session expired — please reconnect Salesforce in settings')
+  }
+  return err instanceof Error ? err : new Error(message)
+}
+
+/**
+ * Runs a SOQL query, following pagination, with a hard per-request timeout.
+ *
+ * Takes the query rather than a token on purpose. The service connection is cached
+ * for the process lifetime, so a caller that reads `conn.accessToken` once hands us
+ * a token snapshot that keeps being replayed after it expires — every request then
+ * 401s forever while jsforce's own calls, which refresh transparently, carry on
+ * working. Reading the token per request and rebuilding the connection once on 401
+ * is what makes this survive a token rotation.
+ */
 async function runSfdcSoql<T>(
-  instanceUrl: string,
-  accessToken: string,
   soql: string,
-  timeoutMs = 15_000,
+  opts: { timeoutMs?: number; budgetMs?: number } = {},
 ): Promise<T[]> {
+  const timeoutMs = opts.timeoutMs ?? 15_000
+  // A per-request timeout bounds one hop, not a crawl. A query that pages 30 times
+  // is 30 fresh timeouts and can still outlast any caller's patience, so the whole
+  // walk gets its own ceiling.
+  const budgetMs = opts.budgetMs ?? 4 * 60_000
+  const deadline = Date.now() + budgetMs
+
   const records: T[] = []
   let nextPath: string | null = `/services/data/v${SFDC_API_VERSION}/query?q=${encodeURIComponent(soql)}`
+  let retriedAuth = false
+  let pages = 0
+
   while (nextPath) {
-    const resp = await axios.get<SfdcQueryResponse<T>>(
-      `${instanceUrl}${nextPath}`,
-      { headers: { Authorization: `Bearer ${accessToken}` }, timeout: timeoutMs },
-    )
-    const page: SfdcQueryResponse<T> = resp.data
-    records.push(...page.records)
-    nextPath = page.done ? null : (page.nextRecordsUrl ?? null)
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Salesforce query exceeded its ${Math.round(budgetMs / 1000)}s budget after ${pages} page(s) and ${records.length} record(s)`,
+      )
+    }
+
+    const conn = await getServiceConnection()
+    try {
+      const resp = await axios.get<SfdcQueryResponse<T>>(`${conn.instanceUrl}${nextPath}`, {
+        headers: { Authorization: `Bearer ${conn.accessToken}` },
+        timeout: timeoutMs,
+      })
+      const page: SfdcQueryResponse<T> = resp.data
+      records.push(...page.records)
+      nextPath = page.done ? null : (page.nextRecordsUrl ?? null)
+      pages++
+    } catch (err) {
+      // Once, and only for the first 401: drop the cached connection so the next
+      // getServiceConnection() rebuilds it with a fresh token, then replay this page.
+      // Retrying more than once would just spin on a genuinely revoked grant.
+      if (axios.isAxiosError(err) && err.response?.status === 401 && !retriedAuth) {
+        retriedAuth = true
+        _serviceConn = null
+        continue
+      }
+      throw new Error(describeSfdcError(err))
+    }
   }
   return records
 }
@@ -236,13 +314,9 @@ export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {})
     _oppsMemCache = null
   }
 
-  const conn = await getServiceConnection()
-
   let records: SfdcOpportunity[]
   try {
     records = await runSfdcSoql<SfdcOpportunity>(
-      conn.instanceUrl,
-      conn.accessToken!,
       `SELECT
         Id, Name, StageName, CloseDate, Type, Amount,
         OwnerId, Owner.Id, Owner.Name, Owner.Email, Owner.Manager.Email, Owner.Manager.Name,
@@ -260,10 +334,7 @@ export async function fetchOpenOpportunities(opts: { bustCache?: boolean } = {})
       ORDER BY CloseDate ASC`,
     )
   } catch (err) {
-    _serviceConn = null
-    const status = (err as any)?.response?.status
-    if (status === 401) throw new Error('Salesforce token expired — please reconnect Salesforce in settings')
-    throw err
+    throw asSfdcAuthError(err)
   }
 
   console.log(`[SFDC] Fetched ${records.length} open opportunities from API`)
@@ -367,14 +438,11 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
     _accountsMemCache.delete(cacheKey)
   }
 
-  const conn = await getServiceConnection()
   const rtFilter = recordTypeDeveloperName ? `AND RecordType.DeveloperName = '${recordTypeDeveloperName}'` : ''
 
   let records: SfdcAccount[]
   try {
     records = await runSfdcSoql<SfdcAccount>(
-      conn.instanceUrl,
-      conn.accessToken!,
       `SELECT Id, Name, Account_Stage__c, Prospecting_Status__c, Prospecting_Pause_Reason__c,
              Target_Prospecting_Date__c, Date_to_Re_engage__c,
              End_of_competitor_engagement__c, Competitor__c, Last_Rep_Communication_Date__c,
@@ -394,10 +462,7 @@ export async function fetchProspectAccounts(recordTypeDeveloperName = 'Enterpris
       ORDER BY Name ASC`,
     )
   } catch (err) {
-    _serviceConn = null
-    const status = (err as any)?.response?.status
-    if (status === 401) throw new Error('Salesforce token expired — please reconnect Salesforce in settings')
-    throw err
+    throw asSfdcAuthError(err)
   }
 
   console.log(`[SFDC] Fetched ${records.length} prospect accounts from API`)
@@ -420,55 +485,70 @@ export interface SfdcContactFlow {
   numberOfActiveFlows: number
 }
 
+interface RawContactFlowRow {
+  Id: string
+  Email?: string | null
+  AccountId: string
+  Gong__Current_Flow_Name__c?: string | null
+  Gong__Flow_Status__c?: string | null
+  Gong__Current_Flow_Task_Due_Date__c?: string | null
+  Gong__Engage_Flow_Owner__c?: string | null
+  Gong__Added_to_Flow_Date__c?: string | null
+  Gong__Number_of_Active_Engage_Flows__c?: number | null
+}
+
 export async function fetchContactFlows(accountIds: string[]): Promise<SfdcContactFlow[]> {
   if (accountIds.length === 0) return []
-  const conn = await getServiceConnection()
 
-  // SFDC SOQL IN clause: chunk if needed (safe up to ~10k IDs, but we batch to keep URL manageable)
-  const CHUNK = 500
+  // SOQL IN clause chunking. 500 IDs is ~14KB once the query string is URL-encoded,
+  // uncomfortably close to Salesforce's ~16KB GET limit — 250 halves the blast radius
+  // and costs nothing, since the chunks no longer run one after another.
+  const CHUNK = 250
+  const chunks: string[][] = []
+  for (let i = 0; i < accountIds.length; i += CHUNK) chunks.push(accountIds.slice(i, i + CHUNK))
+
+  // These chunks were awaited in sequence, so the wall-clock cost was the sum of every
+  // round trip — with a few thousand prospect accounts that alone ran past the minute
+  // the UI promised, which is most of what "the scan just sat there" was. They're
+  // independent queries, so run them in small parallel waves instead: fast enough to
+  // feel instant, narrow enough not to trip Salesforce's concurrent-request limits.
+  const CONCURRENCY = 4
   const results: SfdcContactFlow[] = []
 
-  for (let i = 0; i < accountIds.length; i += CHUNK) {
-    const chunk = accountIds.slice(i, i + CHUNK)
-    const idList = chunk.map((id) => `'${id}'`).join(',')
+  for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    const wave = chunks.slice(i, i + CONCURRENCY)
+    const settled = await Promise.all(
+      wave.map((chunk) => {
+        const idList = chunk.map((id) => `'${id}'`).join(',')
+        return runSfdcSoql<RawContactFlowRow>(
+          `SELECT Id, Email, AccountId,
+                  Gong__Current_Flow_Name__c, Gong__Flow_Status__c,
+                  Gong__Current_Flow_Task_Due_Date__c, Gong__Engage_Flow_Owner__c,
+                  Gong__Added_to_Flow_Date__c, Gong__Number_of_Active_Engage_Flows__c
+           FROM Contact
+           WHERE AccountId IN (${idList})
+           AND Gong__Actively_Being_in_a_Flow__c = true
+           AND Email != null`,
+        )
+      }),
+    ).catch((err) => {
+      throw asSfdcAuthError(err)
+    })
 
-    interface RawContact {
-      Id: string
-      Email?: string | null
-      AccountId: string
-      Gong__Current_Flow_Name__c?: string | null
-      Gong__Flow_Status__c?: string | null
-      Gong__Current_Flow_Task_Due_Date__c?: string | null
-      Gong__Engage_Flow_Owner__c?: string | null
-      Gong__Added_to_Flow_Date__c?: string | null
-      Gong__Number_of_Active_Engage_Flows__c?: number | null
-    }
-
-    const contacts = await runSfdcSoql<RawContact>(
-      conn.instanceUrl,
-      conn.accessToken!,
-      `SELECT Id, Email, AccountId,
-              Gong__Current_Flow_Name__c, Gong__Flow_Status__c,
-              Gong__Current_Flow_Task_Due_Date__c, Gong__Engage_Flow_Owner__c,
-              Gong__Added_to_Flow_Date__c, Gong__Number_of_Active_Engage_Flows__c
-       FROM Contact
-       WHERE AccountId IN (${idList})
-       AND Gong__Actively_Being_in_a_Flow__c = true
-       AND Email != null`,
-    )
-
-    for (const c of contacts) {
-      if (!c.Email || !c.Gong__Current_Flow_Name__c) continue
-      results.push({
-        email: c.Email.toLowerCase(),
-        accountId: c.AccountId,
-        flowName: c.Gong__Current_Flow_Name__c,
-        flowStatus: c.Gong__Flow_Status__c ?? 'In progress',
-        nextStepDueDate: c.Gong__Current_Flow_Task_Due_Date__c ?? null,
-        flowOwner: c.Gong__Engage_Flow_Owner__c ?? null,
-        addedToFlowDate: c.Gong__Added_to_Flow_Date__c ?? null,
-        numberOfActiveFlows: c.Gong__Number_of_Active_Engage_Flows__c ?? 1,
-      })
+    for (const contacts of settled) {
+      for (const c of contacts) {
+        if (!c.Email || !c.Gong__Current_Flow_Name__c) continue
+        results.push({
+          email: c.Email.toLowerCase(),
+          accountId: c.AccountId,
+          flowName: c.Gong__Current_Flow_Name__c,
+          flowStatus: c.Gong__Flow_Status__c ?? 'In progress',
+          nextStepDueDate: c.Gong__Current_Flow_Task_Due_Date__c ?? null,
+          flowOwner: c.Gong__Engage_Flow_Owner__c ?? null,
+          addedToFlowDate: c.Gong__Added_to_Flow_Date__c ?? null,
+          numberOfActiveFlows: c.Gong__Number_of_Active_Engage_Flows__c ?? 1,
+        })
+      }
     }
   }
 

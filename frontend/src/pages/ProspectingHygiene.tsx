@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import {
@@ -59,6 +59,13 @@ interface NudgeEntry {
   flagType: string
 }
 
+interface HygieneScanStatus {
+  state: 'running' | 'ok' | 'failed'
+  startedAt: string
+  finishedAt: string | null
+  error: string | null
+}
+
 interface HygieneResult {
   scannedAt: string
   totalAccounts: number
@@ -70,6 +77,22 @@ interface HygieneResult {
     staleThresholdDays: number
     recentActivityDays: number
   }
+  // Absent on responses from a backend that predates scan-status reporting, so
+  // every read of this is optional-chained rather than assumed.
+  scanStatus?: HygieneScanStatus | null
+}
+
+// Ticking elapsed-time readout for the scan spinner. Its own component so the
+// once-a-second re-render stays contained instead of redrawing the whole flag table.
+function ScanElapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const seconds = Math.max(0, Math.floor((now - since) / 1000))
+  const label = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return <p className="text-xs text-blue-500 mt-1 tabular-nums">Running for {label} · times out at 10m</p>
 }
 
 function businessDaysSince(isoDate: string): number {
@@ -221,28 +244,81 @@ export function ProspectingHygiene() {
     staleTime: 5 * 60 * 1000,
   })
 
-  // Poll every 4s while refreshing, stop when scannedAt changes
+  // A scan that fails server-side used to leave this spinning forever: the refresh is
+  // fire-and-forget, so the only signal the page had was `scannedAt` changing, and a
+  // dead scan never changes it. Three independent ways out now — the backend reporting
+  // a failure, a wall-clock deadline, and a giving-up count on network errors — because
+  // an unbounded spinner is indistinguishable from a hang and reads as "the app is broken".
+  const SCAN_DEADLINE_MS = 10 * 60 * 1000
+  const [scanError, setScanError] = useState<string | null>(null)
+  const [scanStartedAt, setScanStartedAt] = useState<number | null>(null)
+  const pollFailuresRef = useRef(0)
+
+  const stopScan = useCallback((message: string | null) => {
+    setIsRefreshing(false)
+    setRefreshSince(null)
+    setScanStartedAt(null)
+    pollFailuresRef.current = 0
+    setScanError(message)
+  }, [])
+
   useQuery<HygieneResult>({
     queryKey: ['prospecting-hygiene-poll', refreshSince],
     queryFn: async () => {
-      const result = await api.get('/accounts/prospecting-hygiene').then((r) => r.data as HygieneResult)
-      if (result && result.scannedAt !== refreshSince) {
+      if (scanStartedAt && Date.now() - scanStartedAt > SCAN_DEADLINE_MS) {
+        stopScan('Scan timed out after 10 minutes — check the backend logs.')
+        return {} as HygieneResult
+      }
+
+      let result: HygieneResult
+      try {
+        result = await api.get('/accounts/prospecting-hygiene').then((r) => r.data as HygieneResult)
+      } catch (err) {
+        // One dropped poll is noise; several in a row means we've lost the backend and
+        // should say so rather than keep quietly retrying behind a spinner.
+        pollFailuresRef.current += 1
+        if (pollFailuresRef.current >= 3) {
+          stopScan(
+            (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error ??
+              (err as { message?: string })?.message ??
+              'Lost contact with the backend while scanning.'
+          )
+        }
+        throw err
+      }
+      pollFailuresRef.current = 0
+
+      // The backend tells us it died — surface its message instead of waiting out
+      // a deadline for a scan we already know is never finishing.
+      if (result.scanStatus?.state === 'failed') {
+        stopScan(result.scanStatus.error ?? 'Scan failed — check the backend logs.')
+        return result
+      }
+
+      if (result.scannedAt !== refreshSince) {
         qc.setQueryData(['prospecting-hygiene'], result)
-        setIsRefreshing(false)
-        setRefreshSince(null)
+        stopScan(null)
       }
       return result
     },
     enabled: isRefreshing,
     refetchInterval: isRefreshing ? 4000 : false,
     refetchIntervalInBackground: true,
+    retry: false,
   })
 
   async function triggerRefresh() {
+    setScanError(null)
+    pollFailuresRef.current = 0
     setRefreshSince(data?.scannedAt ?? null)
+    setScanStartedAt(Date.now())
     setIsRefreshing(true)
-    await api.post('/accounts/prospecting-hygiene/refresh').catch(() => {
-      setIsRefreshing(false)
+    await api.post('/accounts/prospecting-hygiene/refresh').catch((err) => {
+      stopScan(
+        (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error ??
+          (err as { message?: string })?.message ??
+          'Could not start the scan.'
+      )
     })
   }
 
@@ -426,12 +502,16 @@ export function ProspectingHygiene() {
       )}
 
       {/* Loading state */}
-      {isFetching && (
+      {(isFetching || isRefreshing) && (
         <div className="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-6 flex flex-col items-center gap-3 text-center">
           <RefreshCw size={28} className="animate-spin text-blue-500" />
           <div>
             <p className="font-medium text-blue-800">Scanning accounts...</p>
-            <p className="text-sm text-blue-600 mt-0.5">Pulling live Salesforce + Gong data — this takes 10–20 seconds</p>
+            <p className="text-sm text-blue-600 mt-0.5">Pulling live Salesforce + Gong data — usually under a minute</p>
+            {/* A scan crawls a few thousand accounts, so "it's been a while" is normal
+                for a bit and alarming after that. Showing the clock lets someone judge
+                for themselves rather than guess whether it's stuck. */}
+            {scanStartedAt && <ScanElapsed since={scanStartedAt} />}
           </div>
           <div className="w-full bg-blue-100 rounded-full h-1.5 overflow-hidden mt-1">
             <div className="h-1.5 bg-blue-400 rounded-full animate-pulse w-2/3" />
@@ -440,9 +520,17 @@ export function ProspectingHygiene() {
       )}
 
       {/* Error */}
-      {isError && (
-        <div className="mb-6 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-          <strong>Scan failed:</strong> {String((error as { message?: string })?.message ?? error)}
+      {(isError || scanError) && (
+        <div className="mb-6 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 flex items-start justify-between gap-4">
+          <span>
+            <strong>Scan failed:</strong>{' '}
+            {scanError ?? String((error as { message?: string })?.message ?? error)}
+          </span>
+          {scanError && (
+            <button onClick={() => setScanError(null)} className="text-red-400 hover:text-red-600 text-xs shrink-0">
+              Dismiss
+            </button>
+          )}
         </div>
       )}
 

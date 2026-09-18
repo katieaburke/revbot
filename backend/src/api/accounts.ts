@@ -13,6 +13,81 @@ router.use(requireAdmin)
 
 const HYGIENE_CACHE_KEY = 'lastProspectingHygieneResult'
 const HYGIENE_CACHE_TTL_MS = 10 * 60 * 1000 // 10 minutes
+const HYGIENE_STATUS_KEY = 'prospectingHygieneScanStatus'
+
+// A scan that dies leaves no trace the UI can see. The result cache only ever gets
+// written on success, and the page decides the scan is finished by watching for
+// `scannedAt` to change — so a thrown error means that value never moves and the
+// spinner runs until someone reloads the tab. This row is how a failure becomes
+// visible: it's written on every outcome, including the bad ones.
+export interface HygieneScanStatus {
+  state: 'running' | 'ok' | 'failed'
+  startedAt: string
+  finishedAt: string | null
+  error: string | null
+}
+
+async function writeScanStatus(status: HygieneScanStatus): Promise<void> {
+  const value = JSON.stringify(status)
+  await db.appSetting
+    .upsert({
+      where: { key: HYGIENE_STATUS_KEY },
+      create: { key: HYGIENE_STATUS_KEY, value },
+      update: { value },
+    })
+    // Never let bookkeeping take down the scan it's reporting on.
+    .catch((err) => console.error('[Hygiene] Failed to write scan status:', err))
+}
+
+async function readScanStatus(): Promise<HygieneScanStatus | null> {
+  const row = await db.appSetting.findUnique({ where: { key: HYGIENE_STATUS_KEY } }).catch(() => null)
+  if (!row?.value) return null
+  try {
+    return JSON.parse(row.value) as HygieneScanStatus
+  } catch {
+    return null
+  }
+}
+
+// A full scan crawls a few thousand accounts out of Salesforce and is measured in
+// minutes, so two clicks land two concurrent crawls that race to write the same
+// cache row. Sharing the in-flight promise makes the second click join the first
+// scan instead of starting a competing one.
+let _hygieneScanInFlight: Promise<void> | null = null
+
+/**
+ * Runs a scan, caches the result, and records the outcome either way.
+ *
+ * Deliberately resolves rather than rejects on failure — every caller is a
+ * fire-and-forget background trigger, and the interesting part of a failure is the
+ * status row, not an unhandled rejection.
+ */
+function runAndCacheScan(): Promise<void> {
+  if (_hygieneScanInFlight) return _hygieneScanInFlight
+
+  const startedAt = new Date().toISOString()
+  _hygieneScanInFlight = (async () => {
+    await writeScanStatus({ state: 'running', startedAt, finishedAt: null, error: null })
+    try {
+      const result = await runProspectingHygieneScan()
+      const value = JSON.stringify(result)
+      await db.appSetting.upsert({
+        where: { key: HYGIENE_CACHE_KEY },
+        create: { key: HYGIENE_CACHE_KEY, value },
+        update: { value },
+      })
+      await writeScanStatus({ state: 'ok', startedAt, finishedAt: new Date().toISOString(), error: null })
+    } catch (err) {
+      const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+      console.error('[Hygiene] Scan failed:', message)
+      await writeScanStatus({ state: 'failed', startedAt, finishedAt: new Date().toISOString(), error: message })
+    } finally {
+      _hygieneScanInFlight = null
+    }
+  })()
+
+  return _hygieneScanInFlight
+}
 
 async function runProspectingHygieneScan(): Promise<object> {
   const settings = await db.appSetting.findMany({
@@ -28,13 +103,22 @@ async function runProspectingHygieneScan(): Promise<object> {
     warmGongAccountCallCache().catch((err) => console.warn('[Gong] Account warm failed:', String(err)))
   }
 
+  // Per-stage timings. "The scan was slow" is unactionable; "contact flows took 94s"
+  // points straight at the query to fix.
+  const t0 = Date.now()
+  const lap = (label: string, since: number) => console.log(`[Hygiene] ${label}: ${Date.now() - since}ms`)
+
+  const tAccounts = Date.now()
   const accounts = await fetchProspectAccounts(recordTypeFilter)
+  lap(`fetched ${accounts.length} accounts`, tAccounts)
   const accountIds = accounts.map((a) => a.Id)
 
+  const tParallel = Date.now()
   const [gongActivity, contactFlows] = await Promise.all([
     gongAccountWarm ? buildAccountActivityIndex(accountIds) : Promise.resolve(new Map()),
     fetchContactFlows(accountIds),
   ])
+  lap(`gong activity + ${contactFlows.length} contact flows`, tParallel)
 
   const flowIndex = new Map<string, GongFlowEnrollment[]>()
   for (const cf of contactFlows) {
@@ -57,6 +141,8 @@ async function runProspectingHygieneScan(): Promise<object> {
     try { nudgeLog[accountId] = JSON.parse(s.value) } catch { /* skip */ }
   }
 
+  lap('total scan', t0)
+
   return {
     scannedAt: new Date().toISOString(),
     totalAccounts: accounts.length,
@@ -72,35 +158,33 @@ async function runProspectingHygieneScan(): Promise<object> {
 router.get('/prospecting-hygiene', async (_req, res) => {
   try {
     // Serve cached result instantly if available
-    const cached = await db.appSetting.findUnique({ where: { key: HYGIENE_CACHE_KEY } })
+    const [cached, scanStatus] = await Promise.all([
+      db.appSetting.findUnique({ where: { key: HYGIENE_CACHE_KEY } }),
+      readScanStatus(),
+    ])
     if (cached?.value) {
       const parsed = JSON.parse(cached.value) as { scannedAt?: string } & object
       const ageMs = parsed.scannedAt ? Date.now() - new Date(parsed.scannedAt).getTime() : Infinity
-      // Return cached data immediately — always fast
-      res.json(parsed)
+      // Return cached data immediately — always fast. `scanStatus` rides along so a
+      // polling client can tell "still working" apart from "died ten minutes ago",
+      // which are identical from the cache's point of view.
+      res.json({ ...parsed, scanStatus })
       // Kick off background refresh if cache is stale (>10 min)
-      if (ageMs > HYGIENE_CACHE_TTL_MS) {
-        runProspectingHygieneScan()
-          .then((result) =>
-            db.appSetting.upsert({
-              where: { key: HYGIENE_CACHE_KEY },
-              create: { key: HYGIENE_CACHE_KEY, value: JSON.stringify(result) },
-              update: { value: JSON.stringify(result) },
-            })
-          )
-          .catch((err) => console.error('[Hygiene] Background refresh failed:', err))
-      }
+      if (ageMs > HYGIENE_CACHE_TTL_MS) void runAndCacheScan()
       return
     }
 
     // No cache yet — run synchronously for first-ever load and save result
-    const result = await runProspectingHygieneScan()
-    await db.appSetting.upsert({
-      where: { key: HYGIENE_CACHE_KEY },
-      create: { key: HYGIENE_CACHE_KEY, value: JSON.stringify(result) },
-      update: { value: JSON.stringify(result) },
-    })
-    res.json(result)
+    await runAndCacheScan()
+    const fresh = await db.appSetting.findUnique({ where: { key: HYGIENE_CACHE_KEY } })
+    const status = await readScanStatus()
+    if (!fresh?.value) {
+      // The first-ever scan failed, so there's nothing to show. Say so plainly
+      // instead of returning an empty shell the page would render as "0 flags".
+      res.status(502).json({ error: status?.error ?? 'Prospecting hygiene scan failed', scanStatus: status })
+      return
+    }
+    res.json({ ...(JSON.parse(fresh.value) as object), scanStatus: status })
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
@@ -110,15 +194,7 @@ router.get('/prospecting-hygiene', async (_req, res) => {
 // Triggers a background refresh of the cache; returns immediately.
 router.post('/prospecting-hygiene/refresh', async (_req, res) => {
   res.status(202).json({ status: 'refreshing' })
-  runProspectingHygieneScan()
-    .then((result) =>
-      db.appSetting.upsert({
-        where: { key: HYGIENE_CACHE_KEY },
-        create: { key: HYGIENE_CACHE_KEY, value: JSON.stringify(result) },
-        update: { value: JSON.stringify(result) },
-      })
-    )
-    .catch((err) => console.error('[Hygiene] Background refresh failed:', err))
+  void runAndCacheScan()
 })
 
 
