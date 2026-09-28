@@ -27,13 +27,24 @@ export function evaluateNextStep(opps: SfdcOpportunity[], bufferDays = 0): NextS
     const type = (opp.Type ?? '').toLowerCase()
     const isRenewal = type.includes('renewal')
 
-    // Renewals: only check if booking date is within next 90 days
-    if (isRenewal) {
-      if (!opp.Booking_Date__c) continue
+    // Renewals are windowed to the next 90 days — a renewal booking a year out has
+    // nothing useful to say about next steps yet.
+    //
+    // A renewal with NO booking date is deliberately NOT skipped. It used to be, and
+    // that was a silent coverage hole: evaluatePastDue also bails on a missing
+    // Booking_Date__c (pastDue.ts), so between the two evaluators a dateless open
+    // renewal was the one kind of opportunity nothing ever looked at. That is exactly
+    // backwards — no booking date on an open renewal is a data problem in its own
+    // right, not a reason to stop checking. It falls through to the issue checks
+    // below, where the missing next-step text/date it almost certainly also has will
+    // surface it to the owner.
+    if (isRenewal && opp.Booking_Date__c) {
       const bookingDate = new Date(opp.Booking_Date__c)
       bookingDate.setHours(0, 0, 0, 0)
       const daysUntilBooking = Math.floor((bookingDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-      if (daysUntilBooking > 90 || daysUntilBooking < 0) continue // already past due (handled elsewhere) or too far out
+      // Past due is genuinely handled elsewhere — evaluatePastDue emits
+      // PAST_DUE_RENEWAL for these, so flagging them here would double-nudge.
+      if (daysUntilBooking > 90 || daysUntilBooking < 0) continue
     }
     // Non-renewals: check always (initial, amendment, etc.)
 
