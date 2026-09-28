@@ -31,7 +31,7 @@ interface SfdcApiError {
  * network error and cost an afternoon of guessing. Salesforce always says exactly
  * what was wrong in the response body; this just refuses to throw that away.
  */
-function describeSfdcError(err: unknown): string {
+export function describeSfdcError(err: unknown): string {
   if (!axios.isAxiosError(err)) return String(err)
   if (err.code === 'ECONNABORTED') return `Salesforce request timed out — ${err.message}`
   const body = err.response?.data
@@ -67,6 +67,68 @@ function asSfdcAuthError(err: unknown): Error {
  * working. Reading the token per request and rebuilding the connection once on 401
  * is what makes this survive a token rotation.
  */
+/**
+ * One authenticated Salesforce REST call, with the token read fresh and a single
+ * rebuild-and-retry on 401.
+ *
+ * Every raw `axios.get(url, { headers: { Authorization: \`Bearer ${conn.accessToken}\` } })`
+ * in this codebase had the same latent bug: `_serviceConn` is cached for the process
+ * lifetime, so reading `.accessToken` off it captures whatever token was current when
+ * the connection was first built. After a rotation those calls 401 forever, while
+ * jsforce's own `conn.sobject(...)` calls nearby keep working because jsforce refreshes
+ * transparently. The result was a process half-able to talk to Salesforce, with the
+ * broken half reporting nothing more useful than "Request failed with status code 400".
+ *
+ * `path` is instance-relative (starts with `/services/data/...`); the instance URL is
+ * resolved per attempt so a rebuilt connection can point somewhere new.
+ */
+export async function sfdcRequest<T = unknown>(
+  method: 'get' | 'post' | 'patch' | 'delete',
+  path: string,
+  opts: { body?: unknown; timeoutMs?: number } = {},
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? 15_000
+  let retriedAuth = false
+
+  for (;;) {
+    const conn = await getServiceConnection()
+    try {
+      const resp = await axios.request<T>({
+        method,
+        url: `${conn.instanceUrl}${path}`,
+        headers: { Authorization: `Bearer ${conn.accessToken}` },
+        data: opts.body,
+        timeout: timeoutMs,
+      })
+      return resp.data
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 401 && !retriedAuth) {
+        retriedAuth = true
+        _serviceConn = null
+        continue
+      }
+      throw new Error(describeSfdcError(err))
+    }
+  }
+}
+
+/** Convenience wrapper: the REST path for a SOQL query. */
+export function soqlPath(soql: string): string {
+  return `/services/data/v${SFDC_API_VERSION}/query?q=${encodeURIComponent(soql)}`
+}
+
+/** The REST path for an sObject row, for PATCH/POST/DELETE. */
+export function sobjectPath(sobject: string, id?: string): string {
+  return `/services/data/v${SFDC_API_VERSION}/sobjects/${sobject}${id ? `/${id}` : ''}`
+}
+
+export async function sfdcQuery<T>(
+  soql: string,
+  opts: { timeoutMs?: number; budgetMs?: number } = {},
+): Promise<T[]> {
+  return runSfdcSoql<T>(soql, opts)
+}
+
 async function runSfdcSoql<T>(
   soql: string,
   opts: { timeoutMs?: number; budgetMs?: number } = {},
@@ -79,7 +141,7 @@ async function runSfdcSoql<T>(
   const deadline = Date.now() + budgetMs
 
   const records: T[] = []
-  let nextPath: string | null = `/services/data/v${SFDC_API_VERSION}/query?q=${encodeURIComponent(soql)}`
+  let nextPath: string | null = soqlPath(soql)
   let retriedAuth = false
   let pages = 0
 
@@ -204,24 +266,70 @@ export function invalidateSfdcCache(): void {
   _serviceConn = null
 }
 
+/**
+ * Picks the account whose Salesforce grant backs every unattended query — scans,
+ * alerts, scheduled jobs, the lot.
+ *
+ * This used to be a bare `findFirst({ isRevOps: true })`, which is only unambiguous
+ * while exactly one RevOps user has ever connected. The moment a second one does,
+ * Prisma returns whichever row the database felt like, and it can differ between
+ * processes and across restarts. The visible symptom is nasty and non-obvious: scans
+ * silently return a different set of records depending on whose Salesforce
+ * permissions happened to win, with nothing anywhere reporting that a choice was made.
+ *
+ * ADMIN_EMAIL is the designated service account, so prefer it explicitly. Everyone
+ * else is a fallback, most-recently-connected first, so a connection is never simply
+ * unavailable if the designated account's grant is revoked.
+ */
+async function pickServiceUser() {
+  const candidates = await db.user.findMany({
+    where: { isRevOps: true, sfdcAccessToken: { not: null } },
+    orderBy: { sfdcConnectedAt: 'desc' },
+    select: { id: true, slackEmail: true },
+  })
+  if (candidates.length === 0) return null
+
+  const designated = candidates.find((u) => u.slackEmail?.toLowerCase() === config.ADMIN_EMAIL.toLowerCase())
+  const chosen = designated ?? candidates[0]
+
+  if (!designated) {
+    // Worth saying out loud. Running under a fallback identity is legitimate, but it
+    // means every query is scoped to someone else's Salesforce visibility, and that
+    // would otherwise be invisible.
+    console.warn(
+      `[SFDC] Designated service account ${config.ADMIN_EMAIL} has no Salesforce connection; ` +
+        `falling back to ${chosen.slackEmail ?? chosen.id}. Queries run with that user's permissions.`,
+    )
+  }
+  return chosen
+}
+
 export async function getServiceConnection(): Promise<jsforce.Connection> {
   if (_serviceConn) return _serviceConn
-  const revOpsUser = await db.user.findFirst({
-    where: { isRevOps: true, sfdcAccessToken: { not: null } },
-  })
-  if (!revOpsUser) throw new Error('No RevOps SFDC connection found — please connect Salesforce')
-  _serviceConn = await getConnectionForUser(revOpsUser.id)
+  const serviceUser = await pickServiceUser()
+  if (!serviceUser) throw new Error('No RevOps SFDC connection found — please connect Salesforce')
+  _serviceConn = await getConnectionForUser(serviceUser.id)
   return _serviceConn
 }
 
 // Returns the Salesforce instance URL (e.g. https://uberall.lightning.force.com)
 // Reads from the connected RevOps user in DB — no env var needed.
+// Resolved through the same picker as getServiceConnection so the instance URL can
+// never describe a different org than the one the queries actually run against.
 export async function getSfdcInstanceUrl(): Promise<string> {
-  const revOpsUser = await db.user.findFirst({
+  const serviceUser = await pickServiceUser()
+  if (serviceUser) {
+    const row = await db.user.findUnique({
+      where: { id: serviceUser.id },
+      select: { sfdcInstanceUrl: true },
+    })
+    if (row?.sfdcInstanceUrl) return row.sfdcInstanceUrl
+  }
+  const anyUser = await db.user.findFirst({
     where: { isRevOps: true, sfdcInstanceUrl: { not: null } },
     select: { sfdcInstanceUrl: true },
   })
-  return revOpsUser?.sfdcInstanceUrl ?? 'https://login.salesforce.com'
+  return anyUser?.sfdcInstanceUrl ?? 'https://login.salesforce.com'
 }
 
 // PKCE helpers

@@ -1,7 +1,6 @@
 import { Router } from 'express'
-import axios from 'axios'
 import { requireAdmin } from '../middleware/adminAuth'
-import { getServiceConnection } from '../services/salesforce'
+import { getServiceConnection, sfdcQuery } from '../services/salesforce'
 import { sendDm } from '../slack/bot'
 import { db } from '../db'
 
@@ -100,13 +99,9 @@ router.get('/leads', requireAdmin, async (_req, res) => {
       LIMIT 500
     `.trim()
 
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{ records: SfdcContactRecord[] }>(url, {
-      headers: { Authorization: `Bearer ${conn.accessToken!}` },
-      timeout: 20_000,
-    })
+    const records = await sfdcQuery<SfdcContactRecord>(soql, { timeoutMs: 20_000 })
 
-    console.log(`[HandRaise] SFDC returned ${resp.data.records.length} raw records`)
+    console.log(`[HandRaise] SFDC returned ${records.length} raw records`)
 
     // JS-side filters to replicate report logic:
     // 1. "Followed Up? = No" — Last_Rep_Communication_Date__c is null OR before Hand_Raise_Date_Time__c
@@ -115,7 +110,7 @@ router.get('/leads', requireAdmin, async (_req, res) => {
     // 4. Account RecordType = Partner Account Record OR Enterprise Account Record
     const VALID_RECORD_TYPES = new Set(['Partner Account Record', 'Enterprise Account Record'])
 
-    const filtered = resp.data.records.filter((r) => {
+    const filtered = records.filter((r) => {
       // Must not be followed up.
       // Last_Rep_Communication_Date__c is a bare date (midnight UTC), Hand_Raise_Date_Time__c is a
       // datetime — comparing them directly causes timezone false-positives. We use a 1-day buffer:

@@ -257,6 +257,20 @@ router.delete('/sfdc-disconnect', async (_req, res) => {
   res.json({ ok: true })
 })
 
+// Answers "did someone delete a field in Setup?" without waiting for a rep to hit a
+// broken queue. `refresh=1` drops the describe cache first, so a field restored moments
+// ago shows up immediately rather than an hour later.
+router.get('/schema-drift', async (req, res) => {
+  const { checkSchemaDrift, invalidateSchemaCache } = await import('../services/schemaGuard')
+  if (req.query.refresh) invalidateSchemaCache()
+  try {
+    const drift = await checkSchemaDrift()
+    res.json({ ok: drift.length === 0, drift })
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message })
+  }
+})
+
 // ── App Settings (schedule, cooldown, etc.) ───────────────────────────────────
 
 router.get('/settings', async (_req, res) => {

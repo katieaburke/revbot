@@ -1,5 +1,4 @@
-import axios from 'axios'
-import { getServiceConnection } from './salesforce'
+import { sfdcQuery, sfdcRequest, sobjectPath } from './salesforce'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import type { KnownBlock } from '@slack/web-api'
 
@@ -75,8 +74,6 @@ export interface ExistingBusinessRep {
 // ── SOQL ────────────────────────────────────────────────────────────────────────
 
 export async function fetchExistingBusinessReps(): Promise<ExistingBusinessRep[]> {
-  const conn = await getServiceConnection()
-
   const soql = `
     SELECT Id, Name, Email, UserRole.Name
     FROM User
@@ -87,19 +84,8 @@ export async function fetchExistingBusinessReps(): Promise<ExistingBusinessRep[]
   `
 
   interface RawUser { Id: string; Name: string; Email: string; UserRole?: { Name?: string } | null }
-  interface SfdcPage<T> { records: T[]; done: boolean; nextRecordsUrl?: string }
 
-  const records: RawUser[] = []
-  let nextPath: string | null = `/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-
-  while (nextPath) {
-    const resp: { data: SfdcPage<RawUser> } = await axios.get<SfdcPage<RawUser>>(
-      `${conn.instanceUrl}${nextPath}`,
-      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 20_000 },
-    )
-    records.push(...resp.data.records)
-    nextPath = resp.data.done ? null : (resp.data.nextRecordsUrl ?? null)
-  }
+  const records = await sfdcQuery<RawUser>(soql, { timeoutMs: 20_000 })
 
   return records.map((r) => ({
     id: r.Id,
@@ -110,8 +96,6 @@ export async function fetchExistingBusinessReps(): Promise<ExistingBusinessRep[]
 }
 
 export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
-  const conn = await getServiceConnection()
-
   const soql = `
     SELECT Id, Name,
            Owner.Name, Owner.Email, Owner.UserRole.Name,
@@ -142,20 +126,7 @@ export async function fetchReassignAccounts(): Promise<ReassignAccount[]> {
     Number_of_locations__c?: number | null
   }
 
-  interface SfdcPage<T> { records: T[]; done: boolean; nextRecordsUrl?: string }
-
-  const records: RawAccount[] = []
-  let nextPath: string | null = `/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-
-  while (nextPath) {
-    const resp: { data: SfdcPage<RawAccount> } = await axios.get<SfdcPage<RawAccount>>(
-      `${conn.instanceUrl}${nextPath}`,
-      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 20_000 },
-    )
-    const page: SfdcPage<RawAccount> = resp.data
-    records.push(...page.records)
-    nextPath = page.done ? null : (page.nextRecordsUrl ?? null)
-  }
+  const records = await sfdcQuery<RawAccount>(soql, { timeoutMs: 20_000 })
 
   return records.map((r) => ({
     id: r.Id,
@@ -412,22 +383,17 @@ export async function notifyAssignedAM(
   repName: string,
   leaderName: string,
 ): Promise<void> {
-  const conn = await getServiceConnection()
-
   // Fetch rep email + account details in parallel
-  const [userResp, acctResp] = await Promise.all([
-    axios.get<{ Email: string }>(
-      `${conn.instanceUrl}/services/data/v59.0/sobjects/User/${repId}?fields=Email`,
-      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 },
-    ),
-    axios.get<{ Name: string; Number_of_locations__c?: number | null; BillingCountry?: string | null }>(
-      `${conn.instanceUrl}/services/data/v59.0/sobjects/Account/${accountId}?fields=Name,Number_of_locations__c,BillingCountry`,
-      { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 },
+  const [user, acct] = await Promise.all([
+    sfdcRequest<{ Email: string }>('get', `${sobjectPath('User', repId)}?fields=Email`, { timeoutMs: 10_000 }),
+    sfdcRequest<{ Name: string; Number_of_locations__c?: number | null; BillingCountry?: string | null }>(
+      'get',
+      `${sobjectPath('Account', accountId)}?fields=Name,Number_of_locations__c,BillingCountry`,
+      { timeoutMs: 10_000 },
     ),
   ])
 
-  const repEmail = userResp.data.Email
-  const acct = acctResp.data
+  const repEmail = user.Email
 
   const slackId = await resolveSlackUserId(repEmail)
   if (!slackId) {

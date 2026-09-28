@@ -1,5 +1,5 @@
-import axios from 'axios'
-import { getServiceConnection } from './salesforce'
+import { sfdcQuery, sfdcRequest, sobjectPath } from './salesforce'
+import { registerSchemaExpectation } from './schemaGuard'
 import { sendDm, resolveSlackUserId } from '../slack/bot'
 import type { KnownBlock } from '@slack/web-api'
 
@@ -29,31 +29,31 @@ export interface SalesRep {
 
 // ── SFDC helpers ─────────────────────────────────────────────────────────────────
 
-interface SfdcPage<T> { records: T[]; done: boolean; nextRecordsUrl?: string }
-
-async function runSoql<T>(instanceUrl: string, accessToken: string, soql: string): Promise<T[]> {
-  const records: T[] = []
-  let nextPath: string | null = `/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-
-  while (nextPath) {
-    const resp: { data: SfdcPage<T> } = await axios.get<SfdcPage<T>>(
-      `${instanceUrl}${nextPath}`,
-      { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 20_000 },
-    )
-    const page: SfdcPage<T> = resp.data
-    records.push(...page.records)
-    nextPath = page.done ? null : (page.nextRecordsUrl ?? null)
-  }
-  return records
-}
+// Paging, per-request timeouts, 401 refresh and error decoding all live in
+// services/salesforce.ts now. The local copy this replaced snapshotted
+// `conn.accessToken` once per call and had no retry, so it broke permanently on token
+// rotation while jsforce calls elsewhere in the same process carried on working.
 
 // ── Fetch churned accounts ────────────────────────────────────────────────────────
 // Report: "Churned customers owned by AM >6m"
 // Criteria: contract ended >6 months ago, still owned by Existing Business rep, Direct Enterprise
 
-export async function fetchChurnedAccounts(): Promise<ChurnedAccount[]> {
-  const conn = await getServiceConnection()
+// WHERE-clause fields are listed alongside the SELECT ones on purpose: Salesforce
+// rejects the whole query for an unknown field wherever it appears, not just in the
+// projection.
+registerSchemaExpectation({
+  feature: 'Churned-account reassignment',
+  sobject: 'Account',
+  fields: [
+    'Number_of_locations__c',
+    'Cancelled_Contract_due_date__c',
+    'Cancellation_Notice_Date__c',
+    'Primary_Cancellation_Reason__c',
+    'GEO_Studio_Customer_Only__c',
+  ],
+})
 
+export async function fetchChurnedAccounts(): Promise<ChurnedAccount[]> {
   const soql = `
     SELECT Id, Name, BillingCountry, Industry, Number_of_locations__c,
            Cancelled_Contract_due_date__c, Cancellation_Notice_Date__c,
@@ -80,7 +80,7 @@ export async function fetchChurnedAccounts(): Promise<ChurnedAccount[]> {
     Owner?: { Name?: string; Email?: string; UserRole?: { Name?: string } | null } | null
   }
 
-  const records = await runSoql<RawAccount>(conn.instanceUrl, conn.accessToken!, soql)
+  const records = await sfdcQuery<RawAccount>(soql, { timeoutMs: 20_000 })
 
   return records.map((r) => ({
     id: r.Id,
@@ -101,8 +101,6 @@ export async function fetchChurnedAccounts(): Promise<ChurnedAccount[]> {
 // Only AE/Sales reps (not BDRs) from New Business roles
 
 export async function fetchSalesReps(): Promise<SalesRep[]> {
-  const conn = await getServiceConnection()
-
   const soql = `
     SELECT Id, Name, Email, UserRole.Name
     FROM User
@@ -121,7 +119,7 @@ export async function fetchSalesReps(): Promise<SalesRep[]> {
     UserRole?: { Name?: string } | null
   }
 
-  const records = await runSoql<RawUser>(conn.instanceUrl, conn.accessToken!, soql)
+  const records = await sfdcQuery<RawUser>(soql, { timeoutMs: 20_000 })
 
   return records.map((r) => {
     const role = r.UserRole?.Name ?? ''
@@ -133,13 +131,7 @@ export async function fetchSalesReps(): Promise<SalesRep[]> {
 // ── Reassign account in SFDC ─────────────────────────────────────────────────────
 
 export async function updateAccountOwner(accountId: string, newOwnerId: string): Promise<void> {
-  const conn = await getServiceConnection()
-
-  await axios.patch(
-    `${conn.instanceUrl}/services/data/v59.0/sobjects/Account/${accountId}`,
-    { OwnerId: newOwnerId },
-    { headers: { Authorization: `Bearer ${conn.accessToken!}`, 'Content-Type': 'application/json' }, timeout: 15_000 },
-  )
+  await sfdcRequest('patch', sobjectPath('Account', accountId), { body: { OwnerId: newOwnerId } })
 }
 
 // ── Slack notification to new owner ──────────────────────────────────────────────

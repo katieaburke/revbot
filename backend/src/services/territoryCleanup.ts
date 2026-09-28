@@ -1,5 +1,7 @@
 import { getServiceConnection } from './salesforce'
 import { db } from '../db'
+import { soqlEscape } from '../utils/soql'
+import { registerSchemaExpectation } from './schemaGuard'
 
 // ─── Territory Cleanup ───────────────────────────────────────────────────────
 //
@@ -112,11 +114,6 @@ async function getFeedbackField(): Promise<string> {
   return DEFAULT_FEEDBACK_FIELD
 }
 
-/** Escape a value for safe interpolation into a SOQL string literal. */
-function soqlEscape(v: string): string {
-  return v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
-}
-
 const ACCOUNT_FIELDS = [
   'Id',
   'Name',
@@ -145,7 +142,19 @@ const ACCOUNT_FIELDS = [
   'Operating_Model_s__c',
   'Product_Fit__c',
   'Product_Fit_Rationale__c',
-].join(', ')
+]
+
+/** Comma-joined for interpolation into SELECT. */
+const ACCOUNT_FIELDS_SELECT = ACCOUNT_FIELDS.join(', ')
+
+// Registered so schema drift is reported at startup rather than discovered by a rep
+// whose queue has gone blank. This exact list is what broke when ICP_IPP_Fit_Rating__c
+// and ICP__c were deleted in Setup.
+registerSchemaExpectation({
+  feature: 'Territory Cleanup account queue',
+  sobject: 'Account',
+  fields: ACCOUNT_FIELDS,
+})
 
 interface RawAccount {
   Id: string
@@ -269,7 +278,7 @@ export async function fetchTerritoryAccounts(
   const conn = await getServiceConnection()
 
   const soql = `
-    SELECT ${ACCOUNT_FIELDS}
+    SELECT ${ACCOUNT_FIELDS_SELECT}
     FROM Account
     WHERE Account_Stage__c = 'Prospect'
       AND RecordType.Name = 'Enterprise Account Record'

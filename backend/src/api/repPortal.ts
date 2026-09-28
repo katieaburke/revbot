@@ -1,12 +1,13 @@
 import { Router } from 'express'
-import axios from 'axios'
 import jwt from 'jsonwebtoken'
 import { config } from '../config'
 import { db } from '../db'
 import { verifyRepToken, generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
-import { getServiceConnection } from '../services/salesforce'
+import { getServiceConnection, sfdcQuery, sfdcRequest, sobjectPath } from '../services/salesforce'
 import { stageApiToLabel } from '../utils/stageMapping'
+import { soqlLiteral, soqlInList } from '../utils/soql'
+import { registerSchemaExpectation } from '../services/schemaGuard'
 import { buildValidationCsv } from '../services/territoryValidationExport'
 import { recheckForRep } from '../jobs/alertOrchestrator'
 import { isAccountExecutive, isExistingBusiness } from '../lib/repRoles'
@@ -24,6 +25,21 @@ import {
 const router = Router()
 
 const SFDC_BASE = 'https://uberall.lightning.force.com'
+
+// The opportunity metadata every alert and portal row is built from. notifications.ts
+// and managerPortal.ts select subsets of this same list, so one registration covers
+// the realistic drift case for all three.
+registerSchemaExpectation({
+  feature: 'Opportunity alerts and rep/manager portals',
+  sobject: 'Opportunity',
+  fields: [
+    'Next_Step_Date__c',
+    'Net_MCV__c',
+    'Account.Next_Contract_End_Date__c',
+    'Account.Next_Renewal_Date__c',
+    'Account.Has_Auto_Renewal_on_next_Renewal_Opp__c',
+  ],
+})
 
 // Fetch live opp metadata from SFDC for a list of opp IDs.
 // Returns { map, sfdcOk } — sfdcOk=false means the call failed and we should not act on missing IDs.
@@ -46,13 +62,11 @@ async function fetchOppMeta(oppIds: string[]): Promise<{
   const map = new Map()
   if (!oppIds.length) return { map, sfdcOk: true }
   try {
-    const conn = await getServiceConnection()
-    const ids = oppIds.map((id) => `'${id}'`).join(',')
+    const ids = soqlInList(oppIds)
     // Use SFDC's native IsClosed boolean — reliable for Closed Won AND Closed Lost regardless of custom stage names
     // Net_MCV__c = "Net ACV" field; Account fields used for renewal $0 ACV flow
     const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c, IsClosed, Type, Net_MCV__c, Account.Next_Contract_End_Date__c, Account.Next_Renewal_Date__c, Account.Has_Auto_Renewal_on_next_Renewal_Opp__c FROM Opportunity WHERE Id IN (${ids})`
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{ records: {
+    interface OppMetaRow {
       Id: string
       Amount: number | null
       CloseDate: string | null
@@ -67,10 +81,9 @@ async function fetchOppMeta(oppIds: string[]): Promise<{
         Next_Renewal_Date__c: string | null
         Has_Auto_Renewal_on_next_Renewal_Opp__c: boolean | null
       } | null
-    }[] }>(
-      url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
-    )
-    for (const r of resp.data.records) {
+    }
+    const rows = await sfdcQuery<OppMetaRow>(soql, { timeoutMs: 15_000 })
+    for (const r of rows) {
       map.set(r.Id, {
         amount: r.Amount ?? null,
         closeDate: r.CloseDate ?? null,
@@ -396,13 +409,11 @@ router.get('/whitespace', async (req, res) => {
         AND (NOT Product_Coverage_Name__c LIKE '%fee%')
         AND (NOT Product_Coverage_Name__c LIKE '%bundle%')
         AND (NOT Product_Coverage_Name__c LIKE '%additional%')
-        AND Account__r.Owner.Email = '${repEmail}'
+        AND Account__r.Owner.Email = ${soqlLiteral(repEmail)}
       ORDER BY Account__r.Name ASC
     `.trim()
 
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{
-      records: {
+    interface RepCoverageRow {
         Id: string
         Name: string
         Product_Coverage_Name__c: string | null
@@ -414,12 +425,12 @@ router.get('/whitespace', async (req, res) => {
         Total_Locations_Fit__c: number | null
         ARR_Potential__c: number | null
         Priority__c: string | null
-      }[]
-    }>(url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 })
+    }
+    const coverageRows = await sfdcQuery<RepCoverageRow>(soql, { timeoutMs: 15_000 })
 
     const accountMap = new Map<string, { accountId: string; accountName: string; lines: unknown[] }>()
 
-    for (const r of resp.data.records) {
+    for (const r of coverageRows) {
       const accountId = r.Account__c
       const accountName = r.Account__r?.Name ?? accountId
 
@@ -445,8 +456,16 @@ router.get('/whitespace', async (req, res) => {
     const records = Array.from(accountMap.values())
     res.json({ records })
   } catch (err) {
+    // Same trap as the PATCH handler below: a Salesforce failure anywhere in this
+    // block used to be reported to the rep as an expired link, sending them to fetch
+    // a fresh one that then failed identically. Only token problems are 401 now.
+    const message = err instanceof Error ? err.message : String(err)
+    const isTokenProblem = err instanceof jwt.JsonWebTokenError || /token|expired link/i.test(message)
     console.error('[RepPortal] /whitespace GET error:', err)
-    res.status(401).json({ error: 'Invalid or expired link — ask RevBot for a fresh one' })
+    if (isTokenProblem) {
+      return res.status(401).json({ error: 'Invalid or expired link — ask RevBot for a fresh one' })
+    }
+    res.status(502).json({ error: `Could not load whitespace from Salesforce: ${message}` })
   }
 })
 
@@ -479,18 +498,22 @@ router.patch('/whitespace/:id', async (req, res) => {
       })
     }
 
-    const conn = await getServiceConnection()
-    await axios.patch(
-      `${conn.instanceUrl}/services/data/v59.0/sobjects/Product_Coverage__c/${id}`,
-      { Total_Locations_Fit__c: totalLocationsFit },
-      {
-        headers: {
-          Authorization: `Bearer ${conn.accessToken!}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 15_000,
-      }
-    )
+    try {
+      await sfdcRequest('patch', sobjectPath('Product_Coverage__c', id), {
+        body: { Total_Locations_Fit__c: totalLocationsFit },
+      })
+    } catch (err) {
+      // Scoped separately from the outer catch on purpose. That catch answers 401
+      // "Invalid or expired link" for anything that throws, so a Salesforce write
+      // failure — a validation rule, a field-level permission, a dead session — told
+      // the rep their link had expired. They would reopen it from Slack, land on a
+      // working page, try again and hit the same wall, with nothing anywhere pointing
+      // at Salesforce.
+      console.error('[RepPortal] /whitespace PATCH failed in SFDC:', err)
+      return res.status(502).json({
+        error: `Salesforce rejected the update: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
 
     res.json({ ok: true })
   } catch (err) {
@@ -528,7 +551,7 @@ async function fetchRepRole(email: string): Promise<RepRoleLookup> {
     // (7 emails are shared by 2+ active users) toward the account actually in use.
     const soql =
       `SELECT Id, Name, UserRole.Name FROM User ` +
-      `WHERE Email = '${email.replace(/'/g, "\\'")}' AND IsActive = true ` +
+      `WHERE Email = ${soqlLiteral(email)} AND IsActive = true ` +
       `ORDER BY LastLoginDate DESC NULLS LAST, CreatedDate DESC LIMIT 5`
     // Goes through jsforce rather than a raw axios GET with `conn.accessToken`.
     // The connection is cached for the process lifetime, so a hand-rolled request
@@ -567,7 +590,7 @@ async function fetchRepRole(email: string): Promise<RepRoleLookup> {
       UserRole: { Name: string } | null
     }>(
       `SELECT Id, Name, UserRole.Name FROM User ` +
-        `WHERE Email = '${email.replace(/'/g, "\\'")}' AND IsActive = false ` +
+        `WHERE Email = ${soqlLiteral(email)} AND IsActive = false ` +
         `ORDER BY LastLoginDate DESC NULLS LAST, CreatedDate DESC LIMIT 1`,
     )
     const inactive = inactiveResp.records?.[0]

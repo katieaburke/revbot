@@ -1,10 +1,9 @@
 import { Router } from 'express'
-import axios from 'axios'
 import { db } from '../db'
 import { verifyManagerToken, generateManagerToken } from '../lib/managerToken'
 import { generateRepToken } from '../lib/repToken'
 import { requireAdmin } from '../middleware/adminAuth'
-import { getServiceConnection, fetchOpenOpportunities } from '../services/salesforce'
+import { getServiceConnection, fetchOpenOpportunities, sfdcQuery } from '../services/salesforce'
 import {
   DEFAULT_QUEUE_FILTERS,
   fetchTerritoryQueueIdsByOwner,
@@ -13,6 +12,7 @@ import {
 import { sendDm } from '../slack/bot'
 import { config } from '../config'
 import { stageApiToLabel } from '../utils/stageMapping'
+import { soqlEscape, soqlLiteral, soqlInList } from '../utils/soql'
 import type { KnownBlock } from '@slack/web-api'
 
 const router = Router()
@@ -27,14 +27,9 @@ async function fetchOppMeta(oppIds: string[]): Promise<Map<string, {
   const map = new Map()
   if (!oppIds.length) return map
   try {
-    const conn = await getServiceConnection()
-    const ids = oppIds.map((id) => `'${id}'`).join(',')
-    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c FROM Opportunity WHERE Id IN (${ids})`
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{ records: { Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null }[] }>(
-      url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 15_000 }
-    )
-    for (const r of resp.data.records) {
+    const soql = `SELECT Id, Amount, CloseDate, StageName, NextStep, Next_Step_Date__c FROM Opportunity WHERE Id IN (${soqlInList(oppIds)})`
+    const rows = await sfdcQuery<{ Id: string; Amount: number | null; CloseDate: string | null; StageName: string; NextStep: string | null; Next_Step_Date__c: string | null }>(soql, { timeoutMs: 15_000 })
+    for (const r of rows) {
       map.set(r.Id, {
         amount: r.Amount ?? null,
         closeDate: r.CloseDate ?? null,
@@ -197,14 +192,9 @@ router.get('/me', async (req, res) => {
     // Fetch manager's role from SFDC
     let roleName: string | null = null
     try {
-      const conn = await getServiceConnection()
-      const roleQuery = `SELECT UserRole.Name FROM User WHERE Email = '${managerEmail}' LIMIT 1`
-      const roleUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(roleQuery)}`
-      const roleResp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
-        roleUrl,
-        { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
-      )
-      roleName = roleResp.data.records[0]?.UserRole?.Name ?? null
+      const roleQuery = `SELECT UserRole.Name FROM User WHERE Email = ${soqlLiteral(managerEmail)} LIMIT 1`
+      const roleRows = await sfdcQuery<{ UserRole: { Name: string } | null }>(roleQuery, { timeoutMs: 10_000 })
+      roleName = roleRows[0]?.UserRole?.Name ?? null
     } catch {
       // non-fatal — roleName stays null
     }
@@ -332,14 +322,9 @@ router.get('/whitespace', async (req, res) => {
     // Check role — only Existing Business managers get access
     let roleName: string | null = null
     try {
-      const conn = await getServiceConnection()
-      const roleQuery = `SELECT UserRole.Name FROM User WHERE Email = '${managerEmail}' LIMIT 1`
-      const roleUrl = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(roleQuery)}`
-      const roleResp = await axios.get<{ records: { UserRole: { Name: string } | null }[] }>(
-        roleUrl,
-        { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 }
-      )
-      roleName = roleResp.data.records[0]?.UserRole?.Name ?? null
+      const roleQuery = `SELECT UserRole.Name FROM User WHERE Email = ${soqlLiteral(managerEmail)} LIMIT 1`
+      const roleRows = await sfdcQuery<{ UserRole: { Name: string } | null }>(roleQuery, { timeoutMs: 10_000 })
+      roleName = roleRows[0]?.UserRole?.Name ?? null
     } catch {
       // non-fatal
     }
@@ -347,8 +332,6 @@ router.get('/whitespace', async (req, res) => {
     if (!roleName?.toLowerCase().includes('existing business')) {
       return res.json({ hasAccess: false, reps: [] })
     }
-
-    const conn = await getServiceConnection()
 
     const soql = `
       SELECT
@@ -380,12 +363,10 @@ router.get('/whitespace', async (req, res) => {
         AND (NOT Product_Coverage_Name__c LIKE '%fee%')
         AND (NOT Product_Coverage_Name__c LIKE '%bundle%')
         AND (NOT Product_Coverage_Name__c LIKE '%additional%')
-        AND Account__r.Owner.Manager.Email = '${managerEmail}'
+        AND Account__r.Owner.Manager.Email = ${soqlLiteral(managerEmail)}
     `.trim()
 
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{
-      records: {
+    interface CoverageRow {
         Id: string
         Name: string
         Product_Coverage_Name__c: string | null
@@ -400,11 +381,9 @@ router.get('/whitespace', async (req, res) => {
         ARR_Potential__c: number | null
         Priority__c: string | null
         Price_per_location__c: number | null
-      }[]
-    }>(url, {
-      headers: { Authorization: `Bearer ${conn.accessToken!}` },
-      timeout: 20_000,
-    })
+    }
+
+    const records = await sfdcQuery<CoverageRow>(soql, { timeoutMs: 20_000 })
 
     // Group by rep → account → lines
     type WsLine = { id: string; productCoverageName: string | null; currentLocationsCovered: number | null; currentArr: number; priority: string | null }
@@ -413,7 +392,7 @@ router.get('/whitespace', async (req, res) => {
 
     const repMap = new Map<string, WsRep & { accountMap: Map<string, WsAccount> }>()
 
-    for (const r of resp.data.records) {
+    for (const r of records) {
       const accountId = r.Account__c
       const accountName = r.Account__r?.Name ?? accountId
       const ownerEmail = r.Account__r?.Owner?.Email ?? ''
@@ -498,7 +477,7 @@ interface DirectReport {
  */
 async function fetchDirectReports(managerEmail: string): Promise<DirectReport[]> {
   const conn = await getServiceConnection()
-  const escaped = managerEmail.replace(/'/g, "\\'")
+  const escaped = soqlEscape(managerEmail)
 
   type Row = {
     Id: string

@@ -6,7 +6,8 @@ import { sendDm, resolveSlackUserId } from '../slack/bot'
 import { buildCombinedMessage, buildPastDueMessage, buildStalledMessage, buildMeddpiccMessage, buildManagerAlertMessage } from '../slack/messages'
 import { AlertType } from '../types'
 import type { KnownBlock } from '@slack/web-api'
-import { getServiceConnection } from '../services/salesforce'
+import { getServiceConnection, sfdcQuery } from '../services/salesforce'
+import { soqlLiteral } from '../utils/soql'
 import { z } from 'zod'
 import { generateRepToken } from '../lib/repToken'
 import { config } from '../config'
@@ -535,18 +536,15 @@ router.get('/opp-meta', async (req, res) => {
   const { id } = req.query as { id?: string }
   if (!id) return res.status(400).json({ error: 'Missing id' })
   try {
-    const conn = await getServiceConnection()
-    const soql = `SELECT IsClosed, StageName, Net_MCV__c, Type, Account.Next_Contract_End_Date__c, Account.Next_Renewal_Date__c, Account.Has_Auto_Renewal_on_next_Renewal_Opp__c FROM Opportunity WHERE Id = '${id}' LIMIT 1`
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const axios = (await import('axios')).default
-    const resp = await axios.get<{ records: {
+    const soql = `SELECT IsClosed, StageName, Net_MCV__c, Type, Account.Next_Contract_End_Date__c, Account.Next_Renewal_Date__c, Account.Has_Auto_Renewal_on_next_Renewal_Opp__c FROM Opportunity WHERE Id = ${soqlLiteral(id)} LIMIT 1`
+    const rows = await sfdcQuery<{
       IsClosed: boolean
       StageName: string | null
       Net_MCV__c: number | null
       Type: string | null
       Account: { Next_Contract_End_Date__c: string | null; Next_Renewal_Date__c: string | null; Has_Auto_Renewal_on_next_Renewal_Opp__c: boolean | null } | null
-    }[] }>(url, { headers: { Authorization: `Bearer ${conn.accessToken!}` }, timeout: 10_000 })
-    const r = resp.data.records[0]
+    }>(soql, { timeoutMs: 10_000 })
+    const r = rows[0]
     if (!r) return res.json({ isClosed: true, currentStage: null }) // opp deleted — treat as closed
     res.json({
       isClosed: r.IsClosed ?? false,

@@ -1,7 +1,6 @@
 import { Router } from 'express'
-import axios from 'axios'
 import { requireAdmin } from '../middleware/adminAuth'
-import { getServiceConnection } from '../services/salesforce'
+import { sfdcQuery, sfdcRequest, sobjectPath } from '../services/salesforce'
 import { generateRepToken } from '../lib/repToken'
 import { generateManagerToken } from '../lib/managerToken'
 import { config } from '../config'
@@ -13,8 +12,6 @@ const router = Router()
 // GET /api/whitespace/expansion-potential
 router.get('/expansion-potential', requireAdmin, async (_req, res) => {
   try {
-    const conn = await getServiceConnection()
-
     const soql = `
       SELECT
         Id,
@@ -54,9 +51,9 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         AND (NOT Product_Coverage_Name__c LIKE '%additional%')
     `.trim()
 
-    const url = `${conn.instanceUrl}/services/data/v59.0/query?q=${encodeURIComponent(soql)}`
-    const resp = await axios.get<{
-      records: {
+    // Note: this now follows pagination. The hand-rolled request it replaced fetched
+    // only the first page, silently capping the report at 2000 rows.
+    interface WhitespaceRow {
         Id: string
         Name: string
         Product_Coverage_Name__c: string | null
@@ -79,18 +76,16 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
         ARR_Potential__c: number | null
         Priority__c: string | null
         Price_per_location__c: number | null
-      }[]
-    }>(url, {
-      headers: { Authorization: `Bearer ${conn.accessToken!}` },
-      timeout: 20_000,
-    })
+    }
 
-    console.log(`[Whitespace] SFDC returned ${resp.data.records.length} records`)
+    const records = await sfdcQuery<WhitespaceRow>(soql, { timeoutMs: 20_000 })
+
+    console.log(`[Whitespace] SFDC returned ${records.length} records`)
 
     // Collect unique owner emails for Slack lookup
     const uniqueOwnerEmails = [
       ...new Set(
-        resp.data.records
+        records
           .map((r) => r.Account__r?.Owner?.Email ?? null)
           .filter((e): e is string => e !== null)
       ),
@@ -108,7 +103,7 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
     // Collect unique manager emails for Slack lookup
     const uniqueManagerEmails = [
       ...new Set(
-        resp.data.records
+        records
           .map((r) => r.Account__r?.Owner?.Manager?.Email ?? null)
           .filter((e): e is string => e !== null)
       ),
@@ -164,7 +159,7 @@ router.get('/expansion-potential', requireAdmin, async (_req, res) => {
     // ownerKey -> AM accumulator
     const amMap = new Map<string, AmShape & { accountMap: Map<string, AccountShape> }>()
 
-    for (const r of resp.data.records) {
+    for (const r of records) {
       const accountId = r.Account__c
       const accountName = r.Account__r?.Name ?? accountId
       const ownerEmail = r.Account__r?.Owner?.Email ?? null
@@ -269,19 +264,9 @@ router.patch('/product-coverage/:id', requireAdmin, async (req, res) => {
   }
 
   try {
-    const conn = await getServiceConnection()
-
-    await axios.patch(
-      `${conn.instanceUrl}/services/data/v59.0/sobjects/Product_Coverage__c/${id}`,
-      { Total_Locations_Fit__c: totalLocationsFit },
-      {
-        headers: {
-          Authorization: `Bearer ${conn.accessToken!}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 15_000,
-      }
-    )
+    await sfdcRequest('patch', sobjectPath('Product_Coverage__c', id), {
+      body: { Total_Locations_Fit__c: totalLocationsFit },
+    })
 
     res.json({ ok: true })
   } catch (err) {
