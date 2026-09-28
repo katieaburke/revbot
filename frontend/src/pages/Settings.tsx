@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, authApi } from '../lib/api'
 import { useForm } from 'react-hook-form'
 import { useEffect, useState } from 'react'
 import { RefreshCw, Copy, CheckCircle, FlaskConical, X } from 'lucide-react'
@@ -30,12 +30,29 @@ export function Settings() {
   })
   const isConnected = sfdcConnected || !!sfdcStatus?.connected
 
-  function connectSalesforce() {
-    const popup = window.open(
-      `${import.meta.env.VITE_API_URL ?? 'http://localhost:3001'}/auth/sfdc/admin-start`,
-      'sfdc-connect',
-      'width=600,height=700'
-    )
+  async function connectSalesforce() {
+    // Opened synchronously, before any await. Browsers only allow window.open during
+    // the tick of a user gesture, so opening it after the fetch resolves gets it
+    // blocked — the button would appear to do nothing at all.
+    const popup = window.open('', 'sfdc-connect', 'width=600,height=700')
+    if (popup) popup.document.write('<p style="font-family:system-ui;padding:24px">Connecting to Salesforce…</p>')
+
+    // The URL is minted by an authenticated call so the backend knows which admin is
+    // connecting. It used to be a plain link the popup could open on its own, which
+    // meant the server had to guess the identity — and it guessed the primary RevOps
+    // account every time, overwriting that account's Salesforce tokens with whoever
+    // had just connected.
+    try {
+      const { data } = await authApi.post<{ url: string }>('/sfdc/admin-start-url')
+      if (popup) popup.location.href = data.url
+    } catch (err) {
+      popup?.close()
+      alert(
+        'Could not start the Salesforce connection. ' +
+          (err instanceof Error ? err.message : 'Please refresh and try again.'),
+      )
+      return
+    }
 
     // Listen for postMessage from the popup
     const handler = (e: MessageEvent) => {
