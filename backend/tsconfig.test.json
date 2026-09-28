@@ -1,0 +1,8 @@
+{
+  // Typechecking config. tsconfig.json excludes *.test.ts so `npm run build` does not
+  // emit test files into dist/; this variant puts them back so CI still typechecks
+  // them. Without it the tests would be the one part of the codebase tsc never sees.
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

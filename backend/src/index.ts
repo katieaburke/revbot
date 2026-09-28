@@ -2,9 +2,12 @@ import express from 'express'
 import helmet from 'helmet'
 import cors from 'cors'
 import { config } from './config'
+import { versionInfo, uptimeSeconds } from './version'
+import { notFoundHandler, errorHandler } from './middleware/errorHandler'
 import { db } from './db'
 import { initSlack } from './slack/bot'
 import { startWorker, alertQueue, scheduleReassignmentJob, clearOrphanedActiveJobs } from './jobs/scheduler'
+import { reportSchemaDriftInBackground } from './services/schemaGuard'
 import authRouter from './api/auth'
 import configRouter from './api/config'
 import notificationsRouter from './api/notifications'
@@ -51,10 +54,31 @@ async function main() {
   app.use('/api/whitespace', whitespaceRouter)
   app.use('/api/hand-raise', handRaiseRouter)
 
-  app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }))
+  // `ok`/`ts` are kept exactly as they were — Railway's healthcheck and anything else
+  // polling this must not break. The build fields are additive.
+  app.get('/health', (_req, res) =>
+    res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      commit: versionInfo.commitShort,
+      startedAt: versionInfo.startedAt,
+      uptimeSeconds: uptimeSeconds(),
+    }),
+  )
+
+  // Fuller build identity. Unauthenticated on purpose: a commit SHA is not a secret,
+  // and needing a token to answer "what is deployed right now?" defeats the point of
+  // having it during an incident.
+  app.get('/version', (_req, res) => res.json({ ...versionInfo, uptimeSeconds: uptimeSeconds() }))
+
+  // Must come after every route: the 404 matches whatever is left, and Express only
+  // runs the error handler if it is registered last.
+  app.use(notFoundHandler)
+  app.use(errorHandler)
 
   app.listen(config.PORT, () => {
     console.log(`🚀 Beacon running on port ${config.PORT}`)
+    console.log(`   Build: ${versionInfo.commitShort}${versionInfo.branch ? ` (${versionInfo.branch})` : ''}`)
     console.log(`   Admin UI: http://localhost:5173`)
 
     // Run Redis/BullMQ startup tasks in the background so they never block the
@@ -88,6 +112,11 @@ async function main() {
       } catch (err) {
         console.warn('⚠️  Could not schedule reassignment job:', (err as Error).message)
       }
+
+      // Report any Salesforce fields we SELECT that no longer exist. Detached and
+      // non-fatal: drift degrades one feature, whereas refusing to boot takes out all
+      // of them.
+      reportSchemaDriftInBackground()
     })
   })
 
